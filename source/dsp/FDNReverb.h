@@ -182,7 +182,7 @@ private:
     }
 
     static float modeSizeMul (Mode m) { return m == Mode::hall ? 1.3f : m == Mode::room ? 0.6f : m == Mode::plate ? 0.8f : 1.0f; }
-    static float modeDecayMul (Mode m) { return m == Mode::hall ? 1.4f : m == Mode::room ? 0.5f : m == Mode::plate ? 0.9f : m == Mode::spring ? 0.7f : 1.0f; }
+    static float modeDecayMul (Mode m) { return m == Mode::hall ? 1.2f : m == Mode::room ? 0.5f : m == Mode::plate ? 0.9f : m == Mode::spring ? 0.7f : 1.0f; }
     static float modeDampMul (Mode m) { return m == Mode::plate ? 0.6f : m == Mode::room ? 1.2f : 1.0f; }
     static float modeModMul (Mode m) { return m == Mode::plate ? 0.5f : m == Mode::spring ? 2.0f : 1.0f; }
 

@@ -635,8 +635,11 @@ static std::vector<ParamDef> buildCoreDefs()
     p.push_back ({ fx::reverbSize, "Reverb Size", Section::fxReverb,
                    ParamKind::floatParam, { 0.0f, 1.0f }, 0.5f, "",
                    false, { .enabled = true } });
+    // Top end pulled in from 12s: at max Decay + Hall's decay multiplier the
+    // old range produced an effective RT60 approaching 17s, which read as
+    // uncontrolled runaway feedback rather than a long tail (tester report).
     p.push_back ({ fx::reverbDecay, "Reverb Decay", Section::fxReverb,
-                   ParamKind::floatParam, skewedRange (0.2f, 12.0f, 2.5f), 2.0f, "s",
+                   ParamKind::floatParam, skewedRange (0.2f, 8.0f, 2.5f), 2.0f, "s",
                    false, { .enabled = true, .maxNorm = 0.6f } });
     p.push_back ({ fx::reverbDamping, "Reverb Damp", Section::fxReverb,
                    ParamKind::floatParam, { 0.0f, 1.0f }, 0.5f, "",
