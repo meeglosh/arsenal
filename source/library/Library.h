@@ -22,6 +22,16 @@ std::vector<Pack> scanLibrary (const juce::File& root);
 juce::File getLibraryRoot();
 void setLibraryRoot (const juce::File&);
 
+// Last folder browsed in the sample/wavetable file chooser, and separately
+// for the convolution IR chooser (kept apart since these are typically
+// browsed from very different locations, e.g. an SFX library vs. an
+// impulse-response folder). Returns an invalid File when never set or the
+// remembered folder is no longer reachable (e.g. its drive is unplugged).
+juce::File getLastContentFolder();
+void setLastContentFolder (const juce::File& pickedFile);
+juce::File getLastIRFolder();
+void setLastIRFolder (const juce::File& pickedFile);
+
 // UI accent colour overrides, remembered across sessions. Getters return
 // the fallback when the user has never customized.
 juce::Colour getAccentColor (juce::Colour fallback);

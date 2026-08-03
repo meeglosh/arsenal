@@ -166,12 +166,14 @@ void OscStrip::handleAsyncUpdate()
 void OscStrip::chooseContent()
 {
     const auto wavetableMode = currentMode() == params::OscMode::wavetable;
+    const auto lastFolder = library::getLastContentFolder();
     const auto libraryRoot = library::findLibraryRoot();
 
     fileChooser = std::make_unique<juce::FileChooser> (
         wavetableMode ? "Load wavetable" : "Load SFX / sample",
-        ! wavetableMode && libraryRoot.isDirectory()
-            ? libraryRoot : juce::File::getSpecialLocation (juce::File::userHomeDirectory),
+        lastFolder.isDirectory() ? lastFolder
+            : ! wavetableMode && libraryRoot.isDirectory()
+                ? libraryRoot : juce::File::getSpecialLocation (juce::File::userHomeDirectory),
         wavetableMode ? "*.wav;*.aif;*.aiff;*.flac" : "*.wav;*.aif;*.aiff;*.flac;*.mp3");
 
     fileChooser->launchAsync (juce::FileBrowserComponent::openMode

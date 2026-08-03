@@ -182,6 +182,27 @@ void setLibraryRoot (const juce::File& root)
     settings().saveIfNeeded();
 }
 
+namespace
+{
+    juce::File getLastFolder (const char* key)
+    {
+        const auto path = settings().getValue (key);
+        const juce::File folder (path);
+        return folder.isDirectory() ? folder : juce::File();
+    }
+
+    void setLastFolder (const char* key, const juce::File& pickedFile)
+    {
+        settings().setValue (key, pickedFile.getParentDirectory().getFullPathName());
+        settings().saveIfNeeded();
+    }
+}
+
+juce::File getLastContentFolder() { return getLastFolder ("lastContentFolder"); }
+void setLastContentFolder (const juce::File& pickedFile) { setLastFolder ("lastContentFolder", pickedFile); }
+juce::File getLastIRFolder() { return getLastFolder ("lastIRFolder"); }
+void setLastIRFolder (const juce::File& pickedFile) { setLastFolder ("lastIRFolder", pickedFile); }
+
 juce::Colour getAccentColor (juce::Colour fallback)
 {
     const auto stored = settings().getValue ("accentColor");

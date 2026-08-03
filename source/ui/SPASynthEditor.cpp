@@ -507,14 +507,25 @@ private:
 
     void chooseIR()
     {
+        const auto lastFolder = library::getLastIRFolder();
+        const auto libraryRoot = library::findLibraryRoot();
         fileChooser = std::make_unique<juce::FileChooser> (
-            "Choose an impulse (SFX or WAV)", library::getLibraryRoot(), "*.wav");
+            "Choose an impulse (SFX or WAV)",
+            lastFolder.isDirectory() ? lastFolder
+                : libraryRoot.isDirectory() ? libraryRoot
+                                            : juce::File::getSpecialLocation (juce::File::userHomeDirectory),
+            "*.wav;*.WAV;*.aif;*.aiff;*.flac");
         fileChooser->launchAsync (
             juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
             [this] (const juce::FileChooser& fc)
             {
                 const auto f = fc.getResult();
-                if (f.existsAsFile()) { processor.loadConvolutionIR (f); updateLabel(); }
+                if (f.existsAsFile())
+                {
+                    library::setLastIRFolder (f);
+                    processor.loadConvolutionIR (f);
+                    updateLabel();
+                }
             });
     }
 
