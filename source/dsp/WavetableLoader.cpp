@@ -8,7 +8,16 @@ LoadedWavetable loadWavetableFromFile (const juce::File& file)
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
 
-    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    // See SampleLoader.cpp: a just-reconnected external drive can briefly
+    // fail reads while macOS finishes remounting, so retry before giving up
+    // (background load thread only, never the audio thread).
+    std::unique_ptr<juce::AudioFormatReader> reader;
+    for (int attempt = 0; attempt < 4 && reader == nullptr; ++attempt)
+    {
+        if (attempt > 0)
+            juce::Thread::sleep (60 * attempt);
+        reader.reset (formats.createReaderFor (file));
+    }
     if (reader == nullptr)
         return { nullptr, "Unrecognized audio format: " + file.getFileName() };
 

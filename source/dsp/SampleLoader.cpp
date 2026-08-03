@@ -128,7 +128,18 @@ LoadedSample loadSampleFromFile (const juce::File& file)
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
 
-    std::unique_ptr<juce::AudioFormatReader> reader (formats.createReaderFor (file));
+    // A just-reconnected external drive can briefly fail reads while macOS
+    // finishes remounting the volume, which createReaderFor reports as an
+    // unrecognized format even though the file is fine moments later. Retry
+    // a few times before giving up (runs on a background load thread, never
+    // the audio thread, so blocking here is fine).
+    std::unique_ptr<juce::AudioFormatReader> reader;
+    for (int attempt = 0; attempt < 4 && reader == nullptr; ++attempt)
+    {
+        if (attempt > 0)
+            juce::Thread::sleep (60 * attempt);
+        reader.reset (formats.createReaderFor (file));
+    }
     if (reader == nullptr)
         return { nullptr, "Unrecognized audio format: " + file.getFileName() };
 
