@@ -10,17 +10,21 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
-## Current state (2026-07-21): v1.0.3 — merged to `main`, built + signed, in smoke testing
+## Current state (2026-08-03): v1.0.3 — merged to `main`, built + signed, in smoke testing
 
 v1.0.3 is **merged to `main`** (CMake version 1.0.3; the release merge is
 `2559c2f`). All 11 planned features plus the post-merge smoke-test refinements
 below are implemented, unit-tested (`SPASynthTests` ALL PASS), and the full
 plugin validates (`auval` PASS, `pluginval` strictness-8 SUCCESS incl. param
-fuzz). The signed + notarized macOS pkg and the CI-built Windows exe are in
-`dist/installers/` and both `dist/shopify/SPASynth-{Standard,Pro}-1.0.3/`
-folders (byte-identical across locations; library zips APFS-cloned from 1.0.2,
-which is unchanged). **NOT yet distributed** — still 1.0.3, keep iterating on it
-(don't bump) until it goes out. The 11 base features, one commit each:
+fuzz). **`HEAD` = `ca5d6c4`** (the arp fix; `1087072` on top is an empty
+CI-trigger commit). The signed + notarized macOS pkg and the CI-built Windows
+exe in `dist/installers/` and both `dist/shopify/SPASynth-{Standard,Pro}-1.0.3/`
+folders were **last rebuilt from the arp fix** (byte-identical across locations;
+library zips APFS-cloned from 1.0.2, which is unchanged). Each smoke-test fix so
+far has triggered a full signed rebuild (see the loop below). **NOT yet
+distributed** — still 1.0.3, keep iterating on it (don't bump) until it goes
+out. Repo visibility flips public only for Windows CI builds, then back to
+private (see the CI note). The 11 base features, one commit each:
 
 1. Panic button (`b31f2ab`) — stop all sound + clear stuck/latched notes.
 2. Standalone tempo (`91274c9`) — internal BPM + tap + external MIDI clock.
@@ -80,6 +84,16 @@ in `Section::global`; the EQ bands are generated via `id::eqBand(band, key)`.
   the editor re-applies the tab order on the change broadcast (`refreshAll` ->
   `fxTabs.applyOrder`). Limiter auto-gain toggle = output makeup of `1/drive`
   (transparent peak control; off by default).
+- **Arp stuck-notes fix (`ca5d6c4`) — important regression.** The standalone-
+  tempo feature (#2) set `ap.hostPlaying = blockPlaying`, and the internal free-
+  running clock forces `blockPlaying = true` while `blockPpq` stays frozen at 0,
+  so the arp thought it was following a host timeline stuck at beat 0 and re-
+  fired the first step every block -> every note stuck. Hit the standalone and
+  any host reporting tempo but no ppq. Fix: `ap.hostPlaying = gotHostPpq &&
+  blockPlaying` (new `gotHostPpq` flag, true only when the host gives an
+  advancing ppq); otherwise the arp free-runs on its own beat clock, as in
+  1.0.2. `arpStuckNoteTest` covers it (full-chain, no host, held key -> release
+  -> all voices free; plus audible on the internal clock).
 - Changelog kept current for all of the above (`docs/CHANGELOG.md`, house style).
 
 **Signing/CI are ready on this machine:** the Developer ID Application +
