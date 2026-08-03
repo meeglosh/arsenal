@@ -1,5 +1,40 @@
 # SPASynth changelog
 
+## 1.0.4
+
+Fixes and small improvements from real-world testing feedback.
+
+- Filter 1 now has its own on/off switch, matching Filter 2.
+- Reset to Default. A new "Reset to Default" option in the settings menu
+  brings every parameter back to its starting point, handy after RANDOMIZE
+  ALL or a long tweaking session.
+- File browsers now remember the last folder you opened, for both
+  sample/wavetable loading and the Convolve impulse browser.
+- Fixed the Convolve impulse browser showing valid WAV files as greyed out.
+- Tuned the reverb's Decay range so Hall mode no longer produces an overly
+  long, uncontrolled-sounding tail at high settings.
+- If your library lives on an external drive, reconnecting after unplugging
+  it is now much more reliable. Rescan Library offers to point you at a new
+  folder instead of silently doing nothing, and sample/wavetable loading
+  retries automatically instead of occasionally showing a spurious
+  "unrecognized format" error right after a reconnect.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.3
 
 A big update to the effects, the voice engine, and sound quality.
@@ -45,22 +80,6 @@ A big update to the effects, the voice engine, and sound quality.
 - Oversampling. Run the whole synth at 2x, 4x, or 8x for cleaner, lower-alias
   sound on bright and hard-driven patches. Off by default; choose it from the
   settings menu.
-
-**Notes for this build**
-
-- The macOS installer is signed and notarized by Apple, so it installs cleanly.
-- The Windows installer is unsigned by design. On first launch, click More info
-  and then Run anyway to get past the SmartScreen prompt.
-- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
-  Standalone, and on Windows 10 or later as VST3 and Standalone.
-- The Limiter's optional lookahead mode adds a small amount of latency and
-  reports it to your host automatically so playback stays in sync. It's off
-  by default, so live play stays at zero added latency until you turn it on.
-- Known limitation: on a Mac with a Retina laptop screen plus an external
-  monitor, the standalone window may not drag across onto the external display
-  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
-  works normally as a plugin in your DAW. Workaround: set the external display
-  as your main display in System Settings, or use SPASynth as a plugin.
 
 ## 1.0.2
 
