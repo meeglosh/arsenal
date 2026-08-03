@@ -404,12 +404,14 @@ void FilterPanel::resized()
     display.setBounds (area.removeFromTop (index == 2 ? 64 : 86));
     area.removeFromTop (4);
 
-    if (index == 2)
     {
         auto enableRow = area.removeFromTop (22);
         enable->setBounds (enableRow.removeFromLeft (52));
-        enableRow.removeFromLeft (4);
-        routing->setBounds (enableRow.reduced (0, 1));
+        if (routing != nullptr)
+        {
+            enableRow.removeFromLeft (4);
+            routing->setBounds (enableRow.reduced (0, 1));
+        }
         area.removeFromTop (2);
     }
 

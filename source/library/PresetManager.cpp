@@ -94,6 +94,16 @@ bool PresetManager::loadPreset (int index)
     return loadPresetFile (presets[(size_t) index].file);
 }
 
+void PresetManager::resetToDefault()
+{
+    applyState (defaultState);
+
+    currentName = "Init";
+    currentIndex = -1;
+
+    sendChangeMessage();
+}
+
 bool PresetManager::loadPresetFile (const juce::File& file)
 {
     const auto xml = juce::XmlDocument::parse (file);

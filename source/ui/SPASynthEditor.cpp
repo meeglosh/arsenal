@@ -1140,6 +1140,7 @@ void ContentComponent::showSettingsMenu()
     }
 
     m.addSeparator();
+    m.addItem ("Reset to Default", [this] { processor.getPresetManager().resetToDefault(); });
     m.addItem ("Clear All MIDI Learn", [this] { processor.getMidiLearn().clearAll(); });
 
     m.showMenuAsync (juce::PopupMenu::Options()

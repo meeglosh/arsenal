@@ -41,6 +41,11 @@ public:
     void loadNext();
     void loadPrevious();
 
+    // Restores every parameter to its ParameterRegistry default (the
+    // pristine state captured at construction, before any preset/session
+    // load) — "start afresh" after randomizing or a long tweak session.
+    void resetToDefault();
+
     bool saveUserPreset (const juce::String& name);
     juce::File getUserPresetFolder() const { return presetsRoot.getChildFile ("User"); }
 
