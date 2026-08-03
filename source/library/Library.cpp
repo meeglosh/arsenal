@@ -170,6 +170,8 @@ juce::File findLibraryRoot()
     const auto discovered = discoverLibrary (defaultLibraryLocations());
     if (discovered.isDirectory())
         setLibraryRoot (discovered);
+    else if (configured != juce::File())
+        setLibraryRoot ({});   // stop returning a dead path (e.g. an unplugged drive)
 
     return discovered;
 }

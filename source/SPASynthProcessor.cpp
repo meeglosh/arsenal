@@ -37,6 +37,7 @@ SPASynthProcessor::SPASynthProcessor()
     raw.ampSustain = apvts.getRawParameterValue (params::id::ampSustain);
     raw.ampRelease = apvts.getRawParameterValue (params::id::ampRelease);
     raw.oversampling = apvts.getRawParameterValue (params::id::oversampling);
+    raw.filter1Enable = apvts.getRawParameterValue (params::id::filter1Enable);
     raw.filterType = apvts.getRawParameterValue (params::id::filter1Type);
     raw.filterKeytrack = apvts.getRawParameterValue (params::id::filter1Keytrack);
     raw.filter2Enable = apvts.getRawParameterValue (params::id::filter2Enable);

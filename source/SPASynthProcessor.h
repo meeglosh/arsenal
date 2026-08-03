@@ -150,7 +150,7 @@ public:
 
     // Rescans the configured library and (re)generates factory presets for
     // any packs that don't have them yet.
-    void refreshLibrary();
+    bool refreshLibrary();   // false if the library root is missing/invalid
 
 private:
     void updateSharedState (int blockLength);

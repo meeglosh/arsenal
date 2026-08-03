@@ -45,6 +45,7 @@ private:
     void showSettingsMenu();
     void setKeyboardVisible (bool shouldShow);
     void chooseLibraryFolder();
+    void rescanLibrary();
     void saveUserPreset();
 
     // Header button showing the two accents as a split circle; clicking

@@ -1106,7 +1106,7 @@ void ContentComponent::showSettingsMenu()
     juce::PopupMenu m;
     m.addSectionHeader ("SPASynth v" SPASYNTH_VERSION);
     m.addItem ("Set Library Folder...", [this] { chooseLibraryFolder(); });
-    m.addItem ("Rescan Library", [this] { processor.refreshLibrary(); });
+    m.addItem ("Rescan Library", [this] { rescanLibrary(); });
     m.addSeparator();
     m.addItem ("Accent Colors...", [this] { showAccentPicker(); });
     m.addItem ("Show Keyboard", true, keyboardVisible,
@@ -1170,6 +1170,30 @@ void ContentComponent::togglePresetBrowser()
 
     if (presetBrowserOpen)
         presetBrowser->grabKeyboardFocus();   // Esc closes
+}
+
+void ContentComponent::rescanLibrary()
+{
+    if (processor.refreshLibrary())
+    {
+        refreshAll();
+        return;
+    }
+
+    // Most common cause: the configured library folder lived on a drive
+    // that's no longer connected. Send the user straight to the picker
+    // instead of leaving Rescan looking like it silently did nothing.
+    juce::NativeMessageBox::showOkCancelBox (
+        juce::MessageBoxIconType::WarningIcon,
+        "Library Not Found",
+        "The library folder could not be found. It may be on a drive that's "
+        "no longer connected.\n\nChoose a new library folder now?",
+        this,
+        juce::ModalCallbackFunction::create ([this] (int result)
+        {
+            if (result != 0)
+                chooseLibraryFolder();
+        }));
 }
 
 void ContentComponent::chooseLibraryFolder()
