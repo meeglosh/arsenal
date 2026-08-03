@@ -161,6 +161,7 @@ namespace id
     inline constexpr const char* unisonWidth   = "global.unisonWidth";
     inline constexpr const char* oversampling  = "global.oversampling";  // Off/2x/4x/8x
 
+    inline constexpr const char* filter1Enable    = "filter1.enable";
     inline constexpr const char* filter1Type      = "filter1.type";
     inline constexpr const char* filter1Cutoff    = "filter1.cutoff";
     inline constexpr const char* filter1Resonance = "filter1.resonance";

@@ -368,6 +368,12 @@ static std::vector<ParamDef> buildCoreDefs()
     for (int slot = 0; slot < numOscSlots; ++slot)
         addOscSlotParams (p, slot);
 
+    // Default on so existing presets/sessions (no stored value -> default)
+    // keep filter 1 unconditionally in the signal path, matching pre-1.0.4
+    // behaviour. Bias toward "on" during RANDOMIZE ALL for the same reason.
+    p.push_back ({ id::filter1Enable, "On", Section::filter1,
+                   ParamKind::boolParam, {}, 1.0f, "",
+                   false, { .enabled = true, .biasCentre = 0.8f, .biasStrength = 0.5f } });
     p.push_back ({ id::filter1Type, "Type", Section::filter1,
                    ParamKind::choiceParam, {}, 0.0f, "",
                    false, { .enabled = true },

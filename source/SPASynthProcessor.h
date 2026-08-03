@@ -343,6 +343,7 @@ private:
         std::atomic<float>* ampSustain = nullptr;
         std::atomic<float>* ampRelease = nullptr;
         std::atomic<float>* oversampling = nullptr;
+        std::atomic<float>* filter1Enable = nullptr;
         std::atomic<float>* filterType = nullptr;
         std::atomic<float>* filterKeytrack = nullptr;
         std::atomic<float>* filter2Enable = nullptr;

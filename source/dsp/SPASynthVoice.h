@@ -90,6 +90,7 @@ struct SharedState
     bool paraGateActive = false;
 
     std::array<SlotStatic, params::maxOscSlots> slots {};
+    bool filter1Enabled = true;
     params::FilterType filterType = params::FilterType::lp12;
     float filterKeytrack = 0.0f;
     bool filter2Enabled = false;

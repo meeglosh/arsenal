@@ -79,7 +79,7 @@ private:
     Choice type;
     Knob cutoff, resonance, drive;
     Knob keytrack, envAmount, mix;
-    std::unique_ptr<Toggle> enable;      // filter 2 only
+    std::unique_ptr<Toggle> enable;
     std::unique_ptr<Choice> routing;     // filter 2 only
 };
 

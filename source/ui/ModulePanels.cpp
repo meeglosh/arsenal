@@ -182,6 +182,7 @@ void OscStrip::chooseContent()
     {
         if (! fc.getResult().existsAsFile())
             return;
+        library::setLastContentFolder (fc.getResult());
         if (wavetableMode)
             processor.loadWavetableFromFile (slot, fc.getResult());
         else
@@ -378,11 +379,13 @@ FilterPanel::FilterPanel (SPASynthProcessor& p, int filterIndex)
     addAndMakeVisible (envAmount);
     addAndMakeVisible (mix);
 
+    enable = std::make_unique<Toggle> (p.getAPVTS(),
+                                       index == 1 ? id::filter1Enable : id::filter2Enable, "ON");
+    addAndMakeVisible (*enable);
+
     if (index == 2)
     {
-        enable = std::make_unique<Toggle> (p.getAPVTS(), id::filter2Enable, "ON");
         routing = std::make_unique<Choice> (p.getAPVTS(), id::filterRouting);
-        addAndMakeVisible (*enable);
         addAndMakeVisible (*routing);
     }
 }

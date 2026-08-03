@@ -476,10 +476,11 @@ void SPASynthVoice::computeChunk (int blockOffset, int chunkLen)
 
     filterMixValue = denorm (eff, lookup.filterMix);
 
-    filter.setParams (shared.filterType,
-                      finalCutoff,
-                      denorm (eff, lookup.resonance),
-                      denorm (eff, lookup.drive));
+    if (shared.filter1Enabled)
+        filter.setParams (shared.filterType,
+                          finalCutoff,
+                          denorm (eff, lookup.resonance),
+                          denorm (eff, lookup.drive));
 
     if (shared.filter2Enabled)
     {
@@ -681,10 +682,13 @@ void SPASynthVoice::renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
             ampEnvLast = envValue;
             const auto gain = envValue * (0.2f + 0.8f * velocity) * chaosAmpGain;
 
-            auto outL = sumL + (filter.processSample (0, sumL) - sumL) * filterMixValue;
-            auto outR = right != nullptr
-                      ? sumR + (filter.processSample (1, sumR) - sumR) * filterMixValue
-                      : 0.0f;
+            auto outL = shared.filter1Enabled
+                      ? sumL + (filter.processSample (0, sumL) - sumL) * filterMixValue
+                      : sumL;
+            auto outR = right == nullptr ? 0.0f
+                      : shared.filter1Enabled
+                          ? sumR + (filter.processSample (1, sumR) - sumR) * filterMixValue
+                          : sumR;
 
             if (shared.filter2Enabled)
             {

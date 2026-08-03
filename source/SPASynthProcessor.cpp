@@ -841,6 +841,7 @@ void SPASynthProcessor::updateSharedState (int blockLength)
     shared.unisonDetuneCents = raw.unisonDetune->load();
     shared.unisonWidth = raw.unisonWidth->load();
 
+    shared.filter1Enabled = raw.filter1Enable->load() >= 0.5f;
     shared.filterType = (params::FilterType) (int) raw.filterType->load();
     shared.filterKeytrack = raw.filterKeytrack->load();
     shared.filter2Enabled = raw.filter2Enable->load() >= 0.5f;
@@ -1180,15 +1181,16 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
     }
 }
 
-void SPASynthProcessor::refreshLibrary()
+bool SPASynthProcessor::refreshLibrary()
 {
     const auto root = library::findLibraryRoot();
     if (! root.isDirectory())
-        return;
+        return false;
 
     const auto packs = library::scanLibrary (root);
     presetManager->generateFactoryPresets (packs, root);
     presetManager->rescan();
+    return true;
 }
 
 void SPASynthProcessor::getStateInformation (juce::MemoryBlock& destData)
