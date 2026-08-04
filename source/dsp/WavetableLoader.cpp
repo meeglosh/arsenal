@@ -26,7 +26,10 @@ LoadedWavetable loadWavetableFromFile (const juce::File& file)
     if (numSamples < 16)
         return { nullptr, "File too short to be a wavetable: " + file.getFileName() };
 
-    juce::AudioBuffer<float> buffer ((int) reader->numChannels, numSamples);
+    // WAV headers carry a 16-bit channel count; a garbage value here would
+    // otherwise drive a multi-GB allocation attempt. Clamp like SampleLoader.cpp.
+    const auto numChannels = (int) juce::jmin (reader->numChannels, 2u);
+    juce::AudioBuffer<float> buffer (numChannels, numSamples);
     if (! reader->read (&buffer, 0, numSamples, 0, true, true))
         return { nullptr, "Failed to read audio data: " + file.getFileName() };
 

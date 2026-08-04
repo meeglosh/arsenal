@@ -107,7 +107,7 @@ void PresetManager::resetToDefault()
 bool PresetManager::loadPresetFile (const juce::File& file)
 {
     const auto xml = juce::XmlDocument::parse (file);
-    if (xml == nullptr || ! xml->hasTagName (presetTag))
+    if (xml == nullptr || ! xml->hasTagName (presetTag) || xml->getFirstChildElement() == nullptr)
         return false;
 
     const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());

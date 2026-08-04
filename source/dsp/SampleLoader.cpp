@@ -151,8 +151,18 @@ LoadedSample loadSampleFromFile (const juce::File& file)
     data->name = file.getFileNameWithoutExtension();
 
     const auto numChannels = (int) juce::jmin (reader->numChannels, 2u);
-    data->audio.setSize (numChannels, (int) reader->lengthInSamples);
-    if (! reader->read (&data->audio, 0, (int) reader->lengthInSamples, 0, true, numChannels > 1))
+
+    // A corrupt WAV header can declare a sample count that overflows the
+    // int64->int cast below (UB, possibly negative); cap at a sane 10 minutes
+    // of source-rate audio, same clamp-before-cast pattern as
+    // FXChain::loadConvolutionIR. Floor-guarded so a zero/garbage sampleRate
+    // can't produce a cap below the 64-sample minimum already checked above.
+    const juce::int64 maxSamples = juce::jmax ((juce::int64) 64,
+                                               (juce::int64) (reader->sampleRate * 600.0));
+    const int n = (int) juce::jmin (maxSamples, reader->lengthInSamples);
+
+    data->audio.setSize (numChannels, n);
+    if (! reader->read (&data->audio, 0, n, 0, true, numChannels > 1))
         return { nullptr, "Failed to read audio data: " + file.getFileName() };
 
     const auto mono = decimateToMono (data->audio, data->sourceSampleRate);
