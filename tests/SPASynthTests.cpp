@@ -13,6 +13,7 @@
 #include "ui/SPASynthEditor.h"
 
 #include <iostream>
+#include <limits>
 
 namespace
 {
@@ -1059,6 +1060,77 @@ namespace
                 + " vs wet " + juce::String (wet) + ")");
     }
 
+    // The reported plugin tail (getTailLengthSeconds -> FXChain::tailSeconds)
+    // must include the Convolve impulse length, or hosts truncate bounces/
+    // freezes before the convolution ring-out finishes.
+    static void convolveTailLengthTest()
+    {
+        std::cout << "convolveTailLengthTest\n";
+
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+        constexpr double irSeconds = 2.0;
+
+        // A known-length impulse: 2 seconds of low-level noise at 48 kHz.
+        const auto irFile = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                .getNonexistentChildFile ("spasynth-conv-ir-test", ".wav");
+        {
+            const int numSamples = (int) (irSeconds * sampleRate);
+            juce::AudioBuffer<float> irBuffer (1, numSamples);
+            juce::Random rng (1234);
+            for (int i = 0; i < numSamples; ++i)
+                irBuffer.setSample (0, i, rng.nextFloat() * 2.0f - 1.0f);
+
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> stream = irFile.createOutputStream();
+            auto writer = wav.createWriterFor (stream,
+                                               juce::AudioFormatWriterOptions()
+                                                   .withSampleRate (sampleRate)
+                                                   .withNumChannels (1)
+                                                   .withBitsPerSample (24));
+            expect (writer != nullptr, "test IR WAV writer created");
+            if (writer != nullptr)
+            {
+                writer->writeFromAudioSampleBuffer (irBuffer, 0, numSamples);
+                writer.reset();
+            }
+        }
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::MidiBuffer midi;
+        const auto pump = [&]   // updateFXParams only runs inside processBlock
+        {
+            buffer.clear();
+            proc.processBlock (buffer, midi);
+        };
+
+        // Convolve disabled: no other tail-producing FX on, so the reported
+        // tail should be ~0 even with an IR loaded.
+        proc.loadConvolutionIR (irFile);
+        setParam (proc, id::fx::convEnable, 0.0f);
+        setParam (proc, id::fx::delayEnable, 0.0f);
+        setParam (proc, id::fx::reverbEnable, 0.0f);
+        pump();
+        expect (proc.getTailLengthSeconds() < irSeconds * 0.5,
+                "tail excludes the IR while Convolve is disabled ("
+                + juce::String (proc.getTailLengthSeconds()) + "s)");
+
+        // Convolve enabled: the reported tail must cover the (reshaped) IR.
+        setParam (proc, id::fx::convEnable, 1.0f);
+        pump();
+        const auto tailOn = proc.getTailLengthSeconds();
+        expect (tailOn >= irSeconds - 0.1,
+                "tail includes the Convolve IR length once enabled (tail "
+                + juce::String (tailOn) + "s vs IR " + juce::String (irSeconds) + "s)");
+
+        irFile.deleteFile();
+    }
+
     static void fxEQDistortionTest()
     {
         std::cout << "fxEQDistortionTest\n";
@@ -1379,8 +1451,7 @@ namespace
 
         const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
                                      .getNonexistentChildFile ("spasynth-presets-test", "");
-        lib::PresetManager pm (proc.getAPVTS(),
-                               [&] { return proc.buildStateTree(); },
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
                                presetsRoot);
 
@@ -1408,6 +1479,79 @@ namespace
         presetsRoot.deleteRecursively();
     }
 
+    // A hand-edited or damaged .spasynth file must fail to load cleanly
+    // rather than crash: valid XML with the right root tag but no child
+    // state element, and outright XML garbage.
+    static void malformedPresetTest()
+    {
+        std::cout << "malformedPresetTest\n";
+
+        namespace lib = spa::library;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-malformed-test", "");
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        const auto emptyRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getNonexistentChildFile ("spasynth-malformed-empty", ".spasynth");
+        emptyRoot.replaceWithText ("<SPASynthPreset name=\"x\"/>");
+        expect (! pm.loadPresetFile (emptyRoot),
+                "root tag with no child state element fails to load, no crash");
+
+        const auto garbage = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                 .getNonexistentChildFile ("spasynth-malformed-garbage", ".spasynth");
+        garbage.replaceWithText ("this is not <xml at all >>> {{{ garbage");
+        expect (! pm.loadPresetFile (garbage),
+                "invalid XML fails to load, no crash");
+
+        emptyRoot.deleteFile();
+        garbage.deleteFile();
+        presetsRoot.deleteRecursively();
+    }
+
+    // "Reset to Default" (the menu item added post-1.0.3) must restore every
+    // parameter to its ParameterRegistry default and clear the current-preset
+    // name back to "Init".
+    static void presetResetToDefaultTest()
+    {
+        std::cout << "presetResetToDefaultTest\n";
+
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        auto& apvts = proc.getAPVTS();
+        auto* cutoffParam = apvts.getParameter (id::filter1Cutoff);
+        auto* gainParam = apvts.getParameter (id::masterGain);
+        const auto defaultCutoff = cutoffParam->convertFrom0to1 (cutoffParam->getDefaultValue());
+        const auto defaultGain = gainParam->convertFrom0to1 (gainParam->getDefaultValue());
+
+        // filter1Cutoff defaults fully open (20 kHz); move it well down instead
+        // of up so the range clamp doesn't silently leave it unchanged.
+        setParam (proc, id::filter1Cutoff, defaultCutoff - 15000.0f);
+        setParam (proc, id::masterGain, defaultGain - 6.0f);
+        setParam (proc, id::oscSlot (0, id::osc::position), 0.9f);
+
+        proc.getPresetManager().resetToDefault();
+
+        const auto cutoffAfter = cutoffParam->convertFrom0to1 (cutoffParam->getValue());
+        const auto gainAfter = gainParam->convertFrom0to1 (gainParam->getValue());
+        expect (std::abs (cutoffAfter - defaultCutoff) < 1.0f,
+                "filter1Cutoff back at registry default after reset ("
+                + juce::String (cutoffAfter) + " vs " + juce::String (defaultCutoff) + ")");
+        expect (std::abs (gainAfter - defaultGain) < 0.01f,
+                "masterGain back at registry default after reset ("
+                + juce::String (gainAfter) + " vs " + juce::String (defaultGain) + ")");
+        expect (proc.getPresetManager().getCurrentName() == "Init",
+                "current preset name resets to \"Init\"");
+    }
+
     static void factoryPresetGenerationTest()
     {
         std::cout << "factoryPresetGenerationTest\n";
@@ -1426,8 +1570,7 @@ namespace
         const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
                                      .getNonexistentChildFile ("spasynth-factory-test", "");
 
-        lib::PresetManager pm (proc.getAPVTS(),
-                               [&] { return proc.buildStateTree(); },
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
                                presetsRoot);
 
@@ -1944,6 +2087,108 @@ namespace
         }
     }
 
+    // Some hosts send zero-sample "flush" blocks (e.g. around latency
+    // compensation or transport edits). The arp's step-scan loop used to
+    // assume numSamples > 0; regression coverage for the numSamples <= 0
+    // early-out in Arpeggiator::process.
+    static void arpZeroSampleBlockTest()
+    {
+        std::cout << "arpZeroSampleBlockTest\n";
+        namespace id = spa::params::id;
+        constexpr double sr = 48000.0;
+        constexpr int block = 256;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sr, block);
+        setParam (proc, id::arp::enable, 1.0f);
+        setParam (proc, id::arp::division, 12.0f);   // 1/16
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::AudioBuffer<float> zeroBuf (2, 0);
+        juce::MidiBuffer onMsg;
+        onMsg.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 110), 0);
+
+        juce::MidiBuffer m = onMsg;
+        proc.processBlock (buf, m);
+
+        // Interleave zero-sample blocks with normal ones; should never crash.
+        for (int b = 0; b < 20; ++b)
+        {
+            juce::MidiBuffer empty;
+            proc.processBlock (zeroBuf, empty);
+
+            buf.clear();
+            juce::MidiBuffer empty2;
+            proc.processBlock (buf, empty2);
+        }
+
+        expect (true, "zero-sample blocks interleaved with normal blocks did not crash");
+
+        // Normal processing should still be alive afterwards (arp still
+        // stepping, not wedged by the zero-sample interruptions).
+        float peak = 0.0f;
+        for (int b = 0; b < 20; ++b)
+        {
+            buf.clear();
+            juce::MidiBuffer empty;
+            proc.processBlock (buf, empty);
+            peak = juce::jmax (peak, buf.getMagnitude (0, 0, block));
+        }
+        expect (peak > 0.01f, "arp keeps producing sound after zero-sample blocks");
+    }
+
+    // A host reporting a non-finite ppq (e.g. mid tempo-map edit, corrupt
+    // session) used to hang the arp's beat-clock step-scan forever, since
+    // NaN comparisons never satisfy the loop's exit condition. Regression
+    // coverage for the std::isfinite guard in Arpeggiator::process; the
+    // pass/fail signal here is simply that processing returns at all
+    // (a regression here means CI hangs rather than reporting FAIL).
+    static void arpNonFinitePpqTest()
+    {
+        std::cout << "arpNonFinitePpqTest\n";
+        namespace id = spa::params::id;
+        constexpr double sr = 48000.0;
+        constexpr int block = 256;
+
+        struct NanPpqPlayHead : public juce::AudioPlayHead
+        {
+            juce::Optional<PositionInfo> getPosition() const override
+            {
+                PositionInfo info;
+                info.setBpm (120.0);
+                info.setIsPlaying (true);
+                info.setPpqPosition (std::numeric_limits<double>::quiet_NaN());
+                return info;
+            }
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sr, block);
+        setParam (proc, id::arp::enable, 1.0f);
+        setParam (proc, id::arp::division, 12.0f);
+
+        NanPpqPlayHead nanPlayHead;
+        proc.setPlayHead (&nanPlayHead);
+
+        juce::AudioBuffer<float> buf (2, block);
+        juce::MidiBuffer onMsg;
+        onMsg.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 110), 0);
+
+        float peak = 0.0f;
+        for (int b = 0; b < 40; ++b)
+        {
+            buf.clear();
+            juce::MidiBuffer m = (b == 0 ? onMsg : juce::MidiBuffer());
+            proc.processBlock (buf, m);
+            peak = juce::jmax (peak, buf.getMagnitude (0, 0, block));
+        }
+
+        expect (true, "processing returned with a NaN-ppq playhead (no hang)");
+        expect (peak > 0.01f, "arp falls back to the internal clock and still sounds");
+
+        proc.setPlayHead (nullptr);
+    }
+
     static void arpChanceTest()
     {
         std::cout << "arpChanceTest\n";
@@ -2269,6 +2514,50 @@ namespace
                 "series result is repeatable");
     }
 
+    // Filter1's ON switch must genuinely bypass the filter (distinct from
+    // mix=0, which fades the filtered signal itself). Mirrors the
+    // filterExtrasTest/dualFilterTest brightness harness.
+    static void filter1EnableTest()
+    {
+        std::cout << "filter1EnableTest\n";
+
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        const auto brightness = [&] (bool filterOn)
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            setParam (proc, id::chaos::enable, 0.0f);
+            setParam (proc, id::oscSlot (0, id::osc::position), 0.66f);  // saw-ish, bright
+            setParam (proc, id::filter1Type, 1.0f);                     // LP 24
+            setParam (proc, id::filter1Cutoff, 300.0f);
+            setParam (proc, id::filter1Mix, 1.0f);                      // fully wet either way
+            setParam (proc, id::filter1Enable, filterOn ? 1.0f : 0.0f);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            for (int b = 0; b < 20; ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+            }
+            float hf = 0.0f;
+            for (int i = 1; i < blockSize; ++i)
+                hf += std::abs (buffer.getSample (0, i) - buffer.getSample (0, i - 1));
+            return hf / (float) blockSize;
+        };
+
+        const auto on = brightness (true);
+        const auto off = brightness (false);
+        expect (off > on * 1.5f,
+                "filter1 OFF is audibly brighter than ON at mix=1 (on " + juce::String (on)
+                + " vs off " + juce::String (off) + ")");
+    }
+
     // Fundamental frequency estimate via positive-going zero crossings.
     static float zeroCrossingHz (const juce::AudioBuffer<float>& capture,
                                  int start, int len, double sampleRate)
@@ -2487,6 +2776,7 @@ int main (int argc, char* argv[])
     quickSwapTest();
     sfxFollowerTest();
     fxDelayReverbTest();
+    convolveTailLengthTest();
     reverbMixTest();
     reverbStabilityTest();
     parametricEqTest();
@@ -2502,14 +2792,19 @@ int main (int argc, char* argv[])
     midiLearnTest();
     arpeggiatorTest();
     arpStuckNoteTest();
+    arpZeroSampleBlockTest();
+    arpNonFinitePpqTest();
     arpChanceTest();
     extraEnginesTest();
     filterExtrasTest();
     dualFilterTest();
+    filter1EnableTest();
     glideTest();
     libraryScanTest();
     libraryDiscoveryTest();
     presetRoundTripTest();
+    malformedPresetTest();
+    presetResetToDefaultTest();
     factoryPresetGenerationTest();
     presetBrowserFilterTest();
     licenseLineTest();

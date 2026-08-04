@@ -27,8 +27,7 @@ public:
         juce::File file;
     };
 
-    PresetManager (juce::AudioProcessorValueTreeState& apvts,
-                   std::function<juce::ValueTree()> captureState,
+    PresetManager (std::function<juce::ValueTree()> captureState,
                    std::function<void (const juce::ValueTree&)> applyState,
                    juce::File presetsRoot);
 
@@ -63,7 +62,6 @@ private:
     bool writePreset (const juce::File& file, const juce::String& name,
                       const juce::ValueTree& state) const;
 
-    juce::AudioProcessorValueTreeState& apvts;
     std::function<juce::ValueTree()> captureState;
     std::function<void (const juce::ValueTree&)> applyState;
     juce::File presetsRoot;

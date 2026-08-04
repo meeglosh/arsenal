@@ -38,12 +38,10 @@ namespace
     }
 }
 
-PresetManager::PresetManager (juce::AudioProcessorValueTreeState& state,
-                              std::function<juce::ValueTree()> capture,
+PresetManager::PresetManager (std::function<juce::ValueTree()> capture,
                               std::function<void (const juce::ValueTree&)> apply,
                               juce::File root)
-    : apvts (state),
-      captureState (std::move (capture)),
+    : captureState (std::move (capture)),
       applyState (std::move (apply)),
       presetsRoot (std::move (root))
 {

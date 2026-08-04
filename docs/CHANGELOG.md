@@ -1,5 +1,37 @@
 # SPASynth changelog
 
+## 1.0.5
+
+A stability and hardening release. We ran a full audit of the code ahead of
+launch and fixed every crash, freeze, and reliability issue it turned up;
+there are no new features here, just a more solid foundation.
+
+- Fixed a crash when loading a damaged or hand-edited preset file.
+- Fixed a possible crash when loading a corrupted WAV file.
+- Fixed a rare freeze when a host reports invalid timeline data to the
+  arpeggiator.
+- Fixed possible crashes when closing the plugin while samples were still
+  loading, or while a menu or dialog was open.
+- The reported effect tail now includes the Convolve impulse, so bounces and
+  freezes no longer cut it short.
+- Smoother performance when oversampling is active.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.4
 
 Fixes and small improvements from real-world testing feedback.
@@ -18,22 +50,6 @@ Fixes and small improvements from real-world testing feedback.
   folder instead of silently doing nothing, and sample/wavetable loading
   retries automatically instead of occasionally showing a spurious
   "unrecognized format" error right after a reconnect.
-
-**Notes for this build**
-
-- The macOS installer is signed and notarized by Apple, so it installs cleanly.
-- The Windows installer is unsigned by design. On first launch, click More info
-  and then Run anyway to get past the SmartScreen prompt.
-- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
-  Standalone, and on Windows 10 or later as VST3 and Standalone.
-- The Limiter's optional lookahead mode adds a small amount of latency and
-  reports it to your host automatically so playback stays in sync. It's off
-  by default, so live play stays at zero added latency until you turn it on.
-- Known limitation: on a Mac with a Retina laptop screen plus an external
-  monitor, the standalone window may not drag across onto the external display
-  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
-  works normally as a plugin in your DAW. Workaround: set the external display
-  as your main display in System Settings, or use SPASynth as a plugin.
 
 ## 1.0.3
 
