@@ -234,7 +234,6 @@ SPASynthProcessor::SPASynthProcessor()
         synth.addVoice (new dsp::SPASynthVoice (shared));
 
     presetManager = std::make_unique<library::PresetManager> (
-        apvts,
         [this] { return buildStateTree (false); },   // presets carry no MIDI map
         [this] (const juce::ValueTree& state) { restoreStateTree (state); },
         library::defaultPresetsRoot());
@@ -315,18 +314,30 @@ void SPASynthProcessor::loadSampleFromFile (int slot, const juce::File& file)
     ss.pendingLoads.fetch_add (1);
     sendChangeMessage();
 
-    juce::Thread::launch ([this, slot, file, serial]
+    // Capture a weak ref, not raw `this` — the host can destroy the processor
+    // while this background load is in flight (the loader retries with sleeps
+    // up to ~360ms). The Thread::launch lambda below never touches `this`
+    // after the load returns; only the callAsync completion may, and it
+    // null-checks the weak ref first. That check-then-use is race-free because
+    // JUCE::WeakReference nulls out (and the processor's destructor runs) on
+    // the message thread, the same thread callAsync runs on — so there's no
+    // concurrent check-vs-delete to race against, even though WeakReference
+    // itself isn't thread-safe in general.
+    juce::WeakReference<SPASynthProcessor> weak (this);
+    juce::Thread::launch ([weak, slot, file, serial]
     {
         auto result = dsp::loadSampleFromFile (file);
 
-        juce::MessageManager::callAsync ([this, slot, serial, loaded = std::move (result),
+        juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
                                           path = file.getFullPathName()]() mutable
         {
-            auto& s = slotSamples[(size_t) slot];
+            if (weak == nullptr)
+                return;   // processor was destroyed while this load was in flight
+            auto& s = weak->slotSamples[(size_t) slot];
             s.pendingLoads.fetch_sub (1);
             if (serial != s.requestSerial)
                 return;   // superseded by a newer request — drop this stale result
-            installSample (slot, std::move (loaded.sample), path, loaded.error);
+            weak->installSample (slot, std::move (loaded.sample), path, loaded.error);
         });
     });
 }
@@ -498,19 +509,29 @@ void SPASynthProcessor::installTable (int slot, std::shared_ptr<const dsp::Wavet
 
 void SPASynthProcessor::loadWavetableFromFile (int slot, const juce::File& file)
 {
-    // Same loading-state bookkeeping as loadSampleFromFile.
-    slotTables[(size_t) slot].pendingLoads.fetch_add (1);
+    // Same loading-state + latest-wins bookkeeping as loadSampleFromFile
+    // (requestSerial rationale: see that function).
+    auto& st = slotTables[(size_t) slot];
+    const int serial = ++st.requestSerial;
+    st.pendingLoads.fetch_add (1);
     sendChangeMessage();
 
-    juce::Thread::launch ([this, slot, file]
+    // Weak-ref treatment mirrors loadSampleFromFile — see the comment there.
+    juce::WeakReference<SPASynthProcessor> weak (this);
+    juce::Thread::launch ([weak, slot, file, serial]
     {
         auto result = dsp::loadWavetableFromFile (file);
 
-        juce::MessageManager::callAsync ([this, slot, loaded = std::move (result),
+        juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
                                           path = file.getFullPathName()]() mutable
         {
-            slotTables[(size_t) slot].pendingLoads.fetch_sub (1);
-            installTable (slot, std::move (loaded.table), path, loaded.error);
+            if (weak == nullptr)
+                return;   // processor was destroyed while this load was in flight
+            auto& t = weak->slotTables[(size_t) slot];
+            t.pendingLoads.fetch_sub (1);
+            if (serial != t.requestSerial)
+                return;   // superseded by a newer request — drop this stale result
+            weak->installTable (slot, std::move (loaded.table), path, loaded.error);
         });
     });
 }
@@ -564,6 +585,7 @@ void SPASynthProcessor::prepareEngine (double engineRate, int engineBlock)
     currentSampleRate = engineRate;
     synth.setCurrentPlaybackSampleRate (engineRate);
     arp.prepare (engineRate);
+    scaledMidi.ensureSize (8192);   // no audio-thread allocation; see Arpeggiator::scratch
     fxChain.prepare (engineRate, engineBlock);
 
     paraEnv.setSampleRate (engineRate);
@@ -988,7 +1010,7 @@ void SPASynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     const int engN = hostN * factor;
 
     // Scale MIDI into the (possibly oversampled) engine sample domain.
-    juce::MidiBuffer scaledMidi;
+    scaledMidi.clear();
     if (factor > 1)
         for (const auto md : midi)
             scaledMidi.addEvent (md.getMessage(), md.samplePosition * factor);
@@ -1156,8 +1178,13 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
     const auto convIR = apvts.state.getProperty ("convIR").toString();
     convIrPath = convIR.isEmpty() ? juce::String()
                                   : library::fromPortable (convIR, libraryRoot).getFullPathName();
-    juce::MessageManager::callAsync ([this, f = juce::File (convIrPath)]
-                                     { fxChain.loadConvolutionIR (f); });
+    // Weak-ref treatment mirrors loadSampleFromFile — see the comment there.
+    juce::MessageManager::callAsync ([weak = juce::WeakReference<SPASynthProcessor> (this),
+                                      f = juce::File (convIrPath)]
+    {
+        if (weak != nullptr)
+            weak->fxChain.loadConvolutionIR (f);
+    });
 
     for (int s = 0; s < params::numOscSlots; ++s)
     {
@@ -1168,15 +1195,23 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
                            ? samples.getProperty (slotPathProperty (s)).toString()
                            : juce::String();
 
-        juce::MessageManager::callAsync ([this, s, wtPath, smpPath, libraryRoot]
+        // Weak-ref treatment mirrors loadSampleFromFile — see the comment there.
+        // (setStateInformation can hand the host a destroyed processor before
+        // this deferred callAsync runs, e.g. during a fast preset/plugin
+        // teardown sequence.)
+        juce::MessageManager::callAsync ([weak = juce::WeakReference<SPASynthProcessor> (this),
+                                          s, wtPath, smpPath, libraryRoot]
         {
+            if (weak == nullptr)
+                return;
+
             if (wtPath.isEmpty())
-                setFactoryWavetable (s);
+                weak->setFactoryWavetable (s);
             else
-                loadWavetableFromFile (s, library::fromPortable (wtPath, libraryRoot));
+                weak->loadWavetableFromFile (s, library::fromPortable (wtPath, libraryRoot));
 
             if (smpPath.isNotEmpty())
-                loadSampleFromFile (s, library::fromPortable (smpPath, libraryRoot));
+                weak->loadSampleFromFile (s, library::fromPortable (smpPath, libraryRoot));
         });
     }
 }

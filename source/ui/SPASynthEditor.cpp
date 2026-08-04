@@ -476,11 +476,16 @@ private:
         std::sort (packs.begin(), packs.end(), [] (const juce::File& a, const juce::File& b)
                    { return a.getFileName().compareIgnoreCase (b.getFileName()) < 0; });
 
+        juce::Component::SafePointer<ConvolvePanel> safe (this);
         juce::PopupMenu menu;
         for (const auto& folder : packs)
         {
             const auto f = folder;
-            menu.addItem (folder.getFileName(), [this, f] { chooseLibrarySample (f); });
+            menu.addItem (folder.getFileName(), [safe, f]
+            {
+                if (safe != nullptr)
+                    safe->chooseLibrarySample (f);
+            });
         }
         if (menu.getNumItems() == 0)
             menu.addItem ("(no library found)", false, false, nullptr);
@@ -493,12 +498,20 @@ private:
         std::sort (wavs.begin(), wavs.end(), [] (const juce::File& a, const juce::File& b)
                    { return a.getFileName().compareIgnoreCase (b.getFileName()) < 0; });
 
+        juce::Component::SafePointer<ConvolvePanel> safe (this);
         juce::PopupMenu menu;
         for (const auto& wav : wavs)
         {
             const auto f = wav;
             menu.addItem (wav.getFileNameWithoutExtension(),
-                          [this, f] { processor.loadConvolutionIR (f); updateLabel(); });
+                          [safe, f]
+            {
+                if (safe != nullptr)
+                {
+                    safe->processor.loadConvolutionIR (f);
+                    safe->updateLabel();
+                }
+            });
         }
         if (menu.getNumItems() == 0)
             menu.addItem ("(no samples in this pack)", false, false, nullptr);
@@ -858,10 +871,13 @@ void ContentComponent::mouseDown (const juce::MouseEvent& e)
     if (assignedCC >= 0)
         menu.addItem (2, "Remove assignment (CC " + juce::String (assignedCC) + ")");
 
+    juce::Component::SafePointer<ContentComponent> safe (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withMousePosition(),
-                        [this, paramID] (int result)
+                        [safe, paramID] (int result)
     {
-        auto& midiLearn = processor.getMidiLearn();
+        if (safe == nullptr)
+            return;
+        auto& midiLearn = safe->processor.getMidiLearn();
         if (result == 1)
             midiLearn.armLearn (paramID);
         else if (result == 2)
@@ -1114,14 +1130,15 @@ void ContentComponent::showAccentPicker()
 
 void ContentComponent::showSettingsMenu()
 {
+    juce::Component::SafePointer<ContentComponent> safe (this);
     juce::PopupMenu m;
     m.addSectionHeader ("SPASynth v" SPASYNTH_VERSION);
-    m.addItem ("Set Library Folder...", [this] { chooseLibraryFolder(); });
-    m.addItem ("Rescan Library", [this] { rescanLibrary(); });
+    m.addItem ("Set Library Folder...", [safe] { if (safe != nullptr) safe->chooseLibraryFolder(); });
+    m.addItem ("Rescan Library", [safe] { if (safe != nullptr) safe->rescanLibrary(); });
     m.addSeparator();
-    m.addItem ("Accent Colors...", [this] { showAccentPicker(); });
+    m.addItem ("Accent Colors...", [safe] { if (safe != nullptr) safe->showAccentPicker(); });
     m.addItem ("Show Keyboard", true, keyboardVisible,
-               [this] { setKeyboardVisible (! keyboardVisible); });
+               [safe] { if (safe != nullptr) safe->setKeyboardVisible (! safe->keyboardVisible); });
     m.addSeparator();
 
     // Whole-synth oversampling (Off / 2x / 4x / 8x). Off by default; higher
@@ -1140,8 +1157,8 @@ void ContentComponent::showSettingsMenu()
     }
 
     m.addSeparator();
-    m.addItem ("Reset to Default", [this] { processor.getPresetManager().resetToDefault(); });
-    m.addItem ("Clear All MIDI Learn", [this] { processor.getMidiLearn().clearAll(); });
+    m.addItem ("Reset to Default", [safe] { if (safe != nullptr) safe->processor.getPresetManager().resetToDefault(); });
+    m.addItem ("Clear All MIDI Learn", [safe] { if (safe != nullptr) safe->processor.getMidiLearn().clearAll(); });
 
     m.showMenuAsync (juce::PopupMenu::Options()
                          .withTargetComponent (&settingsButton)
@@ -1201,10 +1218,10 @@ void ContentComponent::rescanLibrary()
         "The library folder could not be found. It may be on a drive that's "
         "no longer connected.\n\nChoose a new library folder now?",
         this,
-        juce::ModalCallbackFunction::create ([this] (int result)
+        juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<ContentComponent> (this)] (int result)
         {
-            if (result != 0)
-                chooseLibraryFolder();
+            if (result != 0 && safe != nullptr)
+                safe->chooseLibraryFolder();
         }));
 }
 

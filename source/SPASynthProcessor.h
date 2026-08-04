@@ -188,6 +188,11 @@ private:
     int osLatencyHost = 0;
     std::atomic<int> pendingOsFactor { 1 };
 
+    // MIDI scaled into the (possibly oversampled) engine sample domain; a
+    // persistent member (preallocated in prepareEngine, like Arpeggiator::scratch)
+    // so processBlock never heap-allocates via a fresh local MidiBuffer.
+    juce::MidiBuffer scaledMidi;
+
     void prepareEngine (double engineRate, int engineBlock);   // rate-dependent setup
     void rebuildOversampling (int factor);                     // message thread only
     void renderEngine (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi);
@@ -209,6 +214,7 @@ private:
         juce::String path;                                    // "" = factory
         juce::String error;
         std::atomic<int> pendingLoads { 0 };                  // in-flight background loads
+        int requestSerial = 0;   // latest-swap-wins, same rationale as SlotSample::requestSerial
     };
     std::shared_ptr<const dsp::Wavetable> factoryTable;
     std::array<SlotTable, params::maxOscSlots> slotTables;
