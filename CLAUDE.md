@@ -10,7 +10,122 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-08-04): v1.0.5 — audit-hardening build, signed + staged, NOT distributed; 1.0.4 is with testers
+
+**v1.0.4 (`6087fef`, 2026-08-03) went out to the partner testers** — Paul and
+Phil were sent an install link on 2026-08-03. Six tester-feedback fixes, one
+commit each:
+
+1. Library rescan feedback when the root vanishes (`361c474`).
+2. Convolve IR chooser greyed-out-WAVs fix + remember-last-folder for both
+   file choosers (`a7137ef`).
+3. Filter 1 on/off toggle, new `filter1.enable` param defaulting on
+   (`b14ff4c`).
+4. Reverb Decay range 12s → 8s + Hall multiplier 1.4 → 1.2 (`2ba3713`).
+5. Sample/wavetable loader retry on drive-remount (`cdd730a`).
+6. Reset to Default settings-menu item via `PresetManager::resetToDefault`
+   (`15d9962`).
+
+**Then a full six-agent pre-release audit** (RT-safety, concurrency/lifecycle,
+memory-safety, security/packaging, performance, release hygiene) reviewed the
+codebase for commercial readiness. Every crash/hang/UAF-class finding was
+fixed — that hardening work is **v1.0.5**. Security came back clean: zero
+network code (verified "no phone-home"), no committed secrets, clean
+installers/CI.
+
+**v1.0.5 (`02bba26`, 2026-08-04, `HEAD`, pushed).** Four commits:
+- `b662bbf` — malformed-preset null-deref fix in
+  `PresetManager::loadPresetFile`; WAV loader clamps (channel count in
+  `WavetableLoader`, int64 length in `SampleLoader`).
+- `68dd764` — arp non-finite-ppq guard + zero-sample-block guard in
+  `Arpeggiator.cpp`; `convIrLoaded`/`irLengthSeconds` made relaxed atomics;
+  `FXChain::tailSeconds` now includes the Convolve IR length + pre-delay.
+- `0aefecb` — `WeakReference` guards on all five raw-`this` async sites in
+  `SPASynthProcessor` (`loadSampleFromFile`, `loadWavetableFromFile`,
+  `restoreStateTree` per-slot loads, conv-IR load); `SafePointer` guards on
+  popup menus + the library-missing alert in `SPASynthEditor`; `SlotTable`
+  requestSerial latest-wins for wavetables; `scaledMidi` now a persistent
+  pre-sized member so `processBlock` never allocates.
+- `02bba26` — six regression tests (`malformedPresetTest`,
+  `convolveTailLengthTest`, `arpZeroSampleBlockTest`, `arpNonFinitePpqTest`,
+  `filter1EnableTest`, `presetResetToDefaultTest`); suite now **176
+  assertions ALL PASS**; dead `PresetManager` apvts member removed
+  (constructor is now 3-arg); version bump; changelog.
+
+Both 1.0.5 installers verified: macOS pkg signed + notarized + stapled,
+`spctl` accepted, `minos 11.0`, md5 `6d98568a7f9d18865c4b588c43a3c3ca`
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.5/`; Windows exe from CI run
+`30914554294`, md5 `4b1a1f5d4c55fd3d3e6f97789caa353a`, same three locations.
+The 1.0.4/1.0.5 shopify folders have **empty `Library/` subdirs by design**
+(installer-iteration folders; library zips get cloned in from the
+1.0.3/1.0.2 folders at actual store-upload time). **NOT yet distributed** —
+1.0.4 is with testers, 1.0.5 has not gone to anyone yet.
+
+**Versioning rule (Mike's call this session):** bump the version as soon as a
+build has been SENT to anyone (testers count) — 1.0.4 went out, so the audit
+work became 1.0.5 rather than more 1.0.4 commits.
+
+**Deferred post-launch (found by the audit, deliberately not fixed now —
+pick these up in a future session):**
+- `juce::dsp::Convolution` should use `NonUniform{256}` partitioning for long
+  IRs (currently default uniform — CPU-inefficient for the up-to-10s IRs,
+  worse under oversampling).
+- Decide/document that the whole FX chain runs at the oversampled rate
+  (compounding CPU at 8x).
+- FDN reverb does 4 `std::sin()` per sample for tail mod (a recurrence
+  oscillator would fix it).
+- `EqEditor` computes its FFT every 30Hz tick even when its tab is hidden
+  (gate on `isShowing()`).
+- No `processBlockBypassed` override (hosts that soft-bypass hard-cut tails).
+- `maxModDests=96` capacity check is a debug-only `jassert` (needs an
+  always-on guard).
+- CI workflow could add `permissions: contents: read` and SHA-pinned actions.
+- `$LIB$` `fromPortable` permits `../` traversal (no new trust boundary,
+  defense-in-depth only).
+- `PluckString` preallocates ~1MB/instance whether used or not.
+- Business (not code): CLAUDE.md/handoff.md themselves expose the "Kenzora
+  Games" legal-entity name + Team ID during the public-CI flips — Mike's call
+  whether to move ops runbook content out of the repo.
+
+**New gotchas from this session:**
+- The `SPASYNTH_NOTARY` keychain profile vanished a **second** time
+  (2026-08-04). Same recovery as before: Mike recreates it interactively,
+  then `xcrun notarytool submit <pkg> --keychain-profile SPASYNTH_NOTARY
+  --wait` + `xcrun stapler staple <pkg>` — the signed pkg needs no rebuild.
+  The build script dying at notarize also skips the shopify-folder staging
+  step; stage manually per the script's section 4 (`mkdir folder/Library`,
+  `cp` the pkg + the 3 packaging/docs txt files).
+- `build/` was reconfigured without `CMAKE_BUILD_TYPE`, so the tests binary
+  now lives at `build/SPASynthTests_artefacts/SPASynthTests` (**no `Debug/`
+  subdir**). A stale `Debug/` binary silently ran old tests until caught and
+  deleted on 2026-08-04 — see the updated verification-ritual path below.
+- After any dev AU/VST3 build, clear
+  `~/Library/Audio/Plug-Ins/{Components/SPASynth.component,VST3/SPASynth.vst3}`
+  before Mike smoke-tests an installed release (dev copies shadow /Library in
+  Logic — bit us on 1.0.4).
+- Mike's PAT lacks admin: he flips repo visibility himself around Windows CI
+  runs (public for the push+build, back to private after). **Repo is PRIVATE
+  as of 2026-08-04.**
+- Upgrade-install note sent to testers: if a replaced plugin doesn't show up,
+  rescan (Logic: Plug-in Manager -> Reset & Rescan Selection) + restart the
+  DAW.
+
+**Remaining for launch (Mike's manual steps):**
+1. ~~Re-private the GitHub repo~~ — **done**, repo is private as of 2026-08-04.
+2. **Install + smoke-test the 1.0.5 macOS pkg** (`sudo installer -pkg … -target
+   /`; the agent can't sudo).
+3. **Windows real-DAW smoke test** — still the one untested surface.
+4. **Decide when to send 1.0.5 to Paul/Phil** (or straight to launch — their
+   round already covered the tester-facing surfaces; 1.0.5 is audit hardening,
+   not new features).
+5. **Shopify build-out** per `docs/shopify-setup-guide.md` — clone the library
+   zips in from the 1.0.3/1.0.2 folders when actually uploading.
+6. Marketing site / announcement when ready.
+
 ## Current state (2026-08-03): v1.0.3 — merged to `main`, built + signed, in smoke testing
+
+**Superseded by the 2026-08-04 (v1.0.5) section above** — kept for history.
 
 v1.0.3 is **merged to `main`** (CMake version 1.0.3; the release merge is
 `2559c2f`). All 11 planned features plus the post-merge smoke-test refinements
@@ -109,16 +224,8 @@ into the two shopify folders; verify one-hash byte-identity + `minos 11.0` +
 `spctl` accepted. (Mike's PAT expired mid-session once — `gh auth login` fixes
 it; the PAT needs `repo` + `workflow` scopes, Actions:read is enough.)
 
-**Remaining for launch (Mike's manual steps):**
-1. **Re-private the GitHub repo** — it was made public for the Windows CI builds.
-2. **Install + smoke-test the macOS pkg** (`sudo installer -pkg … -target /`; the
-   agent can't sudo). Exercise the new surfaces: EQ node editor, FX reorder +
-   RANDOMIZE reshuffle, voice modes, oversampling, the limiter meter + auto-gain,
-   the Convolve waveform/shaping + library browser.
-3. **Windows real-DAW smoke test** — the one untested surface.
-4. **Shopify build-out** per `docs/shopify-setup-guide.md`; the 1.0.3 folders are
-   ready to attach.
-5. Marketing site / announcement when ready.
+**Remaining for launch (Mike's manual steps) — see the 2026-08-04 section above
+for the current list; this one is historical.**
 
 ## Current state (2026-07-20): v1.0.2 — first build to the testing team
 
@@ -399,9 +506,11 @@ uses no em dashes; sound count is 11,474.
 ## The verification ritual (do this for every change)
 
 1. `cmake --build build --target SPASynthTests` then run
-   `build/SPASynthTests_artefacts/Debug/SPASynthTests` → expect `ALL PASS`
-   (140+ assertions). Fix every new compiler warning — one caught a real
-   Filter-2 lock bug.
+   `build/SPASynthTests_artefacts/SPASynthTests` → expect `ALL PASS` (176+
+   assertions). Note: this dir has no `Debug/` subdir since `build/` was
+   reconfigured without `CMAKE_BUILD_TYPE` (2026-08-04) — if you see a
+   `Debug/` copy, it's stale, delete it. Fix every new compiler warning — one
+   caught a real Filter-2 lock bug.
 2. UI changes: render snapshots and **actually look at them**:
    `SPASynthTests --snapshot <dir>` writes `spasynth-dark.png` (preset
    browser open, FILTER 2 + DELAY fronted) and `spasynth-accent.png`

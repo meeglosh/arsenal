@@ -7,8 +7,13 @@ the copy to paste lives in `docs/shopify-listings.md`. House style: no em dashes
 ## Before you start
 
 1. Shopify admin login (`yourstore.myshopify.com/admin`).
-2. The files: `dist/shopify/SPASynth-Standard-1.0.2/` and
-   `dist/shopify/SPASynth-Pro-1.0.2/` (open in Finder).
+2. The files: `dist/shopify/SPASynth-Standard-<version>/` and
+   `dist/shopify/SPASynth-Pro-<version>/` (open in Finder). Use the current
+   version folder (1.0.5 at time of writing, but always use whatever's
+   newest). Note: the newest folders are often installer-iteration builds
+   with an empty `Library/` subfolder inside them by design; if the library
+   zip is missing, clone it in from the most recent folder that has one
+   (1.0.3/1.0.2 as of this writing) before uploading.
 3. The copy: `docs/shopify-listings.md` (titles, descriptions, SEO, blurbs).
 4. Prices:
 
@@ -46,10 +51,13 @@ Price = paid today; Compare-at = the higher struck-through number.
 ## Part 3: Attach the files (Standard)
 
 1. Apps -> Digital Products -> select SPASynth Standard.
-2. Upload these six files from `SPASynth-Standard-1.0.2/`, one at a time:
-   - `SPASynth-1.0.2-macOS.pkg`
-   - `SPASynth-1.0.2-Windows.exe`
-   - `SPASynth Starter Library.zip` (~3 GB, in the `Library` subfolder)
+2. Upload these six files from the current `SPASynth-Standard-<version>/`
+   folder (1.0.5 at time of writing), one at a time:
+   - `SPASynth-<version>-macOS.pkg`
+   - `SPASynth-<version>-Windows.exe`
+   - `SPASynth Starter Library.zip` (~3 GB, in the `Library` subfolder; if
+     that folder is empty, clone the zip in from the most recent folder that
+     has one before uploading)
    - `README.txt`, `QUICKSTART.txt`, `EULA.txt`
    Never wrap them in one giant zip; attach individually.
 
@@ -66,19 +74,22 @@ HTML page is uploaded as a file asset instead.)
 Repeat Parts 2 and 3 with:
 - Title `SPASynth Pro`; description = "2 · SPASynth Pro" section.
 - Price `499`, Compare-at `899`; URL handle `spasynth-pro`.
-- Files from `SPASynth-Pro-1.0.2/` (all small, upload directly): pkg, exe, the 3
-  docs, and `SPASynth Pro Library - Downloads.html`.
-- Do NOT upload the 11 zips in the `Library/` subfolder. The library is already
-  on R2 at downloads.spasynth.com; the links file gives buyers the download URLs.
+- Files from the current `SPASynth-Pro-<version>/` folder (1.0.5 at time of
+  writing; all small, upload directly): pkg, exe, the 3 docs, and
+  `SPASynth Pro Library - Downloads.html`.
+- Do NOT upload the 11 zips in the `Library/` subfolder (the current version
+  folder likely has an empty `Library/` anyway, since library zips only live
+  in the older 1.0.3/1.0.2 folders). The library is already on R2 at
+  downloads.spasynth.com; the links file gives buyers the download URLs.
 
 ## Part 5: Create the Standard to Pro Upgrade
 
 Repeat Parts 2 and 3 with:
 - Title `SPASynth Standard to Pro Upgrade`; description = "3 · ... Upgrade".
 - Price `400`, Compare-at `750`; URL handle `spasynth-standard-to-pro-upgrade`.
-- Files from `SPASynth-Upgrade-1.0.2/`: `SPASynth Pro Library - Downloads.html`
-  + `QUICKSTART.txt` + `EULA.txt`. No pkg/exe (upgraders already own the synth);
-  no library upload (it is on R2).
+- Files from the current `SPASynth-Upgrade-<version>/` folder:
+  `SPASynth Pro Library - Downloads.html` + `QUICKSTART.txt` + `EULA.txt`. No
+  pkg/exe (upgraders already own the synth); no library upload (it is on R2).
 - Honor system: Shopify cannot verify prior Standard ownership; fits the
   no-DRM stance.
 
