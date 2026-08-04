@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <juce_dsp/juce_dsp.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "ModEffect.h"
@@ -168,12 +169,12 @@ public:
     // on a background thread. All of these run on the message thread.
     void loadConvolutionIR (const juce::File& irFile);
     void setConvolutionShaping (float decay, float damping);   // reshapes if changed
-    bool hasConvolutionIR() const { return convIrLoaded; }
+    bool hasConvolutionIR() const { return convIrLoaded.load (std::memory_order_relaxed); }
 
     // Downsampled magnitude envelope of the shaped IR for the UI waveform.
     static constexpr int convEnvPoints = 256;
     const std::array<float, convEnvPoints>& convolutionEnvelope() const { return irEnvelope; }
-    double convolutionLengthSeconds() const { return irLengthSeconds; }
+    double convolutionLengthSeconds() const { return irLengthSeconds.load (std::memory_order_relaxed); }
 
 private:
     void processDistortion (juce::AudioBuffer<float>&, const Params&);
@@ -192,7 +193,10 @@ private:
     Limiter limiterEffect;
     juce::dsp::Convolution convolution;
     juce::AudioBuffer<float> convScratch;
-    bool convIrLoaded = false;
+    // Written on the message thread (load/reshape), read on the audio thread
+    // (process()) and from hasConvolutionIR() — same relaxed-atomic pattern as
+    // the rest of the codebase's cross-thread flags.
+    std::atomic<bool> convIrLoaded { false };
 
     // Raw (unshaped) IR kept so decay/damping can reshape without re-reading the
     // file; the reshaped copy is what gets loaded into the convolution engine.
@@ -202,7 +206,9 @@ private:
     double rawIRSampleRate = 0.0;
     bool haveRawIR = false;
     float convDecayApplied = 1.0f, convDampingApplied = 0.0f;
-    double irLengthSeconds = 0.0;
+    // Written on the message thread (reshapeConvolutionIR), read from
+    // tailSeconds() on the audio thread (getTailLengthSeconds).
+    std::atomic<double> irLengthSeconds { 0.0 };
     std::array<float, convEnvPoints> irEnvelope {};
 
     // Wet pre-delay ring (per channel), up to 200 ms.

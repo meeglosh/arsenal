@@ -72,6 +72,12 @@ double FXChain::tailSeconds (const Params& p) const
     if (p.reverbEnable)
         tail = juce::jmax (tail, 0.5 + (double) p.reverbDecay);
 
+    if (p.convEnable)
+        // Pre-delay gap + the (reshaped) IR's own length; hosts truncate the
+        // tail on bounce/freeze otherwise, clipping the reverb-style ring-out.
+        tail = juce::jmax (tail, (double) p.convPreDelay * 0.001
+                                + irLengthSeconds.load (std::memory_order_relaxed));
+
     return tail;
 }
 
@@ -90,7 +96,7 @@ void FXChain::process (juce::AudioBuffer<float>& buffer, const Params& params)
             case Module::tremVib:    if (params.tremEnable || params.vibEnable)
                                                             { processTremVib (buffer, params); } break;
             case Module::limiter:    if (params.limEnable)    processLimiter (buffer, params); break;
-            case Module::convolve:   if (params.convEnable && convIrLoaded)
+            case Module::convolve:   if (params.convEnable && convIrLoaded.load (std::memory_order_relaxed))
                                                             { processConvolve (buffer, params); } break;
         }
     }
@@ -313,7 +319,7 @@ void FXChain::processConvolve (juce::AudioBuffer<float>& buffer, const Params& p
 void FXChain::loadConvolutionIR (const juce::File& irFile)
 {
     haveRawIR = false;
-    convIrLoaded = false;
+    convIrLoaded.store (false, std::memory_order_relaxed);
     if (! irFile.existsAsFile()) return;
     if (convFormats.getNumKnownFormats() == 0) convFormats.registerBasicFormats();
 
@@ -343,12 +349,16 @@ void FXChain::setConvolutionShaping (float decay, float damping)
 // it; also refreshes the display envelope. Message thread only.
 void FXChain::reshapeConvolutionIR()
 {
-    if (! haveRawIR || rawIR.getNumSamples() == 0) { convIrLoaded = false; return; }
+    if (! haveRawIR || rawIR.getNumSamples() == 0)
+    {
+        convIrLoaded.store (false, std::memory_order_relaxed);
+        return;
+    }
 
     const int n = rawIR.getNumSamples();
     const int ch = rawIR.getNumChannels();
     const double sr = rawIRSampleRate > 0.0 ? rawIRSampleRate : sampleRate;
-    irLengthSeconds = (double) n / sr;
+    irLengthSeconds.store ((double) n / sr, std::memory_order_relaxed);
 
     const float decay = juce::jlimit (0.05f, 1.0f, convDecayApplied);
     const float damp  = juce::jlimit (0.0f, 1.0f, convDampingApplied);
@@ -386,7 +396,7 @@ void FXChain::reshapeConvolutionIR()
                                      juce::dsp::Convolution::Stereo::yes,
                                      juce::dsp::Convolution::Trim::no,
                                      juce::dsp::Convolution::Normalise::yes);
-    convIrLoaded = true;
+    convIrLoaded.store (true, std::memory_order_relaxed);
 }
 
 void FXChain::processEQ (juce::AudioBuffer<float>& buffer, const Params& p)

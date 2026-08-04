@@ -1,4 +1,5 @@
 #include "Arpeggiator.h"
+#include <cmath>
 
 namespace spa::dsp
 {
@@ -338,13 +339,26 @@ void Arpeggiator::process (juce::MidiBuffer& midi, int numSamples, const Params&
             latchedChordDown = false;
     }
 
+    if (numSamples <= 0)
+    {
+        // Zero-sample flush block (some hosts send these): nothing to schedule,
+        // and jlimit (0, numSamples - 1, ...) below would be an invalid range
+        // (min > max). Held-note/latch state above is already up to date.
+        midi.swapWith (out);
+        return;
+    }
+
     // --- Beat clock ----------------------------------------------------------
     const auto beatsPerStep = (double) params::lfoDivisionBeats (p.division);
     const auto samplesPerBeat = currentSampleRate * 60.0 / juce::jmax (1.0, p.bpm);
     const auto blockBeats = (double) numSamples / samplesPerBeat;
 
     double blockStartBeat;
-    if (p.hostPlaying)
+    // A host can transiently report a non-finite ppq (tempo-map edits, corrupt
+    // sessions); NaN beats would make the step-scan loop's exit condition below
+    // never true, hanging the audio thread. Fall back to the free-running
+    // internal beat clock in that case, same as when hostPlaying is false.
+    if (p.hostPlaying && std::isfinite (p.ppqAtBlockStart))
     {
         // Follow the host; resync on jumps (loop points, relocations).
         if (std::abs (p.ppqAtBlockStart - lastHostPpq) > blockBeats * 4.0 + 0.25)
