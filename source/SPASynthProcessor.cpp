@@ -466,6 +466,47 @@ void SPASynthProcessor::randomizeAll()
                     param->convertTo0to1 (150.0f + rng.nextFloat() * 850.0f));
     }
 
+    // Individual oscillator-level rolls are each bounded, but combinations
+    // stack: several slots landing loud together (plus drive/distortion
+    // downstream) can produce a headphone-dangerous spike even though no
+    // single roll looks unreasonable. Sum the enabled slots' linear gain and,
+    // if it clears a budget of one full-scale slot plus headroom, pull every
+    // enabled slot's level back by the same dB amount so the rolled balance
+    // between slots is preserved, just quieter overall. Gated on the oscillator
+    // lock group like the loop/mode guard above, so a locked-oscillators roll
+    // doesn't get "fixed" out from under the user's own settings.
+    if (oscsUnlocked)
+    {
+        namespace osc = params::id::osc;
+        constexpr float gainBudget = 1.25f; // ~one full-scale slot + headroom
+
+        float gainSum = 0.0f;
+        for (int s = 0; s < params::numOscSlots; ++s)
+        {
+            if (realValue (params::id::oscSlot (s, osc::enable)) < 0.5f)
+                continue;
+            const auto levelDb = realValue (params::id::oscSlot (s, osc::level));
+            gainSum += juce::Decibels::decibelsToGain (levelDb, -60.0f);
+        }
+
+        if (gainSum > gainBudget)
+        {
+            const float trimDb = 20.0f * std::log10 (gainBudget / gainSum);
+            for (int s = 0; s < params::numOscSlots; ++s)
+            {
+                if (realValue (params::id::oscSlot (s, osc::enable)) < 0.5f)
+                    continue;
+                const auto levelId = params::id::oscSlot (s, osc::level);
+                if (auto* param = apvts.getParameter (levelId))
+                {
+                    const auto trimmed = juce::jlimit (-60.0f, 0.0f,
+                                                        realValue (levelId) + trimDb);
+                    param->setValueNotifyingHost (param->convertTo0to1 (trimmed));
+                }
+            }
+        }
+    }
+
     // FX chain order joins RANDOMIZE ALL (respecting the FX lock), but the
     // limiter keeps its current slot so it stays where the user put it (last by
     // default) rather than being shuffled into the middle of the chain.
@@ -485,6 +526,27 @@ void SPASynthProcessor::randomizeAll()
         for (int pos = 0; pos < order.size(); ++pos)
             shuffled.add (pos == limiterPos ? limiterId : others[oi++]);
         setFxOrder (shuffled);
+
+        // The limiter doubles as the post-randomize safety ceiling: force it
+        // on at transparent defaults (not a randomized creative setting) so a
+        // painful combination still gets caught. Users can switch it back off.
+        namespace fx = params::id::fx;
+        const auto resetToDefault = [this] (const juce::String& id)
+        {
+            if (auto* param = apvts.getParameter (id))
+                param->setValueNotifyingHost (param->getDefaultValue());
+        };
+        if (auto* enableParam = apvts.getParameter (fx::limEnable))
+            enableParam->setValueNotifyingHost (1.0f);
+        resetToDefault (fx::limDrive);
+        resetToDefault (fx::limCeiling);
+        resetToDefault (fx::limRelease);
+        resetToDefault (fx::limAutoRelease);
+        resetToDefault (fx::limCharacter);
+        resetToDefault (fx::limStereoLink);
+        resetToDefault (fx::limTruePeak);
+        resetToDefault (fx::limLookahead);
+        resetToDefault (fx::limAutoGain);
     }
 
     sendChangeMessage();

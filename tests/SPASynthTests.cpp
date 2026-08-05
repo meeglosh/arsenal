@@ -1384,6 +1384,53 @@ namespace
                                   + juce::String (audible) + "/" + juce::String (rolls) + ")");
     }
 
+    // RANDOMIZE ALL's headphone-safety guards (gain-budget trim + limiter
+    // forced on) are invariants over any roll, so this iterates many rolls
+    // rather than checking a single one - RNG-robust.
+    static void randomizeLoudnessGuardTest()
+    {
+        std::cout << "randomizeLoudnessGuardTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        auto& apvts = proc.getAPVTS();
+
+        float worstSum = 0.0f;
+        bool limiterAlwaysOn = true;
+        constexpr int rolls = 30;
+        for (int roll = 0; roll < rolls; ++roll)
+        {
+            proc.randomizeAll();
+
+            float gainSum = 0.0f;
+            for (int s = 0; s < params::numOscSlots; ++s)
+            {
+                auto* enableParam = apvts.getParameter (id::oscSlot (s, id::osc::enable));
+                if (enableParam->getValue() < 0.5f)
+                    continue;
+                auto* levelParam = apvts.getParameter (id::oscSlot (s, id::osc::level));
+                const auto levelDb = levelParam->convertFrom0to1 (levelParam->getValue());
+                gainSum += juce::Decibels::decibelsToGain (levelDb, -60.0f);
+            }
+            worstSum = std::max (worstSum, gainSum);
+
+            const auto limiterOn = *apvts.getRawParameterValue (id::fx::limEnable) >= 0.5f;
+            limiterAlwaysOn = limiterAlwaysOn && limiterOn;
+        }
+
+        expect (worstSum <= 1.25f + 1.0e-3f,
+                "gain-budget guard holds over " + juce::String (rolls)
+                    + " rolls (worst sum " + juce::String (worstSum, 4) + ")");
+        expect (limiterAlwaysOn,
+                "limiter is always on after a re-roll (safety ceiling)");
+    }
+
     // Builds a throwaway library: two packs with tiny WAVs.
     static juce::File makeFakeLibrary()
     {
@@ -2835,6 +2882,7 @@ int main (int argc, char* argv[])
     fxEQDistortionTest();
     randomizerTest();
     randomizerProducesSoundTest();
+    randomizeLoudnessGuardTest();
     editorHitTestProbe();
     midiLearnTest();
     arpeggiatorTest();
