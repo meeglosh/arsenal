@@ -793,6 +793,50 @@ namespace
                 "reverb mix 0 is unity dry, not boosted (" + juce::String (dry0) + ")");
         expect (dry1 < 0.1f,
                 "reverb mix 1 removes the dry, full wet (" + juce::String (dry1) + ")");
+
+        // Regression guard for the FDN wet-gain fix: at registry-default reverb
+        // settings (size 0.5, decay 2.0, damping 0.5, mode Hall -- FX::Params'
+        // defaults already mirror ParameterRegistry) and mix=1 (raw wet path
+        // only), a short 0.5-amplitude noise burst must not blow the wet path
+        // up past roughly the input scale. Fixed code measures ~1.8 here (old
+        // unnormalized injection/tap measured ~6x); bound gives ~2x headroom
+        // while staying well under the old hot behaviour.
+        {
+            FX fx;
+            fx.prepare (sr, n);
+            FX::Params mp;
+            mp.reverbEnable = true;
+            mp.reverbMix = 1.0f;
+
+            uint32_t rng = 99999u;
+            auto noise = [&rng]
+            {
+                rng = rng * 1664525u + 1013904223u;
+                return ((float) (rng >> 9) / (float) (1u << 23)) * 2.0f - 1.0f;
+            };
+
+            float peak = 0.0f;
+            const int blocks = (int) (1.0 * sr / n);
+            const int exciteBlocks = (int) (0.2 * sr / n);
+            juce::AudioBuffer<float> buf (2, n);
+            for (int b = 0; b < blocks; ++b)
+            {
+                buf.clear();
+                if (b < exciteBlocks)
+                    for (int s = 0; s < n; ++s)
+                    {
+                        buf.setSample (0, s, noise() * 0.5f);
+                        buf.setSample (1, s, noise() * 0.5f);
+                    }
+                fx.process (buf, mp);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < n; ++s)
+                        peak = juce::jmax (peak, std::abs (buf.getSample (ch, s)));
+            }
+            expect (peak < 4.0f,
+                    "default-settings full-wet burst stays near input scale (peak "
+                    + juce::String (peak) + ")");
+        }
     }
 
     // The FDN reverb must stay finite and bounded across every mode even at
@@ -851,7 +895,10 @@ namespace
                     }
             }
             expect (finite, "reverb mode " + juce::String (mode) + " stays finite");
-            expect (peak < 8.0f,
+            // 0.5-amplitude noise excitation, mix=1 (raw wet path only). Bounds
+            // the FDN's structural gain (1/sqrt(N) injection + tap normalization) --
+            // a regression here means the wet path is hot again, not just unstable.
+            expect (peak < 3.0f,
                     "reverb mode " + juce::String (mode) + " stays bounded (peak "
                     + juce::String (peak) + ")");
         }

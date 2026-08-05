@@ -204,7 +204,7 @@ int PresetManager::generateFactoryPresets (const std::vector<Pack>& packs,
             writeSamplePath (state, 0, toPortable (smallest, libraryRoot));
             writeParam (state, id::ampRelease, 0.35f);
             writeParam (state, id::fx::reverbEnable, 1.0f);
-            writeParam (state, id::fx::reverbMix, 0.25f);
+            writeParam (state, id::fx::reverbMix, 0.4f);
 
             const auto name = pack.name + " Keys";
             written += writePreset (categoryDir.getChildFile (
@@ -230,7 +230,7 @@ int PresetManager::generateFactoryPresets (const std::vector<Pack>& packs,
             writeParam (state, id::chaos::positionAmount, 0.35f);
             writeParam (state, id::fx::reverbEnable, 1.0f);
             writeParam (state, id::fx::reverbSize, 0.7f);
-            writeParam (state, id::fx::reverbMix, 0.45f);
+            writeParam (state, id::fx::reverbMix, 0.6f);
             writeParam (state, id::fx::chorusEnable, 1.0f);
 
             const auto name = pack.name + " Texture";

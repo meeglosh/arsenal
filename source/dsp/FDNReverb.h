@@ -130,15 +130,18 @@ public:
             const float h2 = 0.5f * (d[0] + d[1] - d[2] - d[3]);
             const float h3 = 0.5f * (d[0] - d[1] - d[2] + d[3]);
             const float fb[N] = { g[0] * h0, g[1] * h1, g[2] * h2, g[3] * h3 };
+            // 1/sqrt(N) injection (N=4 -> 0.5) + tap normalization below keep the
+            // wet path near unity loudness; decay math (g/RT60) is untouched.
+            const float xIn = x * 0.5f;
             for (int i = 0; i < N; ++i)
             {
-                line[(size_t) i][(size_t) lineW[(size_t) i]] = x + fb[i];
+                line[(size_t) i][(size_t) lineW[(size_t) i]] = xIn + fb[i];
                 lineW[(size_t) i] = (lineW[(size_t) i] + 1) % (int) line[(size_t) i].size();
             }
 
             // Output: decorrelated L/R, tone, width, equal-power mix.
-            float wetL = y[0] + y[2];
-            float wetR = y[1] + y[3];
+            float wetL = 0.5f * (y[0] + y[2]);
+            float wetR = 0.5f * (y[1] + y[3]);
 
             lowState[0] += lowCoef * (wetL - lowState[0]); wetL -= lowState[0];   // low cut
             lowState[1] += lowCoef * (wetR - lowState[1]); wetR -= lowState[1];
