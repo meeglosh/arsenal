@@ -1,20 +1,23 @@
 # SPASynth changelog
 
-## 1.0.5
+## 1.0.6
 
-A stability and hardening release. We ran a full audit of the code ahead of
-launch and fixed every crash, freeze, and reliability issue it turned up;
-there are no new features here, just a more solid foundation.
+A response to tester feedback, focused on levels and safety.
 
-- Fixed a crash when loading a damaged or hand-edited preset file.
-- Fixed a possible crash when loading a corrupted WAV file.
-- Fixed a rare freeze when a host reports invalid timeline data to the
-  arpeggiator.
-- Fixed possible crashes when closing the plugin while samples were still
-  loading, or while a menu or dialog was open.
-- The reported effect tail now includes the Convolve impulse, so bounces and
-  freezes no longer cut it short.
-- Smoother performance when oversampling is active.
+- Reverb levels rebalanced. The reverb's wet signal was running much hotter
+  than it should have, which made the MIX knob feel touchy (a little went a
+  long way) and let 100 percent mix get loud enough to distort. The wet path
+  now sits at a natural level: MIX sweeps smoothly from subtle to full wash,
+  and full wet no longer overloads. Factory presets were retuned to match.
+  Note: patches you saved with heavy reverb will sound a bit drier than
+  before; nudge MIX up to taste.
+- RANDOMIZE ALL volume safety. Random patches could occasionally land
+  painfully loud, especially in headphones, when several loud settings
+  stacked together. Randomize now keeps the combined oscillator level within
+  a sensible ceiling (preserving the balance between oscillators, so patches
+  stay just as varied in character) and leaves the limiter switched on at
+  transparent settings as a safety net. You can switch the limiter off
+  afterward if you prefer.
 
 **Notes for this build**
 
@@ -31,6 +34,22 @@ there are no new features here, just a more solid foundation.
   (a fixed-aspect window plus mixed-resolution quirk in the window system). It
   works normally as a plugin in your DAW. Workaround: set the external display
   as your main display in System Settings, or use SPASynth as a plugin.
+
+## 1.0.5
+
+A stability and hardening release. We ran a full audit of the code ahead of
+launch and fixed every crash, freeze, and reliability issue it turned up;
+there are no new features here, just a more solid foundation.
+
+- Fixed a crash when loading a damaged or hand-edited preset file.
+- Fixed a possible crash when loading a corrupted WAV file.
+- Fixed a rare freeze when a host reports invalid timeline data to the
+  arpeggiator.
+- Fixed possible crashes when closing the plugin while samples were still
+  loading, or while a menu or dialog was open.
+- The reported effect tail now includes the Convolve impulse, so bounces and
+  freezes no longer cut it short.
+- Smoother performance when oversampling is active.
 
 ## 1.0.4
 
