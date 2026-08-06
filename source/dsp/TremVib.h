@@ -20,6 +20,7 @@ public:
         vibPhase = 0.0f;
         for (auto& ch : vibDelay) { for (auto& s : ch) s = 0.0f; }
         vibWrite = 0;
+        vibWasOn = false;
     }
 
     struct Params
@@ -46,6 +47,18 @@ public:
         const float stereo  = 0.5f * juce::jlimit (0.0f, 1.0f, p.tremStereo);
         const float sweepSamps = juce::jlimit (0.0f, (float) (vibMax - 2),
                                                p.vibDepth * 0.006f * (float) sampleRate);
+
+        // Non-recursive (no feedback into the write side), so a stale
+        // vibDelay buffer left over from before vibrato was switched off is
+        // bounded to one ~21 ms delay-line's worth of old (possibly loud)
+        // audio replaying once on re-enable — a brief echo, not a decaying
+        // blast like the EQ/mod feedback cases. Still cheap to clear on the
+        // false->true edge (a couple KB, once per toggle), so do it anyway
+        // for a clean re-enable; p.vibOn is constant for this whole call so
+        // the edge check belongs outside the per-sample loop.
+        if (p.vibOn && ! vibWasOn)
+            for (auto& ch : vibDelay) for (auto& s : ch) s = 0.0f;
+        vibWasOn = p.vibOn;
 
         for (int i = 0; i < n; ++i)
         {
@@ -104,6 +117,7 @@ private:
     float tremPhase = 0.0f, vibPhase = 0.0f;
     float vibDelay[2][vibMax] {};
     int vibWrite = 0;
+    bool vibWasOn = false;
 };
 
 } // namespace spa::dsp

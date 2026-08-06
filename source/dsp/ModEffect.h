@@ -25,10 +25,13 @@ public:
         for (auto& ch : channels)
             ch = {};
         lfoPhase = 0.0f;
+        wasEnabled = false;
     }
 
     struct Params
     {
+        bool enable = true;        // edge-detected here so FXChain can call
+                                    // process() unconditionally (see below)
         Type type = Type::phaser;
         float rateHz = 0.5f;
         float depth = 0.5f;        // 0..1
@@ -40,8 +43,30 @@ public:
         float mix = 0.5f;          // dry/wet
     };
 
+    // Self-contained enable-edge tracking: FXChain::process() can gate this
+    // module by simply not calling process() while disabled (cheapest), or by
+    // calling it every block with `enable=false` (a trivial early-out) — either
+    // way, `wasEnabled` still detects the false->true transition here rather
+    // than needing the chain to remember it. On that edge, clear the per-
+    // channel allpass/feedback/delay state so a hot phaser/flanger that was
+    // disabled mid-ring doesn't dump its trapped feedback into the mix on
+    // re-enable. `dl[]` is a small preallocated buffer (2048 floats * 2 ch =
+    // 16 KB) so zeroing it on the (infrequent) enable edge is a non-issue on
+    // the audio thread; lfoPhase is deliberately left running so re-enabling
+    // doesn't also click the LFO back to phase 0.
     void process (juce::AudioBuffer<float>& buffer, const Params& p)
     {
+        if (! p.enable)
+        {
+            wasEnabled = false;
+            return;
+        }
+        if (! wasEnabled)
+        {
+            for (auto& ch : channels) ch = {};
+            wasEnabled = true;
+        }
+
         const int n = buffer.getNumSamples();
         const int numCh = juce::jmin (2, buffer.getNumChannels());
         const float phaseInc = (float) (p.rateHz / sampleRate);
@@ -131,6 +156,7 @@ private:
 
     double sampleRate = 48000.0;
     float lfoPhase = 0.0f;
+    bool wasEnabled = false;
     ChannelState channels[2];
 };
 

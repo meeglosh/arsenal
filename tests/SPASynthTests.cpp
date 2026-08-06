@@ -1257,6 +1257,94 @@ namespace
                 + " vs driven " + juce::String (crestDriven) + ")");
     }
 
+    // Regression for the "toggle blast" bug: FX modules with internal
+    // recursive state (EQ biquads, the phaser/flanger's allpass/feedback/
+    // delay state) used to freeze that state when disabled and resume from it
+    // on re-enable, dumping stale (possibly hot) energy into the mix as a
+    // decaying blast — reported as intermittent noise blasts in a restored
+    // Logic session. Both halves excite the module with loud noise, disable
+    // it, let a few silent blocks pass (frozen state, module skipped so
+    // output stays silent), then re-enable with silence and assert the
+    // output stays near-silent instead of ringing out the trapped state.
+    static void fxToggleBlastTest()
+    {
+        std::cout << "fxToggleBlastTest\n";
+        using FX = spa::dsp::FXChain;
+        using EQ = spa::dsp::ParametricEQ;
+        constexpr double sr = 48000.0;
+        constexpr int n = 256;
+
+        uint32_t rng = 77777u;
+        auto noise = [&rng]
+        {
+            rng = rng * 1664525u + 1013904223u;
+            return ((float) (rng >> 9) / (float) (1u << 23)) * 2.0f - 1.0f;
+        };
+
+        auto peakOverBlocks = [&] (FX& fx, const FX::Params& p, int blocks, bool excite)
+        {
+            float peak = 0.0f;
+            juce::AudioBuffer<float> buf (2, n);
+            for (int b = 0; b < blocks; ++b)
+            {
+                buf.clear();
+                if (excite)
+                    for (int s = 0; s < n; ++s)
+                    {
+                        const float v = noise() * 0.9f;
+                        buf.setSample (0, s, v);
+                        buf.setSample (1, s, v);
+                    }
+                fx.process (buf, p);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < n; ++s)
+                        peak = juce::jmax (peak, std::abs (buf.getSample (ch, s)));
+            }
+            return peak;
+        };
+
+        // -- Parametric EQ: hi-Q, high-gain bell band, disable then re-enable.
+        {
+            FX fx; fx.prepare (sr, n);
+            FX::Params p;
+            p.eqEnable = true;
+            p.eqBands[0] = { true, (int) EQ::Type::bell, 2000.0f, 24.0f, 18.0f };
+
+            peakOverBlocks (fx, p, 40, true);          // ring the band up
+            p.eqBands[0].enabled = false;
+            peakOverBlocks (fx, p, 20, false);          // frozen while disabled
+            p.eqBands[0].enabled = true;
+            const auto blastPeak = peakOverBlocks (fx, p, 20, false);   // re-enable, silence in
+
+            expect (blastPeak < 0.05f,
+                    "EQ band re-enable does not ring out trapped state (peak "
+                    + juce::String (blastPeak) + ")");
+        }
+
+        // -- Mod effect (flanger): high feedback, disable then re-enable.
+        {
+            FX fx; fx.prepare (sr, n);
+            FX::Params p;
+            p.modEnable = true;
+            p.modType = 1;              // flanger
+            p.modRate = 0.7f;
+            p.modDepth = 0.9f;
+            p.modFeedback = 0.95f;
+            p.modManualMs = 5.0f;
+            p.modMix = 1.0f;
+
+            peakOverBlocks (fx, p, 40, true);
+            p.modEnable = false;
+            peakOverBlocks (fx, p, 20, false);
+            p.modEnable = true;
+            const auto blastPeak = peakOverBlocks (fx, p, 20, false);
+
+            expect (blastPeak < 0.05f,
+                    "mod (flanger) re-enable does not ring out trapped feedback (peak "
+                    + juce::String (blastPeak) + ")");
+        }
+    }
+
     static void randomizerTest()
     {
         std::cout << "randomizerTest\n";
@@ -2880,6 +2968,7 @@ int main (int argc, char* argv[])
     midiClockTest();
     fxOrderTest();
     fxEQDistortionTest();
+    fxToggleBlastTest();
     randomizerTest();
     randomizerProducesSoundTest();
     randomizeLoudnessGuardTest();

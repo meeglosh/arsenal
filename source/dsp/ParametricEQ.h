@@ -55,6 +55,15 @@ public:
         {
             const auto& b = bands[(size_t) i];
             auto& c = cached[(size_t) i];
+            // A disabled band's biquad state (z1/z2) keeps accumulating whatever
+            // energy was ringing in it the instant it was skipped in process()
+            // (see the `if (! active[i]) continue;` below) — a hi-Q band left
+            // loud when disabled dumps that trapped energy back out on re-
+            // enable. Clear it on the false->true edge, before the new active
+            // flag takes effect, so re-enabling always starts from silence.
+            if (b.enabled && ! active[(size_t) i])
+                for (auto& ch : state[(size_t) i])
+                    ch = { 0.0f, 0.0f };
             active[(size_t) i] = b.enabled;
             if (b.enabled
                 && (b.type != c.type

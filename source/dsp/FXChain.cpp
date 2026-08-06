@@ -92,7 +92,13 @@ void FXChain::process (juce::AudioBuffer<float>& buffer, const Params& params)
             case Module::delay:      if (params.delayEnable)  processDelay (buffer, params); break;
             case Module::reverb:     if (params.reverbEnable) processReverb (buffer, params); break;
             case Module::eq:         if (params.eqEnable)     processEQ (buffer, params); break;
-            case Module::mod:        if (params.modEnable)    processMod (buffer, params); break;
+            // Always invoke (rather than gating on modEnable like the other
+            // modules) so ModEffect's own enable-edge tracking sees every
+            // disable; that's what lets it clear its trapped allpass/
+            // feedback/delay state on re-enable instead of ringing it back
+            // out (see ModEffect::process). The disabled path is a cheap
+            // early-out, not a real per-sample cost.
+            case Module::mod:        processMod (buffer, params); break;
             case Module::tremVib:    if (params.tremEnable || params.vibEnable)
                                                             { processTremVib (buffer, params); } break;
             case Module::limiter:    if (params.limEnable)    processLimiter (buffer, params); break;
@@ -209,6 +215,7 @@ void FXChain::processReverb (juce::AudioBuffer<float>& buffer, const Params& p)
 void FXChain::processMod (juce::AudioBuffer<float>& buffer, const Params& p)
 {
     ModEffect::Params mp;
+    mp.enable  = p.modEnable;
     mp.type    = p.modType == 1 ? ModEffect::Type::flanger : ModEffect::Type::phaser;
     mp.rateHz  = p.modSync
                ? (float) (p.bpm / 60.0
