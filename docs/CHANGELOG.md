@@ -1,5 +1,41 @@
 # SPASynth changelog
 
+## 1.0.7
+
+A targeted fix for a serious tester-reported bug, plus extra safety hardening.
+
+- Fixed loud noise bursts in reopened DAW sessions. Reopening a saved session
+  could occasionally produce intermittent loud blasts of noise over the
+  patch, even while the session sat idle. The cause was a race while the
+  session's settings were being restored: the audio engine could briefly run
+  on a half-applied mix of old and new settings, and the resulting burst of
+  energy then kept re-emerging from the delay's feedback loop. Restoring is
+  now properly synchronized with the audio engine, so this cannot happen.
+- Effects no longer carry stale energy across an off/on toggle. Switching an
+  EQ band or the phaser/flanger off and back on could release a burst of
+  sound trapped from before the toggle; those effects now start clean every
+  time they are re-enabled.
+- New output safety net. As an extra layer of protection, the synth now
+  detects and clears any invalid audio state instead of letting it circulate,
+  and the final output is capped at a hard ceiling so no malfunction,
+  whatever the cause, can produce ear-damaging levels in headphones.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.6
 
 A response to tester feedback, focused on levels and safety.
@@ -18,22 +54,6 @@ A response to tester feedback, focused on levels and safety.
   stay just as varied in character) and leaves the limiter switched on at
   transparent settings as a safety net. You can switch the limiter off
   afterward if you prefer.
-
-**Notes for this build**
-
-- The macOS installer is signed and notarized by Apple, so it installs cleanly.
-- The Windows installer is unsigned by design. On first launch, click More info
-  and then Run anyway to get past the SmartScreen prompt.
-- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
-  Standalone, and on Windows 10 or later as VST3 and Standalone.
-- The Limiter's optional lookahead mode adds a small amount of latency and
-  reports it to your host automatically so playback stays in sync. It's off
-  by default, so live play stays at zero added latency until you turn it on.
-- Known limitation: on a Mac with a Retina laptop screen plus an external
-  monitor, the standalone window may not drag across onto the external display
-  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
-  works normally as a plugin in your DAW. Workaround: set the external display
-  as your main display in System Settings, or use SPASynth as a plugin.
 
 ## 1.0.5
 
