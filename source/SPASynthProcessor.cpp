@@ -1226,23 +1226,39 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
         midiLearn->restoreFromValueTree (midiMap);
     }
 
-    apvts.replaceState (state);
+    juce::String convIrPathLocal;
+    {
+        // AudioProcessor::setStateInformation (the AU wrapper's entry point) is
+        // called with NO lock, while processBlock runs under getCallbackLock().
+        // apvts.replaceState() updates parameters ONE AT A TIME, so without this
+        // lock processBlock can render blocks against a half-old/half-new
+        // parameter set mid-restore -- unstable coefficient combos that inject
+        // audible energy bursts into feedback DSP (filters/delay/reverb) when a
+        // Logic session restores. Mirrors the getCallbackLock() idiom already
+        // used around rebuildOversampling() in timerCallback(). Filesystem I/O
+        // (findLibraryRoot) stays outside so the audio thread is never blocked
+        // on disk.
+        const juce::ScopedLock sl (getCallbackLock());
 
-    // Standalone tempo settings ride in the state tree (not parameters).
-    internalBpm.store ((double) apvts.state.getProperty ("standaloneBpm", 120.0),
-                       std::memory_order_relaxed);
-    tempoSyncMode.store ((int) apvts.state.getProperty ("tempoSyncMode", 0),
-                         std::memory_order_relaxed);
-    fxOrderPacked.store ((juce::uint64) (juce::int64) apvts.state.getProperty (
-                             "fxOrder", (juce::int64) dsp::FXChain::defaultOrderPacked()),
-                         std::memory_order_relaxed);
+        apvts.replaceState (state);
 
-    const auto convIR = apvts.state.getProperty ("convIR").toString();
-    convIrPath = convIR.isEmpty() ? juce::String()
-                                  : library::fromPortable (convIR, libraryRoot).getFullPathName();
+        // Standalone tempo settings ride in the state tree (not parameters).
+        internalBpm.store ((double) apvts.state.getProperty ("standaloneBpm", 120.0),
+                           std::memory_order_relaxed);
+        tempoSyncMode.store ((int) apvts.state.getProperty ("tempoSyncMode", 0),
+                             std::memory_order_relaxed);
+        fxOrderPacked.store ((juce::uint64) (juce::int64) apvts.state.getProperty (
+                                 "fxOrder", (juce::int64) dsp::FXChain::defaultOrderPacked()),
+                             std::memory_order_relaxed);
+
+        const auto convIR = apvts.state.getProperty ("convIR").toString();
+        convIrPath = convIR.isEmpty() ? juce::String()
+                                      : library::fromPortable (convIR, libraryRoot).getFullPathName();
+        convIrPathLocal = convIrPath;
+    }
     // Weak-ref treatment mirrors loadSampleFromFile — see the comment there.
     juce::MessageManager::callAsync ([weak = juce::WeakReference<SPASynthProcessor> (this),
-                                      f = juce::File (convIrPath)]
+                                      f = juce::File (convIrPathLocal)]
     {
         if (weak != nullptr)
             weak->fxChain.loadConvolutionIR (f);
