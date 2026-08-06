@@ -243,6 +243,12 @@ private:
     // Raised by panic() / MIDI CC 120/123; serviced at the top of processBlock.
     std::atomic<bool> panicRequested { false };
 
+    // Raised by processBlock's non-finite output scan; serviced by the 150ms
+    // timer under getCallbackLock() (same pattern as pendingOsFactor), which
+    // resets the FX chain so a poisoned feedback structure (delay/reverb/etc.)
+    // cannot keep recirculating garbage after the current block is silenced.
+    std::atomic<bool> fxStateFlushPending { false };
+
     // Tempo: internal BPM + external MIDI clock for the standalone. Resolved
     // once per block into the block* fields (host playhead wins when present).
     std::atomic<double> internalBpm { 120.0 };

@@ -2,6 +2,7 @@
 #include "dsp/WavetableLoader.h"
 #include "params/Randomizer.h"
 #include "ui/SPASynthEditor.h"
+#include <cmath>
 
 namespace spa
 {
@@ -263,6 +264,20 @@ void SPASynthProcessor::timerCallback()
     {
         const juce::ScopedLock sl (getCallbackLock());
         rebuildOversampling (pf);
+    }
+
+    // Service a non-finite-output flush request (processBlock already silenced
+    // the offending block and set the flag): reset the FX chain's stateful DSP
+    // under the callback lock so a poisoned feedback ring (delay/reverb/mod/
+    // eq/limiter/convolution) can't keep re-emitting garbage on every repeat.
+    // Voices are intentionally NOT reset here: they are per-note and their
+    // filter/envelope state is re-primed on the next startNote/noteOn, so any
+    // poisoned voice state ages out naturally rather than recirculating
+    // indefinitely the way a feedback structure would.
+    if (fxStateFlushPending.exchange (false, std::memory_order_relaxed))
+    {
+        const juce::ScopedLock sl (getCallbackLock());
+        fxChain.reset();
     }
 
     // Report latency: the limiter's lookahead (engine samples -> host) plus the
@@ -1128,6 +1143,32 @@ void SPASynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         renderEngine (buffer, engMidi);
     }
 
+    // Non-finite flush: a NaN/Inf sample landing in a feedback structure (delay
+    // ring, reverb) never decays on its own -- it recirculates forever, so
+    // silence this block outright and ask the timer to reset the FX chain's
+    // state (under the callback lock) rather than let it keep recirculating.
+    // Tight scan over the final host-domain buffer only; cheap per block.
+    {
+        bool hasNonFinite = false;
+        for (int ch = 0; ch < buffer.getNumChannels() && ! hasNonFinite; ++ch)
+        {
+            const auto* data = buffer.getReadPointer (ch);
+            for (int i = 0; i < buffer.getNumSamples(); ++i)
+            {
+                if (! std::isfinite (data[i]))
+                {
+                    hasNonFinite = true;
+                    break;
+                }
+            }
+        }
+        if (hasNonFinite)
+        {
+            buffer.clear();
+            fxStateFlushPending.store (true, std::memory_order_relaxed);
+        }
+    }
+
     // Block-level telemetry.
     int active = 0;
     for (int i = 0; i < synth.getNumVoices(); ++i)
@@ -1170,6 +1211,15 @@ void SPASynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         telemetry.limGrDb[(size_t) lw].store (grDb, std::memory_order_relaxed);
         telemetry.limWrite.store ((lw + 1) % dsp::Telemetry::limiterHistory,
                                   std::memory_order_release);
+    }
+
+    // Headphone-safety ceiling for pathological states only; normal audio
+    // (limiter/master stage) never approaches +12 dBFS, so this is inaudible
+    // insurance against a runaway/huge-but-finite value reaching the output.
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+    {
+        auto* data = buffer.getWritePointer (ch);
+        juce::FloatVectorOperations::clip (data, data, -4.0f, 4.0f, buffer.getNumSamples());
     }
 }
 
