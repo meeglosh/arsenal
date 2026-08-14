@@ -10,6 +10,149 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-08-14): v1.0.7 built + staged (pending Mike's real-world validation); v1.0.6 shipped to testers
+
+**v1.0.6 (`97d86e6`, 2026-08-05) WAS SENT to Paul and Phil** (Mike confirmed).
+Two fixes responding to tester feedback on 1.0.4/1.0.5:
+- `8266360` — FDN reverb wet-path gain normalization. Phil reported MIX was
+  oversensitive (10% already too wet) and 100% mix clipped/distorted. Root
+  cause: ~+12dB structural over-gain in the wet path — the diffused input was
+  injected into all 4 delay lines at unity (proper 1/sqrt(N) injection for
+  N=4 is 0.5), and the output tap summed 2 lines per channel at unity (a
+  deterministic +6dB on early reflections). Fix: scale both by 0.5. Measured
+  wet peaks for a 0.5-amplitude test burst dropped from ~6.4 to ~1.5-1.8
+  across all 5 modes; decay/RT60 math and mode character untouched. Factory
+  preset `reverbMix` values retuned upward (0.25→0.4, 0.45→0.6) to
+  compensate, since they'd been ear-tuned against the old hot path. Test
+  bounds tightened.
+- `f00b6e9` — RANDOMIZE ALL headphone-safety guards. Mike reported RANDOMIZE
+  ALL occasionally produced deafening headphone spikes from combinations of
+  individually-reasonable rolls stacking. Two guards, both gated on the
+  existing lock groups (oscillators/FX): (a) enabled oscillator levels get a
+  uniform dB trim if their combined linear gain sum exceeds a 1.25 budget
+  (~one full-scale slot + headroom), preserving the rolled balance; (b) the
+  limiter is left enabled at transparent registry defaults after any
+  FX-unlocked roll, as a safety net (user can switch it off). New regression
+  test iterates 30 rolls asserting both invariants hold.
+
+Both 1.0.6 installers verified: macOS pkg md5
+`7c52c6ddd7419c3bca43a6250c90c4ad`, Windows exe md5
+`699b920ff608b0dd9e71cb1f653cea56`, byte-identical across
+`dist/installers/` and `dist/shopify/SPASynth-{Standard,Pro}-1.0.6/`.
+
+**v1.0.7 (`2f7908d`, `537eede`, `a8d639b`, `264dec9`, empty CI-trigger
+`fb6746d`, 2026-08-06) — built, signed, staged; NOT yet sent to anyone.**
+Fixes a serious bug Mike hit personally in Logic (not from Paul/Phil): a
+saved session, reopened the next day, played intermittent loud noise blasts
+covering the patch, recurring even while Logic sat completely idle (no
+playback). Copying the channel strip (which restores a fresh plugin instance
+from the same saved state) fixed it completely, proving the serialized state
+itself was fine — it was the *original* instance's runtime state that was
+corrupted at restore time. Mike confirmed: same version both days (1.0.6),
+blasts happened during both playback and silence/idle, session had reverb +
+delay + limiter all active.
+- `2f7908d` — **root cause, an important architectural finding.** Verified
+  directly against the JUCE AU wrapper source
+  (`libs/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_AU_1.mm`):
+  `processBlock`/`Render()` takes `getCallbackLock()`, but `setStateInformation`
+  (called during Logic project load, `RestoreState`) takes **no lock at all**.
+  `apvts.replaceState()` updates parameters ONE PARAMETER AT A TIME (JUCE's
+  own docs: "not realtime-safe, do not call from audio processing code"). So
+  during a session reload, `processBlock` could race in and render a block
+  against a half-old/half-new parameter set — an unstable coefficient
+  combination that injected a burst of energy into the FX chain's feedback
+  structures. With delay feedback near-unity, that burst then re-emitted at
+  every delay repeat for minutes, decaying only slowly — exactly matching
+  "intermittent, decaying, happens even when idle" (delay repeats keep firing
+  on their own clock regardless of playback). A fresh instance restoring the
+  same state has no concurrent audio thread to race against, so it comes up
+  clean — matching Mike's channel-copy fix exactly. Fix: the state-mutating
+  core of `restoreStateTree` (`apvts.replaceState`,
+  fxOrderPacked/tempo/convIrPath stores) now runs under `getCallbackLock()`,
+  mirroring the existing pattern already used for `rebuildOversampling` in
+  `timerCallback`. Blocking filesystem I/O (`library::findLibraryRoot()`)
+  stays OUTSIDE the lock so audio is never blocked on disk. Deadlock analysis
+  done: no APVTS parameter listener in the codebase acquires a lock or calls
+  back into the audio thread; the other `restoreStateTree` callers
+  (resetToDefault, loadPresetFile) are message-thread-only user actions that
+  never already hold the callback lock.
+- `537eede` — secondary/amplifying fix: FX modules with recursive internal
+  state (ParametricEQ bands, the ModEffect phaser/flanger) were freezing that
+  state when disabled (the processing gate just stopped touching it, e.g.
+  `if (!active[i]) continue;`) and resuming from the stale/hot frozen state on
+  re-enable, which could also ring out a burst. Fixed with edge-triggered
+  state clears on the disable→enable transition for ParametricEQ, ModEffect
+  (which now tracks its own enable state so it can detect the edge, including
+  clearing its delay-line buffer), and TremVib (added defensively, lower risk
+  since it has no feedback). New `fxToggleBlastTest` traps hot state in both
+  EQ and the flanger, toggles off then on, and asserts silence (measured peak
+  = 0 post-fix).
+- `a8d639b` — defense-in-depth output safety net, added specifically because
+  of how alarming a headphone blast is: (1) `processBlock` now scans the
+  final host-domain output buffer for non-finite (NaN/Inf) samples every
+  block; if found, silences that block and sets an atomic flag that the
+  existing 150ms timer services (under `getCallbackLock`) by calling
+  `fxChain.reset()` — a non-finite value in a feedback structure never decays
+  on its own, so this flushes rather than lets it recirculate forever. Voices
+  deliberately NOT reset by this path (`FXChain::reset()` already covers
+  every persistent feedback structure matching the delay-ring-recirculation
+  evidence; voices are per-note and re-primed on the next `startNote`, so
+  they age out naturally). (2) The very end of `processBlock` hard-clamps
+  output to ±4.0 (+12dBFS) via `juce::FloatVectorOperations::clip` — normal
+  program material never approaches this, so it's inaudible insurance, but it
+  means no future bug of any kind can produce an arbitrarily loud/deafening
+  output.
+- Suite grew to **181 assertions, ALL PASS**. `auval` SUCCEEDED.
+
+Both 1.0.7 installers verified: macOS pkg signed + notarized + stapled,
+`spctl` accepted, `minos 11.0`, md5 `7c57e209cf97a926807309864ef97709`;
+Windows exe from CI run `31129966771`, md5 `ea4c063223655774eb928a0e3a77f4d8`;
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.7/`. **1.0.7 status: staged, NOT
+sent.** Mike's own validation is still pending — the definitive test is
+reopening the *original* affected Logic session (not the copied-channel
+workaround) several times on 1.0.7 and confirming no blasts, before deciding
+whether to send to Paul/Phil.
+
+**Disk cleanup (2026-08-14, no version bump, docs-only).** Mike found
+`dist/shopify/` was consuming ~70GB apparent (93% full disk, 61GB free of
+926GB). Root cause: `dist/shopify/SPASynth-{Standard,Pro}-1.0.2/` and
+`-1.0.3/` each still had a full `cp`-duplicated copy of the packaged library
+(verified byte-identical via md5 to the canonical `dist/library/` copy) left
+over from before `build_release.sh` stopped copying the library into version
+folders (that stopped starting with 1.0.4 — version folders 1.0.4+ have empty
+`Library/` subdirs by design). Deleted the `Library/` contents of the 1.0.2
+and 1.0.3 shopify folders (recreated as empty dirs for structure). Actual
+disk freed: 35GB (61G → 96G free) — less than the ~70GB apparent-size sum
+because APFS had already clone-shared some blocks between the "duplicate"
+copies. `dist/library/` remains the one canonical archive (built once by
+`package_library.sh`, idempotent/skip-if-exists). Updated
+`docs/shopify-setup-guide.md` so future uploads copy the needed zip in from
+`dist/library/` temporarily and delete it again afterward, instead of leaving
+a permanent second copy in a version folder.
+
+**Repo state: currently PRIVATE** (confirmed 2026-08-14).
+
+**New CI gotcha:** pushing to GitHub while the repo visibility flip hasn't
+fully propagated (or possibly Actions being disabled after a visibility
+change) can cause a push to NOT spawn a CI run at all, silently — no error,
+no run appears. Happened on 1.0.7: the first push (right after the repo went
+public) produced no run; a second, later push with an empty
+`ci: trigger Windows build` commit triggered it successfully. Diagnostic:
+`gh run list --limit 1` shows no new run for the pushed SHA after ~1 minute
+→ push an empty commit to retry. This is a wait-and-retry workaround, not a
+real fix (PAT lacks admin to inspect/fix Actions settings directly).
+
+**Remaining for launch (Mike's manual steps):**
+1. **Validate 1.0.7 against the original affected Logic session** — the
+   definitive test for the AU-wrapper-lock fix, several reopens, no blasts.
+2. **Decide when to send 1.0.7 to Paul/Phil** (or straight to launch).
+3. **Windows real-DAW smoke test** — still the one untested surface.
+4. **Shopify build-out** per `docs/shopify-setup-guide.md` — clone the
+   needed library zip in from `dist/library/` temporarily per SKU, don't
+   leave a permanent second copy in a version folder.
+5. Marketing site / announcement when ready.
+
 ## Current state (2026-08-04): v1.0.5 — audit-hardening build, signed + staged, NOT distributed; 1.0.4 is with testers
 
 **v1.0.4 (`6087fef`, 2026-08-03) went out to the partner testers** — Paul and
@@ -111,17 +254,8 @@ pick these up in a future session):**
   rescan (Logic: Plug-in Manager -> Reset & Rescan Selection) + restart the
   DAW.
 
-**Remaining for launch (Mike's manual steps):**
-1. ~~Re-private the GitHub repo~~ — **done**, repo is private as of 2026-08-04.
-2. **Install + smoke-test the 1.0.5 macOS pkg** (`sudo installer -pkg … -target
-   /`; the agent can't sudo).
-3. **Windows real-DAW smoke test** — still the one untested surface.
-4. **Decide when to send 1.0.5 to Paul/Phil** (or straight to launch — their
-   round already covered the tester-facing surfaces; 1.0.5 is audit hardening,
-   not new features).
-5. **Shopify build-out** per `docs/shopify-setup-guide.md` — clone the library
-   zips in from the 1.0.3/1.0.2 folders when actually uploading.
-6. Marketing site / announcement when ready.
+**Remaining for launch (Mike's manual steps) — see the 2026-08-14 section above
+for the current list; this one is historical.**
 
 ## Current state (2026-08-03): v1.0.3 — merged to `main`, built + signed, in smoke testing
 

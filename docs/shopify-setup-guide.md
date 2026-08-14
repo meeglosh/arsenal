@@ -9,11 +9,15 @@ the copy to paste lives in `docs/shopify-listings.md`. House style: no em dashes
 1. Shopify admin login (`yourstore.myshopify.com/admin`).
 2. The files: `dist/shopify/SPASynth-Standard-<version>/` and
    `dist/shopify/SPASynth-Pro-<version>/` (open in Finder). Use the current
-   version folder (1.0.5 at time of writing, but always use whatever's
-   newest). Note: the newest folders are often installer-iteration builds
-   with an empty `Library/` subfolder inside them by design; if the library
-   zip is missing, clone it in from the most recent folder that has one
-   (1.0.3/1.0.2 as of this writing) before uploading.
+   version folder (1.0.7 at time of writing, but always use whatever's
+   newest). Note: version folders are installer-iteration builds with an
+   empty `Library/` subfolder inside them by design, to avoid keeping
+   duplicate copies of the (large) library around on disk. The one and only
+   canonical copy of the packaged library zips lives in `dist/library/`
+   (built once by `scripts/package_library.sh`, never rebuilt if already
+   there). If a version folder's `Library/` is empty and you need a zip from
+   it, copy it in from `dist/library/` for the upload, and delete it from the
+   version folder again afterward so it doesn't linger as a duplicate.
 3. The copy: `docs/shopify-listings.md` (titles, descriptions, SEO, blurbs).
 4. Prices:
 
@@ -56,8 +60,8 @@ Price = paid today; Compare-at = the higher struck-through number.
    - `SPASynth-<version>-macOS.pkg`
    - `SPASynth-<version>-Windows.exe`
    - `SPASynth Starter Library.zip` (~3 GB, in the `Library` subfolder; if
-     that folder is empty, clone the zip in from the most recent folder that
-     has one before uploading)
+     that folder is empty, copy the zip in from `dist/library/SPASynth
+     Starter Library.zip` before uploading, and delete the copy afterward)
    - `README.txt`, `QUICKSTART.txt`, `EULA.txt`
    Never wrap them in one giant zip; attach individually.
 
@@ -74,12 +78,11 @@ HTML page is uploaded as a file asset instead.)
 Repeat Parts 2 and 3 with:
 - Title `SPASynth Pro`; description = "2 · SPASynth Pro" section.
 - Price `499`, Compare-at `899`; URL handle `spasynth-pro`.
-- Files from the current `SPASynth-Pro-<version>/` folder (1.0.5 at time of
+- Files from the current `SPASynth-Pro-<version>/` folder (1.0.7 at time of
   writing; all small, upload directly): pkg, exe, the 3 docs, and
   `SPASynth Pro Library - Downloads.html`.
-- Do NOT upload the 11 zips in the `Library/` subfolder (the current version
-  folder likely has an empty `Library/` anyway, since library zips only live
-  in the older 1.0.3/1.0.2 folders). The library is already on R2 at
+- Do NOT upload the 11 Pro library zips at all, from anywhere (`Library/`
+  subfolder, `dist/library/`, wherever). The library is already on R2 at
   downloads.spasynth.com; the links file gives buyers the download URLs.
 
 ## Part 5: Create the Standard to Pro Upgrade
