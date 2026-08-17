@@ -48,6 +48,7 @@ jobs:
             build/SPASynth_artefacts/**/VST3/**
             build/SPASynth_artefacts/**/Standalone/**
           if-no-files-found: error
+          retention-days: 3
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -55,6 +56,7 @@ jobs:
           name: spasynth-installer-Windows
           path: dist/installers/*
           if-no-files-found: error
+          retention-days: 3
 
   # macOS ships from a local signed + notarized build, so this job is only a
   # clean-machine compile check. It runs ON DEMAND (Actions tab -> Run workflow)
@@ -92,6 +94,7 @@ jobs:
             build/SPASynth_artefacts/**/AU/**
             build/SPASynth_artefacts/**/Standalone/**
           if-no-files-found: error
+          retention-days: 3
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
@@ -99,3 +102,4 @@ jobs:
           name: spasynth-installer-macOS
           path: dist/installers/*
           if-no-files-found: error
+          retention-days: 3
