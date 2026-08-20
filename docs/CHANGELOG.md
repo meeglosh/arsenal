@@ -1,5 +1,33 @@
 # SPASynth changelog
 
+## 1.0.8
+
+A small fix for anyone using the on-screen keyboard's QWERTY (computer
+keyboard) note input.
+
+- Fixed QWERTY note input stopping after touching a knob or dropdown.
+  Previously, playing notes from your computer keyboard would stop working
+  the moment you turned any knob or changed any setting, and would only
+  resume after clicking directly on a key in the on-screen keyboard. Knobs,
+  dropdowns, and toggles no longer take over keyboard focus, so QWERTY play
+  keeps working while you tweak the sound.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.7
 
 A targeted fix for a serious tester-reported bug, plus extra safety hardening.
@@ -19,22 +47,6 @@ A targeted fix for a serious tester-reported bug, plus extra safety hardening.
   detects and clears any invalid audio state instead of letting it circulate,
   and the final output is capped at a hard ceiling so no malfunction,
   whatever the cause, can produce ear-damaging levels in headphones.
-
-**Notes for this build**
-
-- The macOS installer is signed and notarized by Apple, so it installs cleanly.
-- The Windows installer is unsigned by design. On first launch, click More info
-  and then Run anyway to get past the SmartScreen prompt.
-- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
-  Standalone, and on Windows 10 or later as VST3 and Standalone.
-- The Limiter's optional lookahead mode adds a small amount of latency and
-  reports it to your host automatically so playback stays in sync. It's off
-  by default, so live play stays at zero added latency until you turn it on.
-- Known limitation: on a Mac with a Retina laptop screen plus an external
-  monitor, the standalone window may not drag across onto the external display
-  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
-  works normally as a plugin in your DAW. Workaround: set the external display
-  as your main display in System Settings, or use SPASynth as a plugin.
 
 ## 1.0.6
 
