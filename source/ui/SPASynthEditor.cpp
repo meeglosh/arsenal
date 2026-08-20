@@ -672,6 +672,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     wildnessSlider.setComponentID ("wild");   // value ring heats teal -> red with amount
     wildnessSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     wildnessSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    wildnessSlider.setWantsKeyboardFocus (false);   // see Controls.h's Knob
     wildnessSlider.setRange (0.0, 1.0, 0.0);
     wildnessSlider.setValue (processor.getRandomWildness(), juce::dontSendNotification);
     wildnessSlider.onValueChange = [this]
@@ -694,6 +695,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     addAndMakeVisible (wildnessLabel);
 
     glideModeBox.setTooltip ("Portamento: Always, or Legato (only while a key is held)");
+    glideModeBox.setWantsKeyboardFocus (false);   // see Controls.h's Knob
     glideModeBox.getProperties().set ("paramID", juce::String (params::id::glideMode));
     if (const auto* def = params::find (params::id::glideMode))
         glideModeBox.addItemList (def->choices, 1);
@@ -703,6 +705,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
 
     glideSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     glideSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    glideSlider.setWantsKeyboardFocus (false);   // see Controls.h's Knob
     glideSlider.getProperties().set ("inlineValueSuffix", " ms");
     glideSlider.setTooltip ("Glide time");
     glideSlider.getProperties().set ("paramID", juce::String (params::id::glideTime));
@@ -731,6 +734,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
 
     masterSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
     masterSlider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+    masterSlider.setWantsKeyboardFocus (false);   // see Controls.h's Knob
     masterSlider.getProperties().set ("inlineValueSuffix", " dB");  // LnF chip on drag
     masterSlider.setTooltip ("Master volume");
     masterSlider.getProperties().set ("paramID", juce::String (params::id::masterGain));

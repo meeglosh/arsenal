@@ -26,6 +26,11 @@ public:
             row->depth.setSliderStyle (juce::Slider::LinearHorizontal);
             row->depth.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
             row->depth.setComponentID ("mod");
+            // Don't steal keyboard focus from the on-screen keyboard's QWERTY
+            // note input on click (see Controls.h's Knob for the same fix).
+            row->source.setWantsKeyboardFocus (false);
+            row->dest.setWantsKeyboardFocus (false);
+            row->depth.setWantsKeyboardFocus (false);
             row->source.getProperties().set ("paramID", sourceID);
             row->dest.getProperties().set ("paramID", destID);
             row->depth.getProperties().set ("paramID", depthID);

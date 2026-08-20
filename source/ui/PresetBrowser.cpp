@@ -100,6 +100,7 @@ PresetBrowser::PresetBrowser (SPASynthProcessor& p,
     typeChips[0].setToggleState (true, juce::dontSendNotification);
 
     categoryBox.setComponentID ("browser");
+    categoryBox.setWantsKeyboardFocus (false);   // see Controls.h's Knob
     categoryBox.setTextWhenNothingSelected ("All Packs");
     categoryBox.onChange = [this] { applyFilter(); };
     addAndMakeVisible (categoryBox);

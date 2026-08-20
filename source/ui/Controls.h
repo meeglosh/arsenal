@@ -19,6 +19,10 @@ public:
     {
         slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        // Sliders want keyboard focus by default (arrow-key nudging); losing
+        // that is a fair trade for not silently stealing it away from the
+        // on-screen keyboard's QWERTY note input every time a knob is touched.
+        slider.setWantsKeyboardFocus (false);
         slider.getProperties().set ("paramID", paramID);      // for MIDI Learn
         if (modColoured)
             slider.setComponentID ("mod");
@@ -92,6 +96,7 @@ class Choice : public juce::Component
 public:
     Choice (juce::AudioProcessorValueTreeState& apvts, const juce::String& paramID)
     {
+        combo.setWantsKeyboardFocus (false);   // see Knob's comment
         combo.getProperties().set ("paramID", paramID);
         if (const auto* def = params::find (paramID))
             combo.addItemList (def->choices, 1);
@@ -116,6 +121,7 @@ public:
             const juce::String& text)
         : button (text)
     {
+        button.setWantsKeyboardFocus (false);   // see Knob's comment
         button.getProperties().set ("paramID", paramID);
         attachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (
             apvts, paramID, button);
