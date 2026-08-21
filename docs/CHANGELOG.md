@@ -1,16 +1,17 @@
 # SPASynth changelog
 
-## 1.0.8
+## 1.0.9
 
-A small fix for anyone using the on-screen keyboard's QWERTY (computer
-keyboard) note input.
+A performance and stability pass, wrapping up ahead of launch.
 
-- Fixed QWERTY note input stopping after touching a knob or dropdown.
-  Previously, playing notes from your computer keyboard would stop working
-  the moment you turned any knob or changed any setting, and would only
-  resume after clicking directly on a key in the on-screen keyboard. Knobs,
-  dropdowns, and toggles no longer take over keyboard focus, so QWERTY play
-  keeps working while you tweak the sound.
+- Bypassing SPASynth in your host now lets reverb, delay, and other effect
+  tails ring out naturally instead of cutting them off instantly.
+- Lower CPU use for long convolution impulses, and a lighter-weight reverb
+  tail engine, with no change to how either sounds.
+- The EQ's spectrum analyzer no longer uses CPU while its tab isn't in view.
+- General hardening: tightened internal safety margins and a smaller memory
+  footprint in a couple of engine components. Nothing here changes how any
+  patch sounds.
 
 **Notes for this build**
 
@@ -27,6 +28,18 @@ keyboard) note input.
   (a fixed-aspect window plus mixed-resolution quirk in the window system). It
   works normally as a plugin in your DAW. Workaround: set the external display
   as your main display in System Settings, or use SPASynth as a plugin.
+
+## 1.0.8
+
+A small fix for anyone using the on-screen keyboard's QWERTY (computer
+keyboard) note input.
+
+- Fixed QWERTY note input stopping after touching a knob or dropdown.
+  Previously, playing notes from your computer keyboard would stop working
+  the moment you turned any knob or changed any setting, and would only
+  resume after clicking directly on a key in the on-screen keyboard. Knobs,
+  dropdowns, and toggles no longer take over keyboard focus, so QWERTY play
+  keeps working while you tweak the sound.
 
 ## 1.0.7
 
