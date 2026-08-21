@@ -15,7 +15,13 @@ class DraggableTabButton : public juce::TabBarButton
 public:
     DraggableTabButton (const juce::String& name, juce::TabbedButtonBar& bar,
                         std::function<void (int from, int to)> mover)
-        : juce::TabBarButton (name, bar), onMove (std::move (mover)) {}
+        : juce::TabBarButton (name, bar), onMove (std::move (mover))
+    {
+        // Don't steal focus from the on-screen keyboard's QWERTY note input
+        // when a tab is clicked/dragged to reorder the FX chain -- see
+        // Controls.h's Knob for the full explanation.
+        setMouseClickGrabsKeyboardFocus (false);
+    }
 
     void mouseDrag (const juce::MouseEvent& e) override
     {

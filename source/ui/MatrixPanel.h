@@ -31,6 +31,11 @@ public:
             row->source.setWantsKeyboardFocus (false);
             row->dest.setWantsKeyboardFocus (false);
             row->depth.setWantsKeyboardFocus (false);
+            // setWantsKeyboardFocus alone doesn't stop a click from grabbing
+            // focus -- see Controls.h's Knob for the full explanation.
+            row->source.setMouseClickGrabsKeyboardFocus (false);
+            row->dest.setMouseClickGrabsKeyboardFocus (false);
+            row->depth.setMouseClickGrabsKeyboardFocus (false);
             row->source.getProperties().set ("paramID", sourceID);
             row->dest.getProperties().set ("paramID", destID);
             row->depth.getProperties().set ("paramID", depthID);

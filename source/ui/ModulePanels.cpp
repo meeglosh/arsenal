@@ -15,6 +15,11 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
       enable (p.getAPVTS(), id::oscSlot (slotIndex, id::osc::enable), "ON"),
       mode (p.getAPVTS(), id::oscSlot (slotIndex, id::osc::mode))
 {
+    // Clicking the header to open the sample-swap menu shouldn't steal focus
+    // from the on-screen keyboard's QWERTY note input -- see Controls.h's
+    // Knob for the full explanation.
+    setMouseClickGrabsKeyboardFocus (false);
+
     auto& apvts = processor.getAPVTS();
     const auto pid = [this] (const char* key) { return id::oscSlot (slot, key); };
 

@@ -33,6 +33,11 @@ public:
         addAndMakeVisible (onToggle);
         addAndMakeVisible (character);
         setWantsKeyboardFocus (false);
+        // setWantsKeyboardFocus alone doesn't stop a click/drag from grabbing
+        // focus (JUCE grabs it unconditionally on mouseDown via a separate
+        // flag) -- this editor handles node clicks/drags directly, so it
+        // needs the actual fix too, not just the controls inside it.
+        setMouseClickGrabsKeyboardFocus (false);
         modName = (juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX)
                       ? "Cmd" : "Ctrl";
         setTooltip ("Double-click to add or remove a band. Drag a node to move it; "
