@@ -30,6 +30,19 @@ BUILD="$REPO_ROOT/build-release"
 
 echo "=== SPASynth $VERSION release build ==="
 
+# --- 0. Clear any dev-build shadow copy -----------------------------------------
+# Dev/auval builds (SPASYNTH_COPY_PLUGIN=ON by default) copy plugins into the
+# user's ~/Library/Audio/Plug-Ins/. macOS's AudioComponent lookup prefers the
+# user domain over the system domain (/Library, where the signed release
+# installs), so a leftover dev copy silently shadows every subsequent signed
+# install in any DAW, however recent or correctly signed it is. This bit us
+# repeatedly (1.0.4, 1.0.8) whenever a dev copy from earlier verification work
+# wasn't manually cleared before staging a release. Unconditional and
+# automatic here so it can never again depend on remembering a manual step.
+rm -rf ~/Library/Audio/Plug-Ins/Components/SPASynth.component \
+       ~/Library/Audio/Plug-Ins/VST3/SPASynth.vst3
+echo "cleared any ~/Library dev-build shadow copy"
+
 # --- 1. Plugin (universal Release) + tests ------------------------------------
 cmake -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DSPASYNTH_UNIVERSAL_BINARY=ON -DSPASYNTH_COPY_PLUGIN=OFF

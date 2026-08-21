@@ -243,10 +243,17 @@ pick these up in a future session):**
   now lives at `build/SPASynthTests_artefacts/SPASynthTests` (**no `Debug/`
   subdir**). A stale `Debug/` binary silently ran old tests until caught and
   deleted on 2026-08-04 — see the updated verification-ritual path below.
-- After any dev AU/VST3 build, clear
+- Dev AU/VST3 builds copy plugins into `~/Library/Audio/Plug-Ins/`
+  (`SPASYNTH_COPY_PLUGIN=ON` by default), and macOS's AudioComponent lookup
+  prefers the user domain over the system domain (`/Library`, where the
+  signed release installs) — a leftover dev copy silently shadows every
+  subsequent signed release in any DAW, however recent or correctly signed.
+  Bit us on 1.0.4 and again on 1.0.8 (a QWERTY-fix dev copy from two days
+  earlier silently shadowed the whole 1.0.8 release; Mike couldn't get the
+  update to show up in Logic at all until it was cleared). **Fixed for good
+  going forward**: `scripts/build_release.sh` now unconditionally clears
   `~/Library/Audio/Plug-Ins/{Components/SPASynth.component,VST3/SPASynth.vst3}`
-  before Mike smoke-tests an installed release (dev copies shadow /Library in
-  Logic — bit us on 1.0.4).
+  as its first step, every run — no longer a manual habit to remember.
 - Mike's PAT lacks admin: he flips repo visibility himself around Windows CI
   runs (public for the push+build, back to private after). **Repo is PRIVATE
   as of 2026-08-04.**

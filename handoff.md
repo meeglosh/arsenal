@@ -136,9 +136,11 @@ install <pkg>` -> accepted. Ask Mike before rebuilding (he batches findings).
   `build/SPASynthTests_artefacts/SPASynthTests` (no `Debug/` subdir). A
   stale `Debug/` binary can silently run old tests — delete any `Debug/`
   copy you find.
-- After any dev AU/VST3 build, clear `~/Library/Audio/Plug-Ins/
-  {Components/SPASynth.component,VST3/SPASynth.vst3}` before Mike
-  smoke-tests an installed release (dev copies shadow /Library in Logic).
+- Dev AU/VST3 builds shadow the installed release in Logic (macOS prefers
+  ~/Library over /Library for AU lookup) — bit us on 1.0.4 and 1.0.8. **Fixed
+  for good going forward**: `build_release.sh` now auto-clears
+  `~/Library/Audio/Plug-Ins/{Components/SPASynth.component,VST3/SPASynth.vst3}`
+  as its first step, every run.
 - **Windows CI needs the repo PUBLIC.** Mike's PAT lacks admin, so he flips
   visibility himself around Windows CI runs (public for the push+build, back
   to private after). Repo is PRIVATE as of 2026-08-14.
