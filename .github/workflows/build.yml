@@ -11,6 +11,14 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege default: both jobs only checkout the repo, build, and
+# upload build artifacts (actions/upload-artifact writes to the run's own
+# artifact storage, not repo contents/PRs/packages/releases) -- read-only
+# repo access is all that's needed. Neither job creates releases, comments
+# on PRs, or publishes packages.
+permissions:
+  contents: read
+
 jobs:
   # Windows is the only platform we cannot build locally, so it runs on every
   # push. It bills at 2x and finishes in ~17 min.
