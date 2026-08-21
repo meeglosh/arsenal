@@ -305,7 +305,26 @@ juce::String toPortable (const juce::File& f, const juce::File& libraryRoot)
 juce::File fromPortable (const juce::String& s, const juce::File& libraryRoot)
 {
     if (s.startsWith (portablePrefix))
-        return libraryRoot.getChildFile (s.fromFirstOccurrenceOf (portablePrefix, false, false));
+    {
+        const auto resolved = libraryRoot.getChildFile (
+            s.fromFirstOccurrenceOf (portablePrefix, false, false));
+
+        // Defence in depth only, not a new trust boundary: getChildFile()
+        // resolves ".." segments, so a hand-crafted $LIB$/../../etc/hosts
+        // preset could otherwise walk outside the library root. (Presets can
+        // already reference arbitrary absolute paths via the branch below --
+        // that's by design, so customers can point SPASynth at their own
+        // existing sample folders -- this only tightens the $LIB$-prefixed
+        // branch, which is supposed to stay inside the root.) Callers already
+        // treat "file doesn't exist" as a normal case (missing/moved preset
+        // content), so returning an invalid File here is handled the same way.
+        if (libraryRoot.isDirectory()
+            && resolved != libraryRoot
+            && ! resolved.isAChildOf (libraryRoot))
+            return {};
+
+        return resolved;
+    }
 
     return juce::File (s);
 }

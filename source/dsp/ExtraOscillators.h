@@ -174,25 +174,46 @@ private:
 
 // =============================== Pluck (KS) =================================
 // Karplus-Strong plucked string: noise burst into a damped delay loop.
-// Buffer is allocated once in prepare() — nothing allocates at note time.
+// The maxPeriod-sized buffer (16KB) is only ever needed by oscillator slots
+// actually running in Pluck mode; most slots never touch it, and it's
+// instantiated per-voice x per-slot, so allocating it unconditionally in
+// prepare() left ~1MB permanently resident for synths that never use Pluck.
+// Instead, prepare() only resets state; ensureAllocated() does the real
+// allocation and is called lazily, from the message thread only, the first
+// time a slot's mode is observed to be Pluck -- primarily synchronously from
+// SPASynthProcessor::parameterChanged() (fired when the mode parameter is
+// set to Pluck), with SPASynthProcessor::timerCallback() as a fallback safety
+// net, both under the callback lock. noteOn() and getNextSample() both
+// tolerate an unallocated buffer (silent no-op), so nothing ever allocates
+// on the audio thread.
 class PluckString
 {
 public:
     void prepare (double newSampleRate)
     {
         sampleRate = newSampleRate;
-        buffer.assign (maxPeriod, 0.0f);
         period = 100;
         writePos = 0;
+    }
+
+    // Message-thread only (never called from noteOn/process). Idempotent.
+    void ensureAllocated()
+    {
+        if (buffer.empty())
+            buffer.assign (maxPeriod, 0.0f);
     }
 
     void noteOn (float hz, juce::Random& random) noexcept
     {
         period = juce::jlimit (2, maxPeriod - 1,
                                (int) std::lround (sampleRate / juce::jmax (20.0f, hz)));
+        writePos = 0;
+
+        if (buffer.empty())
+            return;   // not yet lazily allocated -- silent for this brief window
+
         for (int i = 0; i < period; ++i)
             buffer[(size_t) i] = random.nextFloat() * 2.0f - 1.0f;
-        writePos = 0;
     }
 
     void setFrequency (float hz) noexcept

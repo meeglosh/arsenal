@@ -759,6 +759,83 @@ namespace
                 "panic silences the latched arp (" + juce::String (after) + ")");
     }
 
+    // processBlockBypassed() must run the identical engine/FX pipeline
+    // processBlock does (minus filtered note-ons) so a reverb/delay tail --
+    // or a still-releasing voice -- keeps ringing out through host bypass
+    // instead of being hard-cut, while new notes cannot start and note-offs
+    // still pass through to wind everything down.
+    static void bypassTailTest()
+    {
+        std::cout << "bypassTailTest\n";
+        namespace id = spa::params::id;
+        constexpr double sr = 48000.0;
+        constexpr int n = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sr, n);
+        setParam (proc, id::chaos::enable, 0.0f);
+        setParam (proc, id::ampRelease, 0.1f);
+
+        // An audible, self-decaying delay tail so there is something to ring
+        // out once bypassed.
+        setParam (proc, id::fx::delayEnable, 1.0f);
+        setParam (proc, id::fx::delaySync, 0.0f);
+        setParam (proc, id::fx::delayTime, 50.0f);
+        setParam (proc, id::fx::delayFeedback, 0.6f);
+        setParam (proc, id::fx::delayMix, 1.0f);
+
+        juce::AudioBuffer<float> buf (2, n);
+        juce::MidiBuffer midi;
+
+        // Get a voice actively sounding, with some delay tail built up.
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+        for (int b = 0; b < 6; ++b)
+        {
+            proc.processBlock (buf, midi);
+            midi.clear();
+        }
+        expect (buf.getMagnitude (0, n) > 0.05f, "voice + delay audible before bypass");
+
+        // First bypassed block, note still held (no note-off sent): the
+        // default JUCE processBlockBypassed() would hard-zero an
+        // instrument's whole output bus here since it has no input bus to
+        // pass through -- our override must not.
+        midi.clear();
+        proc.processBlockBypassed (buf, midi);
+        expect (buf.getMagnitude (0, n) > 0.02f,
+                "bypassed block still audible, not hard-cut ("
+                + juce::String (buf.getMagnitude (0, n)) + ")");
+
+        // While bypassed: a note-on must be filtered out (no new voice
+        // starts), while a note-off in the same call must still pass
+        // through and start the release/tail wind-down.
+        midi.clear();
+        midi.addEvent (juce::MidiMessage::noteOn (1, 72, (juce::uint8) 100), 5);
+        midi.addEvent (juce::MidiMessage::noteOff (1, 60), 250);
+        proc.processBlockBypassed (buf, midi);
+        midi.clear();
+
+        // Render well past both the amp release and the delay feedback tail,
+        // then look only at the LAST handful of blocks (not the max over the
+        // whole run, which would still be dominated by the loud release
+        // transient right after the note-off). If the note-on had
+        // incorrectly started a voice on 72 (which never gets a note-off),
+        // or the note-off on 60 had been dropped, that tail would never
+        // settle to silence.
+        const int settleBlocks = (int) (1.5 * sr / n);
+        const int tailCheckBlocks = 8;
+        float lateMag = 0.0f;
+        for (int b = 0; b < settleBlocks; ++b)
+        {
+            proc.processBlockBypassed (buf, midi);
+            if (b >= settleBlocks - tailCheckBlocks)
+                lateMag = juce::jmax (lateMag, buf.getMagnitude (0, n));
+        }
+        expect (lateMag < 0.001f,
+                "note-off passes through bypass and note-on is filtered, "
+                "settles to silence (late mag " + juce::String (lateMag) + ")");
+    }
+
     // Reverb MIX must be a true dry/wet dial: fully dry at 0, fully wet at 1.
     // (Was capped so the dry never dropped below 60%, so you could never reach
     // full reverb.) Settle the gain smoothing on silence, then probe the first
@@ -2576,6 +2653,51 @@ namespace
         }
     }
 
+    // Pluck engine buffers are allocated lazily (SPASynthVoice::
+    // ensurePluckAllocated, triggered from SPASynthProcessor::
+    // parameterChanged() when the osc-mode param is set to pluck). Switching
+    // a slot to Pluck and striking a note immediately afterwards -- no
+    // message-loop pumping beyond setValueNotifyingHost's own synchronous
+    // listener dispatch -- must not race the allocation and produce silence
+    // (or worse, an unallocated-buffer misbehaviour).
+    static void pluckLazyAllocTest()
+    {
+        std::cout << "pluckLazyAllocTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setParam (proc, id::chaos::enable, 0.0f);
+
+        // setValueNotifyingHost() dispatches to
+        // AudioProcessorValueTreeState::Listener::parameterChanged()
+        // synchronously (see the ctor/parameterChanged comment in
+        // SPASynthProcessor.cpp), so the lazy Pluck allocation has already
+        // happened by the time this call returns -- no callAsync/message-
+        // loop pump needed before striking the note.
+        setParam (proc, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::pluck);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 69, (juce::uint8) 100), 0);
+
+        float early = 0.0f;
+        for (int b = 0; b < 8; ++b)
+        {
+            proc.processBlock (buffer, midi);
+            midi.clear();
+            early = juce::jmax (early, buffer.getMagnitude (0, blockSize));
+        }
+        expect (early > 0.05f,
+                "pluck strikes audibly right after the mode switch, no allocation race ("
+                + juce::String (early) + ")");
+    }
+
     static void filterExtrasTest()
     {
         std::cout << "filterExtrasTest\n";
@@ -2965,6 +3087,7 @@ int main (int argc, char* argv[])
     voiceModeTest();
     oversamplingTest();
     panicTest();
+    bypassTailTest();
     midiClockTest();
     fxOrderTest();
     fxEQDistortionTest();
@@ -2980,6 +3103,7 @@ int main (int argc, char* argv[])
     arpNonFinitePpqTest();
     arpChanceTest();
     extraEnginesTest();
+    pluckLazyAllocTest();
     filterExtrasTest();
     dualFilterTest();
     filter1EnableTest();

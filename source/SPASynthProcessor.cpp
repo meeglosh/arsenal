@@ -65,6 +65,9 @@ SPASynthProcessor::SPASynthProcessor()
         rs.analogShape = apvts.getRawParameterValue (pid (params::id::osc::analogShape));
         rs.fmRatio     = apvts.getRawParameterValue (pid (params::id::osc::fmRatio));
         rs.noiseColor  = apvts.getRawParameterValue (pid (params::id::osc::noiseColor));
+
+        // Drives the lazy Pluck-buffer allocation below (parameterChanged()).
+        apvts.addParameterListener (pid (params::id::osc::mode), this);
     }
 
     for (int i = 0; i < params::numLFOs; ++i)
@@ -253,6 +256,42 @@ SPASynthProcessor::SPASynthProcessor()
 SPASynthProcessor::~SPASynthProcessor()
 {
     stopTimer();
+
+    for (int s = 0; s < params::numOscSlots; ++s)
+        apvts.removeParameterListener (params::id::oscSlot (s, params::id::osc::mode), this);
+}
+
+void SPASynthProcessor::parameterChanged (const juce::String& parameterID, float)
+{
+    // Only the osc-slot mode parameters are registered (see the ctor).
+    // AudioProcessorParameter::setValueNotifyingHost() -- the sole path that
+    // reaches an AudioProcessorValueTreeState::Listener -- is, by JUCE
+    // convention, only ever called from the UI/message thread (a user
+    // twiddling a control) or from a message-thread preset restore
+    // (restoreStateTree()'s apvts.replaceState()). Host automation instead
+    // writes parameters via the plain setValue() path, which does NOT notify
+    // listeners, so this callback can never arrive from the audio thread --
+    // safe to allocate here. (getCallbackLock() is JUCE's CriticalSection,
+    // which is recursive, so this is also safe to call reentrantly from
+    // inside restoreStateTree()'s own ScopedLock on the same thread.)
+    for (int s = 0; s < params::numOscSlots; ++s)
+        if (parameterID == params::id::oscSlot (s, params::id::osc::mode))
+            ensurePluckAllocatedForSlot (s);
+}
+
+void SPASynthProcessor::ensurePluckAllocatedForSlot (int s)
+{
+    if (s < 0 || s >= params::numOscSlots || pluckAllocated[(size_t) s])
+        return;
+    if (raw.slots[(size_t) s].mode == nullptr
+        || (params::OscMode) (int) raw.slots[(size_t) s].mode->load() != params::OscMode::pluck)
+        return;
+
+    const juce::ScopedLock sl (getCallbackLock());
+    for (int v = 0; v < synth.getNumVoices(); ++v)
+        if (auto* voice = dynamic_cast<dsp::SPASynthVoice*> (synth.getVoice (v)))
+            voice->ensurePluckAllocated (s);
+    pluckAllocated[(size_t) s] = true;
 }
 
 void SPASynthProcessor::timerCallback()
@@ -291,6 +330,14 @@ void SPASynthProcessor::timerCallback()
     // here (message thread), debounced to the timer, only when the values move.
     if (raw.fx.convDecay != nullptr)
         fxChain.setConvolutionShaping (raw.fx.convDecay->load(), raw.fx.convDamping->load());
+
+    // Fallback safety net for the lazy Pluck-buffer allocation normally done
+    // synchronously in parameterChanged(): catches a slot that was already in
+    // Pluck mode before a listener was registered (e.g. a state restore path
+    // that bypasses parameterChanged) or any other edge case. Cheap no-op
+    // once a slot is allocated (pluckAllocated guards it).
+    for (int s = 0; s < params::numOscSlots; ++s)
+        ensurePluckAllocatedForSlot (s);
 
     // Anything retired more than one timer period ago can no longer be in
     // use by the audio thread (it re-reads `live` every block).
@@ -663,6 +710,7 @@ void SPASynthProcessor::prepareEngine (double engineRate, int engineBlock)
     synth.setCurrentPlaybackSampleRate (engineRate);
     arp.prepare (engineRate);
     scaledMidi.ensureSize (8192);   // no audio-thread allocation; see Arpeggiator::scratch
+    bypassMidi.ensureSize (8192);   // same rationale; see processBlockBypassed
     fxChain.prepare (engineRate, engineBlock);
 
     paraEnv.setSampleRate (engineRate);
@@ -1231,6 +1279,27 @@ void SPASynthProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         auto* data = buffer.getWritePointer (ch);
         juce::FloatVectorOperations::clip (data, data, -4.0f, 4.0f, buffer.getNumSamples());
     }
+}
+
+// Soft bypass: strip note-on messages (velocity 0 "note on" counts as a
+// note-off, per MidiMessage::isNoteOn's default, so it correctly passes
+// through) and otherwise run the identical pipeline processBlock does --
+// voices already sounding keep releasing/decaying, the FX chain keeps
+// processing their output normally, so reverb/delay/convolve tails ring out
+// instead of being hard-cut. Note-offs, CC (including panic's 120/123),
+// pitch bend, sustain, aftertouch, MIDI clock, etc. all pass through
+// untouched. No separate render path to keep in sync with processBlock.
+void SPASynthProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer,
+                                              juce::MidiBuffer& midi)
+{
+    bypassMidi.clear();
+    for (const auto md : midi)
+    {
+        const auto m = md.getMessage();
+        if (! m.isNoteOn())
+            bypassMidi.addEvent (m, md.samplePosition);
+    }
+    processBlock (buffer, bypassMidi);
 }
 
 juce::ValueTree SPASynthProcessor::buildStateTree (bool includeMidiMap)

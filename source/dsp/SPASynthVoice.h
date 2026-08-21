@@ -346,6 +346,15 @@ public:
     void renderNextBlock (juce::AudioBuffer<float>& outputBuffer,
                           int startSample, int numSamples) override;
 
+    // Message-thread only: lazily backs the given slot's Pluck (Karplus-
+    // Strong) buffer once that slot is actually used in Pluck mode. See
+    // PluckString::ensureAllocated() and SPASynthProcessor::timerCallback().
+    void ensurePluckAllocated (int slot)
+    {
+        if (slot >= 0 && slot < (int) plucks.size())
+            plucks[(size_t) slot].ensureAllocated();
+    }
+
 private:
     // Computes modulation sources and effective parameter values for one
     // chunk, then configures oscillators/filter/envelopes from them.

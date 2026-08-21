@@ -28,6 +28,20 @@ namespace
             {
                 jassert (params::numModDests() <= params::maxModDests);
 
+                // Release builds compile jassert to nothing, so also surface
+                // the violation loudly here (this static-init lambda runs
+                // exactly once, on first use -> a de-facto startup check).
+                // DBG is cheap/harmless in release (no-op unless a debugger
+                // console is attached); the array reads below are clamped
+                // regardless, so this is a diagnostic only, not the fix.
+                if (params::numModDests() > params::maxModDests)
+                {
+                    DBG ("SPASynth: numModDests() (" << params::numModDests()
+                         << ") exceeds maxModDests (" << params::maxModDests
+                         << ") -- mod destinations beyond capacity will be "
+                            "silently dropped. Raise params::maxModDests.");
+                }
+
                 DestLookup l {};
                 namespace id = params::id;
 
@@ -328,17 +342,25 @@ void SPASynthVoice::computeChunk (int blockOffset, int chunkLen)
     }
 
     // --- Apply routes in normalized space -----------------------------------
+    // Defense-in-depth: clamp against the fixed array capacity even though
+    // the jassert above should already catch a registry overflow in debug
+    // builds. In release builds jassert compiles to nothing, so without this
+    // clamp a registry grown past maxModDests would silently walk `eff` (and
+    // the std::copy source range) out of bounds on every audio block.
+    const int nDests = juce::jmin (params::numModDests(), params::maxModDests);
+
     float eff[params::maxModDests];
     std::copy (shared.baseNorm.begin(),
-               shared.baseNorm.begin() + params::numModDests(), eff);
+               shared.baseNorm.begin() + nDests, eff);
 
     for (int r = 0; r < shared.numActiveRoutes; ++r)
     {
         const auto& route = shared.routes[(size_t) r];
-        eff[route.destIndex] += src[route.source] * route.depth;
+        if (route.destIndex >= 0 && route.destIndex < nDests)
+            eff[route.destIndex] += src[route.source] * route.depth;
     }
 
-    for (int d = 0; d < params::numModDests(); ++d)
+    for (int d = 0; d < nDests; ++d)
         eff[d] = juce::jlimit (0.0f, 1.0f, eff[d]);
 
     // Cache effective chaos controls for next chunk's walker advance.

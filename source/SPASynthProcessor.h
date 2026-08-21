@@ -16,7 +16,8 @@ namespace spa
 
 class SPASynthProcessor : public juce::AudioProcessor,
                          public juce::ChangeBroadcaster,
-                         private juce::Timer
+                         private juce::Timer,
+                         private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     SPASynthProcessor();
@@ -26,6 +27,19 @@ public:
     void releaseResources() override {}
     bool isBusesLayoutSupported (const BusesLayout& layouts) const override;
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+
+    // Host-triggered bypass. JUCE's default processBlockBypassed() only clears
+    // channels beyond the input bus, which for an instrument (no audio input
+    // bus) means it hard-zeros the entire output the instant a host calls it --
+    // any reverb/delay/convolve tail is cut with a click instead of ringing
+    // out. We run the exact same engine/FX pipeline as processBlock, just with
+    // new note-on messages filtered out of the incoming MIDI first, so already-
+    // sounding voices release/tail off naturally (as if the keys had just been
+    // let go) while nothing new can start. No `getBypassParameter()` override:
+    // its default (nullptr) is what makes the host call this method directly
+    // rather than routing bypass through a plugin parameter, which is exactly
+    // the mechanism we want.
+    void processBlockBypassed (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -161,6 +175,13 @@ private:
                         juce::String path, juce::String error);
     void timerCallback() override;
 
+    // AudioProcessorValueTreeState::Listener. Registered ONLY for the osc-slot
+    // mode parameters (see the ctor), to lazily allocate Pluck buffers -- see
+    // ensurePluckAllocatedForSlot() and the comment on its definition for why
+    // this callback is safely message-thread-only.
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+    void ensurePluckAllocatedForSlot (int slot);
+
     juce::AudioProcessorValueTreeState apvts;
 
     dsp::SharedState shared;   // written on audio thread, read by voices
@@ -170,6 +191,12 @@ private:
     dsp::GlideSynthesiser synth { shared };
     dsp::FXChain fxChain;
     dsp::FXChain::Params fxParams;
+
+    // Message-thread flags: once a slot's Pluck (Karplus-Strong) buffers
+    // have been lazily allocated across all voices (see parameterChanged()/
+    // ensurePluckAllocatedForSlot(), with timerCallback() as a fallback),
+    // set so the check doesn't keep re-taking the callback lock every tick.
+    std::array<bool, params::numOscSlots> pluckAllocated {};
 
     // Paraphonic shared amp envelope (voice mode = Paraphonic): one ADSR gated
     // by the collective key count, rendered per-block into paraEnvBuf for the
@@ -192,6 +219,10 @@ private:
     // persistent member (preallocated in prepareEngine, like Arpeggiator::scratch)
     // so processBlock never heap-allocates via a fresh local MidiBuffer.
     juce::MidiBuffer scaledMidi;
+
+    // Preallocated scratch buffer for processBlockBypassed's note-on filtering
+    // (same no-audio-thread-allocation rationale as scaledMidi above).
+    juce::MidiBuffer bypassMidi;
 
     void prepareEngine (double engineRate, int engineBlock);   // rate-dependent setup
     void rebuildOversampling (int factor);                     // message thread only
