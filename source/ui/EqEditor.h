@@ -229,6 +229,7 @@ public:
     void timerCallback() override
     {
         refreshSampleRate();
+        if (! isShowing()) return;
         computeSpectrum();
         repaint();
     }

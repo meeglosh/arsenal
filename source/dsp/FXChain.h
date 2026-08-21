@@ -191,7 +191,13 @@ private:
     ModEffect modEffect;
     TremVib tremVibEffect;
     Limiter limiterEffect;
-    juce::dsp::Convolution convolution;
+    // Non-uniform partitioned convolution (256-sample head) rather than the
+    // default uniform-block engine: IRs here run up to 10s (see
+    // loadConvolutionIR's cap), and JUCE's own docs recommend NonUniform with
+    // a >=256-sample head for reverberation-length IRs (>=~4096 samples) to
+    // keep average CPU down on the long tail, at the cost of a little extra
+    // latency at the head vs the zero-latency uniform default.
+    juce::dsp::Convolution convolution { juce::dsp::Convolution::NonUniform { 256 } };
     juce::AudioBuffer<float> convScratch;
     // Written on the message thread (load/reshape), read on the audio thread
     // (process()) and from hasConvolutionIR() — same relaxed-atomic pattern as

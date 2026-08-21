@@ -731,6 +731,16 @@ void SPASynthProcessor::renderEngine (juce::AudioBuffer<float>& buffer, juce::Mi
     synth.renderNextBlock (buffer, midi, 0, buffer.getNumSamples());
 
     updateFXParams();
+    // Intentional: the FX chain runs on whatever rate `buffer` is at, which at
+    // higher oversampling factors is the OVERSAMPLED rate (up to 8x, so up to
+    // ~384kHz on a 128-sample host buffer) — not just the synth engines. This
+    // matches the "whole-synth oversampling" branding (everything downstream
+    // of the oscillators, including reverb/EQ/convolution/limiter, benefits
+    // from the higher internal rate), but it means CPU cost for the ENTIRE FX
+    // chain scales with the oversampling factor, not just the voice count. A
+    // user running 8x oversampling with a heavy chain (convolution + reverb +
+    // EQ all active) should expect a real, compounding CPU cost from this —
+    // kept as a deliberate design tradeoff, not an oversight.
     fxChain.process (buffer, fxParams);
 
     masterGain.setTargetValue (juce::Decibels::decibelsToGain (raw.masterGain->load(), -60.0f));

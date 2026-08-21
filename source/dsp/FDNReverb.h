@@ -86,6 +86,24 @@ public:
         const float dryG = std::cos (theta), wetG = std::sin (theta);
         const float width = juce::jlimit (0.0f, 1.0f, p.width);
 
+        // Tail-modulation LFOs: previously std::sin() was called once per
+        // delay line per sample. Instead, seed a unit-vector rotator per
+        // line from its (fixed, per-line) starting phase once per block,
+        // then advance it each sample via the standard 2x2 rotation
+        // recurrence (one multiply-add pair per line per sample instead of
+        // a transcendental call). Numerically identical to the old
+        // std::sin((lfo[i] + modInc*s) * twoPi) up to fp rounding, since
+        // the rotation increment (modInc*twoPi) is the same for every line.
+        const float modAngleInc = modInc * juce::MathConstants<float>::twoPi;
+        const float cosInc = std::cos (modAngleInc), sinInc = std::sin (modAngleInc);
+        float lfoRe[N], lfoIm[N];
+        for (int i = 0; i < N; ++i)
+        {
+            const float phase0 = lfo[(size_t) i] * juce::MathConstants<float>::twoPi;
+            lfoRe[i] = std::cos (phase0);
+            lfoIm[i] = std::sin (phase0);
+        }
+
         float* L = buffer.getWritePointer (0);
         float* R = numCh > 1 ? buffer.getWritePointer (1) : L;
 
@@ -108,14 +126,34 @@ public:
             float y[N];
             for (int i = 0; i < N; ++i)
             {
-                const float m = 1.0f + 3.0f * modAmt
-                              * std::sin ((lfo[(size_t) i] + modInc * (float) s) * juce::MathConstants<float>::twoPi);
+                const float m = 1.0f + 3.0f * modAmt * lfoIm[i];
                 float rp = (float) lineW[(size_t) i] - ((float) len[i] - m);
                 const int sz = (int) line[(size_t) i].size();
                 while (rp < 0.0f) rp += (float) sz;
                 const int i0 = (int) rp; const float fr = rp - (float) i0;
                 const int i1 = (i0 + 1) % sz;
                 y[i] = line[(size_t) i][(size_t) i0] + fr * (line[(size_t) i][(size_t) i1] - line[(size_t) i][(size_t) i0]);
+
+                // Advance this line's rotator by the fixed per-sample angle.
+                const float newRe = lfoRe[i] * cosInc - lfoIm[i] * sinInc;
+                const float newIm = lfoRe[i] * sinInc + lfoIm[i] * cosInc;
+                lfoRe[i] = newRe; lfoIm[i] = newIm;
+            }
+
+            // Cheap periodic renormalization: guards against fp drift on the
+            // unit circle for unusually large block sizes (e.g. offline
+            // bounce with one huge callback). Not needed for normal
+            // realtime block sizes -- each process() call already reseeds
+            // the rotator from lfo[i] via std::cos/sin above, which is a
+            // natural per-block resync -- but the check is a single branch
+            // per sample so it costs nothing to leave in as a safety net.
+            if ((s & 4095) == 4095)
+            {
+                for (int i = 0; i < N; ++i)
+                {
+                    const float invMag = 1.0f / std::sqrt (lfoRe[i] * lfoRe[i] + lfoIm[i] * lfoIm[i]);
+                    lfoRe[i] *= invMag; lfoIm[i] *= invMag;
+                }
             }
 
             // Damp, Hadamard mix, decay, write back.
