@@ -10,6 +10,128 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-08-25): v1.0.9 staged (pending Mike's test); v1.0.8 confirmed working + shipped to testers; a QWERTY focus-steal follow-up is in progress, uncommitted
+
+**v1.0.8 — two attempts, the first was wrong and Mike caught it.** Fixes
+QWERTY (computer-keyboard) note input via the on-screen keyboard silently
+dying the instant any knob/dropdown was touched, only resuming after
+clicking a virtual key.
+- First attempt (`bc7f4d2`) used `setWantsKeyboardFocus(false)` on every
+  param control. **Did not work** — Mike tested and reported it back broken.
+  That flag only controls whether a component accepts focus if GIVEN it;
+  JUCE grabs focus on every mouse click **unconditionally**, via a completely
+  separate flag, walking up to a parent if the clicked component doesn't
+  want focus — so the first fix just relocated where focus went, not whether
+  it moved.
+- Corrected (`768309d`), traced through JUCE's actual
+  `Component::grabKeyboardFocusInternal` source before landing the real fix:
+  `setMouseClickGrabsKeyboardFocus(false)` is the flag that actually stops
+  the grab (checked FIRST in `grabKeyboardFocusInternal`, short-circuits
+  before any parent-walk). Applied to Controls.h's Knob/Choice/Toggle, mod
+  matrix rows, preset browser's category box, top-bar WILD/GLIDE/MASTER, the
+  EqEditor's node-drag handling, DraggableTabButton (FX reorder), and
+  OscStrip's sample-swap click.
+  **Lesson for any future focus-stealing bug in this codebase: it's
+  `setMouseClickGrabsKeyboardFocus`, not `setWantsKeyboardFocus`.**
+- Since 1.0.8 was never distributed, the corrected build replaced it in
+  place (same version, no bump — Mike's "never sent = overwrite" rule).
+  Confirmed working by Mike in Logic. **Sent to Paul and Phil**, who also
+  tested the Windows build — no issues reported by either.
+
+**v1.0.9 (`c856a4c`..`5ef9d8f`, 2026-08-21) — pre-launch performance/hardening
+batch, built+staged, NOT yet tested by Mike.** Done at Mike's request ("wrap
+those up pre launch as long as we have the luxury of time"), not in response
+to a bug — the deferred list from the 1.0.5 audit. Seven agents ran in
+parallel on disjoint files:
+- Soft bypass: `processBlockBypassed` no longer hard-zeros output on
+  host-triggered bypass (JUCE's instrument default does exactly that) — now
+  filters new note-ons and runs the normal pipeline so reverb/delay/convolve
+  tails ring out naturally.
+- Convolution `NonUniform{256}` partitioning (JUCE's own recommendation for
+  the up-to-10s IRs Convolve allows).
+- FDN reverb's 4x-`std::sin()`-per-sample tail mod replaced with a seeded
+  rotation recurrence — numerically verified identical via before/after peak
+  comparison on the existing reverb tests.
+- EQ analyzer FFT gated on tab visibility (`isShowing()`).
+- `maxModDests=96` capacity guard made always-on (was a debug-only
+  `jassert`) — every use site now clamps, in every build configuration.
+- `$LIB$` preset path traversal clamp (defense-in-depth; presets can still
+  reference arbitrary absolute paths by design).
+- PluckString buffers now allocate lazily (~1MB saved when Pluck mode is
+  unused), triggered off the osc-mode parameter listener (message-thread
+  only, with a timer fallback) — NOT from the audio thread.
+- CI `permissions: contents: read` (least-privilege, matters more than usual
+  since this repo gets flipped public for Windows CI runs).
+
+Suite grew 181→185 (`bypassTailTest`, `pluckLazyAllocTest`). **Caught two
+accidental file-ownership overlaps between parallel agents mid-session**
+(`SPASynthProcessor.cpp` and `SPASynthVoice.h` each touched by two agents) —
+verified via `grep`/`git status` that no work was lost in either case before
+proceeding; both agents' changes coexisted correctly. Marketing copy
+refreshed same session: `docs/launch-email.md` and `docs/social-posts.md`
+were stuck describing the v1.0.0/v1.0.2 feature set (missing the entire FX
+chain, voice modes, oversampling, on-screen keyboard) — rewritten to match
+reality. Marketing site (spasynth.com) independently fact-checked via
+WebFetch and confirmed accurate by Mike directly (correct sound count,
+correct USD pricing, full current feature list — though it does use em
+dashes and its footer says v1.0.7, both Mike's call, outside the repo).
+
+Built+signed+notarized+staged 2026-08-21: macOS md5
+`2993e1265925293724aca05528ecc343`, Windows md5
+`f36f6a7b79cf375dd166d0c3083af7cd`, byte-identical across
+`dist/installers/` and both shopify 1.0.9 folders.
+
+**In progress, UNCOMMITTED as of 2026-08-25: a second focus-steal bug, found
+after 1.0.9 was staged.** Mike reported QWERTY stops the instant RANDOMIZE
+ALL is clicked. Root cause: the 1.0.8 fix only covered *parameter* controls
+(Controls.h's Knob/Choice/Toggle etc.) — it never touched the ~25 plain
+action buttons across the UI (RANDOMIZE ALL, SAVE, preset nav, settings,
+panic, keyboard toggle, accent picker's LINK/RESET, the standalone tempo
+bar's TAP/SYNC, Convolve's library/browse buttons, OscStrip's LOAD/INIT,
+PresetBrowser's close/favorites/library/rescan), all of which have the exact
+same `setMouseClickGrabsKeyboardFocus` defect. Applied the fix to every one
+of them in `source/ui/SPASynthEditor.cpp`, `ModulePanels.cpp`, and
+`PresetBrowser.cpp`. Build clean, suite still `ALL PASS`, dev build installed
+to Mike's plugin folder — **but not yet committed, and not yet confirmed
+working by Mike** (he was asked to test RANDOMIZE ALL plus several other
+buttons before this gets packaged into a build). If picking this up in a
+future session: check `git status` first, this may still be sitting
+uncommitted in the working tree.
+
+**GitHub Actions storage alert (2026-08-25, resolved as a non-issue, no code
+change).** Mike got a "100% of 0.5GB Actions storage used" email. This quota
+is **account-wide across all of Mike's ~21 repos**, not per-repo. Checked
+live artifact storage (`gh api repos/{owner}/{repo}/actions/artifacts`) and
+Actions cache usage (`.../actions/cache/usage`) across every repo on the
+account: totals ~11MB, all in spasynth, already correctly capped at 3-day
+retention from the earlier fix (`3d7a109`). The ~50x mismatch vs. the
+reported 100%/0.5GB means the billing meter reflects peak/cumulative usage
+earlier in the cycle, not current live storage — nothing is actively
+accumulating. Resets 2026-09-01. Recommended (not done, Mike declined for
+now): a $0 Actions spending limit in GitHub billing settings, since that's a
+web-UI action outside CLI/API reach.
+
+**Repo state: currently PUBLIC** (Mike's explicit ongoing choice as of
+2026-08-21 — "I'll leave the repo public for now so I won't risk blocking
+your progress." Don't prompt him to re-private it unless he asks.)
+
+**Remaining for launch:**
+1. **Get the uncommitted RANDOMIZE-ALL-and-friends focus fix confirmed by
+   Mike**, then commit + package into a build (1.0.9 if nothing else has
+   shipped yet, otherwise bump per the versioning rule).
+2. Mike test-drives 1.0.9's actual hardening changes (separate from the
+   focus-fix above) — nothing user-facing changed except bypass behavior,
+   low risk, but unverified by him.
+3. **Windows real-DAW smoke test** — done as of 1.0.8 (Paul and Phil both
+   tested Windows with no issues); no longer open.
+4. Decide whether to do one more tester round or send the announcement
+   directly once Mike is happy with his own testing.
+5. Shopify build-out per `docs/shopify-setup-guide.md` (clone the needed
+   library zip in from `dist/library/` temporarily, don't leave a permanent
+   second copy in a version folder).
+6. Send `docs/launch-email.md` / `docs/social-posts.md` (now current) when
+   ready — marketing site is already confirmed live and accurate.
+
 ## Current state (2026-08-14): v1.0.7 built + staged (pending Mike's real-world validation); v1.0.6 shipped to testers
 
 **v1.0.6 (`97d86e6`, 2026-08-05) WAS SENT to Paul and Phil** (Mike confirmed).
@@ -143,15 +265,8 @@ public) produced no run; a second, later push with an empty
 → push an empty commit to retry. This is a wait-and-retry workaround, not a
 real fix (PAT lacks admin to inspect/fix Actions settings directly).
 
-**Remaining for launch (Mike's manual steps):**
-1. **Validate 1.0.7 against the original affected Logic session** — the
-   definitive test for the AU-wrapper-lock fix, several reopens, no blasts.
-2. **Decide when to send 1.0.7 to Paul/Phil** (or straight to launch).
-3. **Windows real-DAW smoke test** — still the one untested surface.
-4. **Shopify build-out** per `docs/shopify-setup-guide.md` — clone the
-   needed library zip in from `dist/library/` temporarily per SKU, don't
-   leave a permanent second copy in a version folder.
-5. Marketing site / announcement when ready.
+**Remaining for launch (Mike's manual steps) — see the 2026-08-25 section
+above for the current list; this one is historical.**
 
 ## Current state (2026-08-04): v1.0.5 — audit-hardening build, signed + staged, NOT distributed; 1.0.4 is with testers
 
