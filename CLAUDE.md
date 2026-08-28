@@ -475,10 +475,12 @@ Application: Kenzora Games (7K9WY5T49S)"`, `SPASYNTH_INSTALLER_IDENTITY=
 "Developer ID Installer: Kenzora Games (7K9WY5T49S)"`, `SPASYNTH_NOTARIZE_PROFILE
 ="SPASYNTH_NOTARY"`, then `./scripts/build_release.sh -` (skip library repackage
 — unchanged); push `main` to trigger Windows CI (Windows-only-on-push, no 10x
-macOS); `gh run download <id> -n spasynth-installer-Windows`; copy the pkg+exe
-into the two shopify folders; verify one-hash byte-identity + `minos 11.0` +
-`spctl` accepted. (Mike's PAT expired mid-session once — `gh auth login` fixes
-it; the PAT needs `repo` + `workflow` scopes, Actions:read is enough.)
+macOS); `scripts/fetch_windows_build.sh <sha7>` (superseded `gh run download
+<id> -n spasynth-installer-Windows` once the Windows exe moved to a draft
+release — see Conventions & gotchas); copy the pkg+exe into the two shopify
+folders; verify one-hash byte-identity + `minos 11.0` + `spctl` accepted.
+(Mike's PAT expired mid-session once — `gh auth login` fixes it; the PAT
+needs `repo` + `workflow` scopes, Actions:read is enough.)
 
 **Remaining for launch (Mike's manual steps) — see the 2026-08-04 section above
 for the current list; this one is historical.**
@@ -538,8 +540,10 @@ macOS locally), so: **Windows builds on every push** (only platform we cannot
 build locally); **macOS is `workflow_dispatch` only**. Until the quota resets or
 a spending limit is set, a private repo cannot build Windows — the session
 workaround was to make the repo **temporarily public**, push (Windows-only on
-push = no 10x macOS), `gh run download ... -n spasynth-installer-Windows`, then
-re-private. PAT has Actions:read (Mike enabled it) but not Actions:write (cannot
+push = no 10x macOS), `gh run download ... -n spasynth-installer-Windows`
+(superseded — see Conventions & gotchas for the current
+`scripts/fetch_windows_build.sh` draft-release flow), then re-private. PAT
+has Actions:read (Mike enabled it) but not Actions:write (cannot
 `gh run rerun`; trigger with an empty commit push instead).
 
 **Signing/notary gotcha.** The `SPASYNTH_NOTARY` keychain profile vanished
@@ -852,8 +856,20 @@ clangd/IDE diagnostics ("juce not found" etc.) — the build is the arbiter.
 ## Conventions & gotchas
 
 - Comment style: explain constraints/why, sparingly; match existing density.
-- CI (`.github/workflows/build.yml`): macOS universal + Windows x64 + both
-  unsigned installers as artifacts. macOS job is slow (~1 h JUCE build).
+- CI (`.github/workflows/build.yml`): macOS universal + Windows x64. macOS
+  job is slow (~1 h JUCE build) and still uploads via `actions/upload-artifact`.
+  Windows's installer `.exe` no longer does — `actions/upload-artifact` was
+  hitting the account-wide Actions storage quota (0.5 GB, cumulative
+  GB-month; release assets don't count against it), so the Windows job now
+  publishes the exe as an asset on a DRAFT release tagged
+  `ci-windows-<short sha>` (job-level `permissions: contents: write`,
+  workflow default stays `contents: read`; drafts are invisible to the
+  public even on this public repo and don't create a real tag until
+  published), pruning older `ci-windows-*` drafts down to the newest 5 each
+  run. Fetch a build locally with `scripts/fetch_windows_build.sh
+  [<sha-or-latest>] [<outdir>]` (draft releases aren't resolvable via
+  `gh release download <tag>`, only via the releases list API, which the
+  script handles).
 - GitHub remote: `https://github.com/meeglosh/SPASynth.git`. Mike's PAT has
   repo+workflow scopes but not admin.
 - Snapshot tests front tabs/drawer via `dynamic_cast` walks; keep component

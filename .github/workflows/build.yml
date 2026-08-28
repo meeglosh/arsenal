@@ -11,11 +11,14 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
-# Least-privilege default: both jobs only checkout the repo, build, and
-# upload build artifacts (actions/upload-artifact writes to the run's own
-# artifact storage, not repo contents/PRs/packages/releases) -- read-only
-# repo access is all that's needed. Neither job creates releases, comments
-# on PRs, or publishes packages.
+# Least-privilege default: both jobs only checkout the repo and build --
+# read-only repo access is all that's needed at the workflow level. The
+# Windows job overrides this to contents:write (see below) because the
+# account-wide Actions artifact-storage quota (0.5 GB, cumulative GB-month)
+# is too small for the installer .exe -- its build output is published as a
+# draft GitHub Release asset instead of an actions/upload-artifact, since
+# release assets don't count against that quota. The macOS job is unaffected
+# and keeps the inherited read-only permission.
 permissions:
   contents: read
 
@@ -25,6 +28,13 @@ jobs:
   windows:
     name: Windows (x64)
     runs-on: windows-2022
+    # Needs write access to create/update the draft release the installer is
+    # published to (see "Publish installer to draft release" below) --
+    # actions/upload-artifact was hitting the account-wide Actions storage
+    # quota. Scoped to this job only; the workflow-level default above stays
+    # read-only, and the macOS job never opts in.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,23 +58,64 @@ jobs:
         # absolute workspace path or the upload finds nothing.
         run: '"%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.version.outputs.version }} /DArtefacts=..\..\build\SPASynth_artefacts\Release /O"%GITHUB_WORKSPACE%\dist\installers" installers\windows\SPASynth.iss'
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: spasynth-Windows
-          path: |
-            build/SPASynth_artefacts/**/VST3/**
-            build/SPASynth_artefacts/**/Standalone/**
-          if-no-files-found: error
-          retention-days: 3
+      # No raw-binary artifact upload here: the installer is the only Windows
+      # deliverable (nothing consumes the loose VST3/Standalone build output),
+      # and this step alone was what actually hit the account-wide Actions
+      # storage quota (run 33206649320 failed here with "Artifact storage
+      # quota has been hit", before ever reaching the installer upload).
 
-      - name: Upload installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: spasynth-installer-Windows
-          path: dist/installers/*
-          if-no-files-found: error
-          retention-days: 3
+      # Publish the installer here rather than via actions/upload-artifact:
+      # the account-wide Actions storage quota (0.5 GB, cumulative GB-month)
+      # was already being hit by the raw-binary upload removed above, so any
+      # upload-artifact call in this job is unsafe -- release assets don't
+      # count against that quota. Drafts are invisible to the public on a
+      # public repo, and their tag is not created as a real git ref until
+      # published, so this never pushes a visible tag. Re-runs on the same
+      # commit delete+recreate the draft (gh release view can't see drafts by
+      # tag -- only the list endpoint can -- so existence is checked via
+      # `gh api .../releases`, not `gh release view <tag>`).
+      - name: Publish installer to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TAG="ci-windows-${SHORT_SHA}"
+          EXE="$(ls "${GITHUB_WORKSPACE}"/dist/installers/*.exe)"
+          NOTES="Automated Windows CI build from ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} (commit ${GITHUB_SHA})."
+
+          EXISTING_ID="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .id" | head -n1)"
+          if [ -n "$EXISTING_ID" ]; then
+            echo "Draft release for ${TAG} already exists (id ${EXISTING_ID}) -- deleting before recreate."
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${EXISTING_ID}"
+          fi
+
+          gh release create "$TAG" "$EXE" \
+            --draft \
+            --target "$GITHUB_SHA" \
+            --title "CI Windows build ${{ steps.version.outputs.version }} @ ${SHORT_SHA}" \
+            --notes "$NOTES"
+
+      # Keep the last 5 CI draft releases (~a few builds' worth of history for
+      # scripts/fetch_windows_build.sh) and delete older ones so the draft
+      # list doesn't grow unbounded. Only touches drafts matching the
+      # ci-windows- prefix -- never a real, published release.
+      - name: Prune old CI draft releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t OLD_IDS < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
+            --jq '[.[] | select(.draft == true and (.tag_name | startswith("ci-windows-")))]
+                  | sort_by(.created_at) | reverse | .[5:] | .[].id')
+          for id in "${OLD_IDS[@]:-}"; do
+            [ -n "$id" ] || continue
+            echo "Pruning old CI draft release id ${id}"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${id}"
+          done
 
   # macOS ships from a local signed + notarized build, so this job is only a
   # clean-machine compile check. It runs ON DEMAND (Actions tab -> Run workflow)
