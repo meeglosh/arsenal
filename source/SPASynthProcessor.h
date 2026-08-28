@@ -166,6 +166,11 @@ public:
     // any packs that don't have them yet.
     bool refreshLibrary();   // false if the library root is missing/invalid
 
+    // Pack count from the most recent refreshLibrary() call (message thread
+    // only). Lets callers distinguish "root exists but is empty" from a
+    // real refresh, e.g. to warn the user rather than silently doing nothing.
+    int getLibraryPackCount() const { return lastLibraryPackCount; }
+
 private:
     void updateSharedState (int blockLength);
     void scanMidiControllers (const juce::MidiBuffer& midi);
@@ -267,6 +272,7 @@ private:
     // Constructed after the APVTS (they capture parameter/default state).
     std::unique_ptr<MidiLearnManager> midiLearn;
     std::unique_ptr<library::PresetManager> presetManager;
+    int lastLibraryPackCount = 0;   // message thread only, see getLibraryPackCount()
 
     // On-screen keyboard note source (editor writes, processBlock reads).
     juce::MidiKeyboardState keyboardState;

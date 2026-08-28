@@ -12,6 +12,19 @@ A performance and stability pass, wrapping up ahead of launch.
 - General hardening: tightened internal safety margins and a smaller memory
   footprint in a couple of engine components. Nothing here changes how any
   patch sounds.
+- Fixed a library folder bug: picking a folder that held sound files
+  directly (with no pack subfolders inside it) was silently rejected, and
+  in some cases quietly replaced your chosen folder with the default
+  install location, with no explanation shown. SPASynth now accepts a
+  plain folder of sound files as a library, and if a folder truly has none,
+  it tells you plainly instead of failing silently or discarding your
+  choice.
+- Controls that don't apply to the current setting are now visibly greyed
+  out and can't be touched, instead of looking active but doing nothing.
+  For example: an LFO's rate knob while it's synced to tempo (and its
+  division menu while it isn't), a sample oscillator's loop range while
+  looping is off, the delay's time knob while it's synced to tempo, and
+  glide time while glide is off.
 
 **Notes for this build**
 

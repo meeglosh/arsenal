@@ -60,6 +60,11 @@ private:
     std::unique_ptr<Choice> phaseMode, analogShape, noiseColor;
     std::unique_ptr<Toggle> loop, keytrackSample, keytrackGranular;
 
+    // Loop start/end only mean anything while looping is on; kept as a
+    // separate rule from the mode-driven setVisible() above so the two
+    // states (visible-per-mode, enabled-per-loop) don't fight each other.
+    std::unique_ptr<DependentEnable> loopRangeEnable;
+
     std::unique_ptr<juce::FileChooser> fileChooser;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OscStrip)
@@ -107,6 +112,10 @@ private:
     Choice shape, division;
     Knob rate, phase;
     Toggle sync, retrig, unipolar;
+
+    // Rate only means anything when free-running; division only means
+    // anything when synced -- grey out whichever doesn't apply.
+    DependentEnable rateEnable, divisionEnable;
 };
 
 // Organic Chaos: walker scope + master knobs + per-target drift strip.
@@ -160,6 +169,10 @@ private:
     juce::String panelTitle;
     FXDisplay display;
     SectionPanel controls;   // bare: frame + header drawn by this panel
+
+    // Delay tab only: time vs. division dimming, mirroring the LFO rule.
+    // Null for every other section.
+    std::unique_ptr<DependentEnable> delayTimeEnable, delayDivisionEnable;
 };
 
 } // namespace ui

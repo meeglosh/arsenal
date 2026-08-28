@@ -48,6 +48,12 @@ Prefer the library somewhere else (an external drive, say)? Extract the
 zips anywhere, then use "SET LIBRARY..." in SPASynth's preset browser to
 point at your "SPASynth Library" folder once.
 
+SPASynth accepts two folder layouts when you point it at a library: a
+folder whose subfolders are packs (each pack folder full of WAV files,
+the layout above), or a plain folder of WAV files with no subfolders at
+all. Either way it finds the sounds and builds presets for them
+automatically.
+
 Standard edition: your Library/ folder contains the starter selection.
 Every add-on pack you buy later installs exactly the same way.
 

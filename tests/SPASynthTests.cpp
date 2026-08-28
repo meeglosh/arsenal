@@ -48,6 +48,21 @@ namespace
         param->setValueNotifyingHost (param->convertTo0to1 (realValue));
     }
 
+    // Depth-first search for a component tagged with a given paramID
+    // property -- the same "paramID" tag Controls.h/SectionPanel set on
+    // every slider/combo/button for MIDI Learn. Lets a test reach the real
+    // control inside a live editor tree without needing friend access to
+    // panel internals.
+    juce::Component* findByParamID (juce::Component& root, const juce::String& paramID)
+    {
+        if (root.getProperties()["paramID"].toString() == paramID)
+            return &root;
+        for (auto* child : root.getChildren())
+            if (auto* found = findByParamID (*child, paramID))
+                return found;
+        return nullptr;
+    }
+
     void renderSmokeTest()
     {
         std::cout << "renderSmokeTest\n";
@@ -1697,6 +1712,79 @@ namespace
         emptyDir.deleteRecursively();
     }
 
+    // WAV files sitting directly in a library root (no pack subfolder) form
+    // a pack of their own, named after the root folder itself -- covers a
+    // customer pointing SPASynth at a plain folder of samples.
+    static void looseWavLibraryTest()
+    {
+        std::cout << "looseWavLibraryTest\n";
+
+        namespace lib = spa::library;
+
+        const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getNonexistentChildFile ("spasynth-loose-lib", "");
+        root.createDirectory();
+        for (auto* wav : { "kick.wav", "snare.wav" })
+            root.getChildFile (wav).replaceWithData ("x", 1);
+
+        auto packs = lib::scanLibrary (root);
+        expect (packs.size() == 1, "loose WAVs in the root form one pack");
+        expect (! packs.empty() && packs[0].name == root.getFileName(),
+                "synthetic root pack is named after the root folder");
+        expect (! packs.empty() && packs[0].wavs.size() == 2,
+                "synthetic root pack picks up both loose WAVs");
+        expect (lib::looksLikeLibrary (root),
+                "looksLikeLibrary agrees with scanLibrary for loose WAVs");
+
+        // A real pack subfolder alongside the loose files -- both must count,
+        // with neither double-counting the other's WAVs.
+        const auto packDir = root.getChildFile ("Extra Pack");
+        packDir.createDirectory();
+        packDir.getChildFile ("tom.wav").replaceWithData ("x", 1);
+
+        packs = lib::scanLibrary (root);
+        expect (packs.size() == 2, "loose WAVs and a pack subfolder both count, no overlap");
+
+        int rootPackWavs = -1, extraPackWavs = -1;
+        for (const auto& p : packs)
+        {
+            if (p.name == root.getFileName())
+                rootPackWavs = p.wavs.size();
+            else if (p.name == "Extra Pack")
+                extraPackWavs = p.wavs.size();
+        }
+        expect (rootPackWavs == 2, "root pack keeps exactly its 2 loose WAVs (not double counted)");
+        expect (extraPackWavs == 1, "subfolder pack keeps exactly its own WAV");
+
+        root.deleteRecursively();
+    }
+
+    // findLibraryRoot() must never discard a user-chosen root just because it
+    // currently has zero packs -- that was the actual reported bug (a
+    // freshly-picked folder getting silently overwritten with a rediscovered
+    // default, with no message shown).
+    static void libraryRootPersistsWhenEmptyTest()
+    {
+        std::cout << "libraryRootPersistsWhenEmptyTest\n";
+
+        namespace lib = spa::library;
+
+        const auto savedRoot = lib::getLibraryRoot();   // restore machine setting after
+
+        const auto emptyRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                   .getNonexistentChildFile ("spasynth-empty-configured", "");
+        emptyRoot.createDirectory();
+        lib::setLibraryRoot (emptyRoot);
+
+        expect (lib::findLibraryRoot() == emptyRoot,
+                "findLibraryRoot returns a user-chosen root even with zero packs");
+        expect (lib::getLibraryRoot() == emptyRoot,
+                "the configured setting is left untouched, not silently rediscovered");
+
+        emptyRoot.deleteRecursively();
+        lib::setLibraryRoot (savedRoot);
+    }
+
     static void presetRoundTripTest()
     {
         std::cout << "presetRoundTripTest\n";
@@ -1877,6 +1965,93 @@ namespace
             id::oscSlot (0, id::osc::mode))->convertFrom0to1 (
                 proc.getAPVTS().getParameter (id::oscSlot (0, id::osc::mode))->getValue());
         expect (mode == (int) params::OscMode::sample, "Keys preset sets sample mode");
+
+        libRoot.deleteRecursively();
+        presetsRoot.deleteRecursively();
+    }
+
+    // Same as factoryPresetGenerationTest, but for a library root with loose
+    // WAVs directly inside it and no pack subfolder at all -- the synthetic
+    // root pack must generate real, loadable presets whose portable paths
+    // resolve to files sitting directly under the library root.
+    static void factoryPresetRootPackTest()
+    {
+        std::cout << "factoryPresetRootPackTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+        namespace lib = spa::library;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        const auto libRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                 .getNonexistentChildFile ("spasynth-rootpack-test", "");
+        libRoot.createDirectory();
+        for (auto* wav : { "one.wav", "two.wav", "three.wav" })
+        {
+            juce::AudioBuffer<float> buffer (1, 4800);
+            for (int i = 0; i < 4800; ++i)
+                buffer.setSample (0, i, 0.5f * (float) std::sin (
+                    juce::MathConstants<double>::twoPi * 220.0 * i / 48000.0));
+
+            const auto file = libRoot.getChildFile (wav);
+            juce::WavAudioFormat fmt;
+            std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+            if (auto writer = fmt.createWriterFor (stream,
+                    juce::AudioFormatWriterOptions().withSampleRate (48000.0)
+                        .withNumChannels (1).withBitsPerSample (24)))
+                writer->writeFromAudioSampleBuffer (buffer, 0, 4800);
+        }
+
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-rootpack-presets-test", "");
+
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        const auto packs = lib::scanLibrary (libRoot);
+        expect (packs.size() == 1, "loose-WAV root scans to a single synthetic pack");
+
+        const auto written = pm.generateFactoryPresets (packs, libRoot);
+        expect (written == 3, "3 factory presets generated from the root pack ("
+                              + juce::String (written) + " written)");
+        expect (pm.getCategories().size() == 1,
+                "one preset category, named after the root folder");
+
+        const auto expectedName = libRoot.getFileName() + " Keys";
+        bool foundKeys = false;
+        for (size_t i = 0; i < pm.getPresets().size(); ++i)
+        {
+            if (pm.getPresets()[i].name == expectedName)
+            {
+                foundKeys = pm.loadPreset ((int) i);
+                break;
+            }
+        }
+        expect (foundKeys, "factory Keys preset generated from the root pack loads");
+
+        const auto categoryDir = presetsRoot.getChildFile ("Factory")
+                                     .getChildFile (libRoot.getFileName());
+        expect (categoryDir.isDirectory(),
+                "category folder uses the root folder's own name");
+        const auto presetFile = categoryDir.findChildFiles (juce::File::findFiles, false,
+                                                             "*Keys*").getFirst();
+        const auto xml = juce::XmlDocument::parse (presetFile);
+        expect (xml != nullptr, "root-pack factory preset file parses as XML");
+        if (xml != nullptr)
+        {
+            const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
+            const auto stored = state.getChildWithName ("SAMPLES")
+                                     .getProperty ("slot0").toString();
+            expect (stored.startsWith ("$LIB$"), "root-pack preset stores a portable path");
+            expect (lib::fromPortable (stored, libRoot).existsAsFile(),
+                    "portable path resolves to a real file directly under the library root");
+        }
 
         libRoot.deleteRecursively();
         presetsRoot.deleteRecursively();
@@ -3057,6 +3232,54 @@ namespace
                 "favorite key is category/name");
     }
 
+    // Dependent-control dimming (LFO rate vs. division, gated by sync) --
+    // exercises the real editor tree, since DependentEnable's whole job is
+    // wiring live JUCE components, not just computing a bool.
+    static void dependentEnableTest()
+    {
+        std::cout << "dependentEnableTest\n";
+
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        auto* rate = findByParamID (*editor, id::lfoParam (0, id::lfo::rate));
+        auto* division = findByParamID (*editor, id::lfoParam (0, id::lfo::division));
+        expect (rate != nullptr && division != nullptr, "LFO 1 rate/division controls found");
+        if (rate == nullptr || division == nullptr)
+            return;
+
+        // AsyncUpdater's message defers to the message thread -- poll with a
+        // deadline rather than a single dispatch pass, same idiom as
+        // waitForSample() above.
+        const auto pumpUntil = [] (std::function<bool()> ready)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 2000u;
+            while (! ready() && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        // Default: sync off -> rate is live, division is irrelevant.
+        expect (rate->isEnabled(), "rate enabled while unsynced (default)");
+        expect (! division->isEnabled(), "division disabled while unsynced (default)");
+
+        setParam (proc, id::lfoParam (0, id::lfo::sync), 1.0f);
+        pumpUntil ([&] { return ! rate->isEnabled(); });
+
+        expect (! rate->isEnabled(), "rate disabled once synced");
+        expect (division->isEnabled(), "division enabled once synced");
+
+        setParam (proc, id::lfoParam (0, id::lfo::sync), 0.0f);
+        pumpUntil ([&] { return rate->isEnabled(); });
+
+        expect (rate->isEnabled(), "rate re-enabled after sync turned back off");
+        expect (! division->isEnabled(), "division re-disabled after sync turned back off");
+    }
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -3110,12 +3333,16 @@ int main (int argc, char* argv[])
     glideTest();
     libraryScanTest();
     libraryDiscoveryTest();
+    looseWavLibraryTest();
+    libraryRootPersistsWhenEmptyTest();
     presetRoundTripTest();
     malformedPresetTest();
     presetResetToDefaultTest();
     factoryPresetGenerationTest();
+    factoryPresetRootPackTest();
     presetBrowserFilterTest();
     licenseLineTest();
+    dependentEnableTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

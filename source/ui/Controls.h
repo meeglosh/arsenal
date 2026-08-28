@@ -143,4 +143,62 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> attachment;
 };
 
+// Grays out (and disables interaction on) a set of target components
+// whenever another parameter's value makes them irrelevant -- e.g. the LFO
+// rate knob while sync is on, or the delay time knob while delay sync is on.
+// APVTS listener callbacks can fire off the message thread, so this defers
+// through AsyncUpdater before touching any Component, same pattern OscStrip
+// already uses for its mode-driven visibility.
+//
+// setEnabled(false) on a target propagates through JUCE's parent-enablement
+// chain (Component::isEnabled() walks up to its parent and ANDs them), so
+// passing a Knob/Choice/Toggle wrapper as the single target is enough -- its
+// inner slider/combo/button (and the Knob's caption label) dim themselves
+// via the LookAndFeel's isEnabled() checks. For SectionPanel-built controls,
+// where the label is a sibling rather than a child, pass both explicitly.
+class DependentEnable : private juce::AudioProcessorValueTreeState::Listener,
+                        private juce::AsyncUpdater
+{
+public:
+    DependentEnable (juce::AudioProcessorValueTreeState& apvtsIn, const juce::String& gateParamID,
+                     std::function<bool (float)> predicateIn,
+                     std::vector<juce::Component*> targetsIn)
+        : apvts (apvtsIn), gateID (gateParamID), predicate (std::move (predicateIn)),
+          targets (std::move (targetsIn))
+    {
+        if (auto* raw = apvts.getRawParameterValue (gateID))
+            lastValue.store (raw->load());
+        applyState();                          // initial state, before the first repaint
+        apvts.addParameterListener (gateID, this);
+    }
+
+    ~DependentEnable() override
+    {
+        apvts.removeParameterListener (gateID, this);
+    }
+
+private:
+    void parameterChanged (const juce::String&, float newValue) override
+    {
+        lastValue.store (newValue);
+        triggerAsyncUpdate();
+    }
+
+    void handleAsyncUpdate() override { applyState(); }
+
+    void applyState()
+    {
+        const auto enabled = predicate (lastValue.load());
+        for (auto* c : targets)
+            if (c != nullptr)
+                c->setEnabled (enabled);
+    }
+
+    juce::AudioProcessorValueTreeState& apvts;
+    juce::String gateID;
+    std::function<bool (float)> predicate;
+    std::vector<juce::Component*> targets;
+    std::atomic<float> lastValue { 0.0f };
+};
+
 } // namespace spa::ui

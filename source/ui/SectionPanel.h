@@ -27,6 +27,12 @@ public:
     // Height needed for a given width (grid wraps).
     int heightForWidth (int width) const;
 
+    // The control component for a registry paramID, plus its sibling label
+    // if it has one (toggles draw their own text and have none) -- for
+    // callers that need to wire up cross-param behaviour like dependent
+    // dimming after the auto-built grid is constructed. Empty if not found.
+    std::vector<juce::Component*> findControlComponents (const juce::String& paramID) const;
+
 private:
     struct Control
     {

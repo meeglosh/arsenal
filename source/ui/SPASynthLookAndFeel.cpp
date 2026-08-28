@@ -485,17 +485,19 @@ void SPASynthLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButto
     const auto pill = juce::Rectangle<float> (bounds.getX(),
                                               bounds.getCentreY() - pillH * 0.5f,
                                               pillW, pillH);
+    const auto enabled = button.isEnabled();
 
-    g.setColour (button.getToggleState() ? t.accentMod
-                                         : t.knobTrack.brighter (highlighted ? 0.08f : 0.0f));
+    g.setColour ((button.getToggleState() ? t.accentMod
+                                          : t.knobTrack.brighter (highlighted ? 0.08f : 0.0f))
+                    .withMultipliedAlpha (enabled ? 1.0f : 0.5f));
     g.fillRoundedRectangle (pill, pillH * 0.5f);
 
     const auto knobX = button.getToggleState() ? pill.getRight() - pillH + 2.0f
                                                : pill.getX() + 2.0f;
-    g.setColour (t.textPrimary);
+    g.setColour (t.textPrimary.withAlpha (enabled ? 1.0f : 0.4f));
     g.fillEllipse (knobX, pill.getY() + 2.0f, pillH - 4.0f, pillH - 4.0f);
 
-    g.setColour (t.textSecondary);
+    g.setColour (t.textSecondary.withAlpha (enabled ? 1.0f : 0.4f));
     g.setFont (metrics::smallFont());
     g.drawText (button.getButtonText().toUpperCase(),
                 bounds.withTrimmedLeft (pillW + 5.0f).toNearestInt(),
@@ -503,15 +505,16 @@ void SPASynthLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButto
 }
 
 void SPASynthLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, bool,
-                                       int, int, int, int, juce::ComboBox&)
+                                       int, int, int, int, juce::ComboBox& box)
 {
     const auto& t = currentTheme();
     const auto bounds = juce::Rectangle<float> (0.0f, 0.0f, (float) width, (float) height)
                             .reduced (0.5f);
+    const auto enabled = box.isEnabled();
 
-    g.setColour (findColour (juce::ComboBox::backgroundColourId));
+    g.setColour (findColour (juce::ComboBox::backgroundColourId).withMultipliedAlpha (enabled ? 1.0f : 0.5f));
     g.fillRoundedRectangle (bounds, metrics::cornerRadius);
-    g.setColour (t.outline);
+    g.setColour (t.outline.withAlpha (enabled ? 1.0f : 0.5f));
     g.drawRoundedRectangle (bounds, metrics::cornerRadius, 1.0f);
 
     juce::Path chevron;
@@ -520,7 +523,7 @@ void SPASynthLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height
     chevron.startNewSubPath (cx - 3.5f, cy - 1.8f);
     chevron.lineTo (cx, cy + 2.2f);
     chevron.lineTo (cx + 3.5f, cy - 1.8f);
-    g.setColour (t.textSecondary);
+    g.setColour (t.textSecondary.withAlpha (enabled ? 1.0f : 0.4f));
     g.strokePath (chevron, juce::PathStrokeType (1.4f));
 }
 

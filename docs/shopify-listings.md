@@ -255,10 +255,12 @@ keep working no matter where the library lives.
 **I already own Silverplatter sound-effects libraries. Can SPASynth use them?**
 Yes, and you do not need to copy anything into a separate SPASynth folder.
 Point SPASynth at the folder that holds your packs using "SET LIBRARY" in the
-preset browser, and it treats each pack subfolder as a category and builds
-factory presets from the sounds it finds. Sample rate does not matter, so your
-24-bit / 96 kHz originals play as-is with no conversion. If you own some of the
-packs, you see exactly those; add more packs or Pro to fill in the rest.
+preset browser. Two layouts both work: a folder whose subfolders are packs
+(each treated as its own category), or a plain folder of WAV files with no
+subfolders at all. Either way SPASynth builds factory presets from the sounds
+it finds. Sample rate does not matter, so your 24-bit / 96 kHz originals play
+as-is with no conversion. If you own some of the packs, you see exactly those;
+add more packs or Pro to fill in the rest.
 
 **Do I need to re-download or reorganize my libraries?**
 No re-download and no conversion. Keep your libraries where they are and point

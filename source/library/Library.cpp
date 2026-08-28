@@ -42,6 +42,16 @@ namespace
     }
 }
 
+namespace
+{
+    void sortBySize (juce::Array<juce::File>& wavs)
+    {
+        std::sort (wavs.begin(), wavs.end(),
+                   [] (const juce::File& a, const juce::File& b)
+                   { return a.getSize() < b.getSize(); });
+    }
+}
+
 std::vector<Pack> scanLibrary (const juce::File& root)
 {
     std::vector<Pack> packs;
@@ -59,11 +69,28 @@ std::vector<Pack> scanLibrary (const juce::File& root)
         if (pack.wavs.isEmpty())
             continue;
 
-        std::sort (pack.wavs.begin(), pack.wavs.end(),
-                   [] (const juce::File& a, const juce::File& b)
-                   { return a.getSize() < b.getSize(); });
-
+        sortBySize (pack.wavs);
         packs.push_back (std::move (pack));
+    }
+
+    // WAV files sitting directly in the root (no pack subfolder) count as a
+    // pack of their own, named after the root folder itself. Covers the
+    // common "customer points SPASynth at a plain folder of samples" case --
+    // previously those files were invisible to the library entirely.
+    // Non-recursive so this never re-counts anything already picked up by a
+    // pack subfolder above.
+    {
+        auto loose = root.findChildFiles (juce::File::findFiles, false, "*.wav;*.WAV");
+        if (! loose.isEmpty())
+        {
+            Pack pack;
+            pack.name = root.getFileName();
+            pack.folder = root;
+            pack.wavs = std::move (loose);
+
+            sortBySize (pack.wavs);
+            packs.push_back (std::move (pack));
+        }
     }
 
     std::sort (packs.begin(), packs.end(),
@@ -81,11 +108,18 @@ juce::File getLibraryRoot()
 
 bool looksLikeLibrary (const juce::File& root)
 {
+    // Cheaper than scanLibrary() -- stops at the first hit instead of
+    // building/sorting the whole pack list -- but must agree with it
+    // exactly: a root "looks like a library" iff scanLibrary(root) would
+    // yield at least one pack.
     if (! root.isDirectory())
         return false;
 
+    if (! root.findChildFiles (juce::File::findFiles, false, "*.wav;*.WAV").isEmpty())
+        return true;   // loose WAVs directly in the root -- the synthetic pack
+
     for (const auto& folder : root.findChildFiles (juce::File::findDirectories, false))
-        if (! folder.findChildFiles (juce::File::findFiles, false, "*.wav;*.WAV").isEmpty())
+        if (! folder.findChildFiles (juce::File::findFiles, true, "*.wav;*.WAV").isEmpty())
             return true;
 
     return false;
@@ -164,7 +198,16 @@ juce::File discoverLibrary (const std::vector<juce::File>& candidates)
 juce::File findLibraryRoot()
 {
     const auto configured = getLibraryRoot();
-    if (looksLikeLibrary (configured))
+
+    // A user-chosen root is never second-guessed once it exists on disk --
+    // even if it currently has zero packs (an empty folder, or one they're
+    // about to fill). Re-validating it against looksLikeLibrary() here used
+    // to silently discard a folder the user had just picked (falling back to
+    // rediscovering/overwriting with a default install location, with no
+    // message shown) -- that was the actual bug. Auto-discovery only kicks
+    // in when the configured path itself is gone (unplugged drive, deleted
+    // folder) or was never set.
+    if (configured.isDirectory())
         return configured;
 
     const auto discovered = discoverLibrary (defaultLibraryLocations());

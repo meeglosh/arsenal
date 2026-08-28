@@ -1427,9 +1427,13 @@ bool SPASynthProcessor::refreshLibrary()
 {
     const auto root = library::findLibraryRoot();
     if (! root.isDirectory())
+    {
+        lastLibraryPackCount = 0;
         return false;
+    }
 
     const auto packs = library::scanLibrary (root);
+    lastLibraryPackCount = (int) packs.size();
     presetManager->generateFactoryPresets (packs, root);
     presetManager->rescan();
     return true;

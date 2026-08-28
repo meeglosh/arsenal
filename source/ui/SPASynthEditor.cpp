@@ -736,6 +736,11 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     glideLabel.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (glideLabel);
 
+    // GLIDE knob is irrelevant while glideMode == Off (index 0).
+    glideTimeEnable = std::make_unique<DependentEnable> (
+        processor.getAPVTS(), params::id::glideMode, [] (float v) { return v >= 0.5f; },
+        std::vector<juce::Component*> { &glideSlider, &glideLabel });
+
     voiceButton.setButtonText ("VOICE");
     voiceButton.setTooltip ("Voice mode: Poly / Mono / Duo / Paraphonic / Unison");
     voiceButton.onClick = [this]
@@ -1231,6 +1236,27 @@ void ContentComponent::rescanLibrary()
     if (processor.refreshLibrary())
     {
         refreshAll();
+
+        if (processor.getLibraryPackCount() == 0)
+        {
+            // The root exists but has nothing in it -- distinct from "drive
+            // unplugged" below, and just as silent-looking to the user if we
+            // don't say something.
+            juce::NativeMessageBox::showOkCancelBox (
+                juce::MessageBoxIconType::WarningIcon,
+                "No Sound Files Found",
+                "We rescanned the library folder but didn't find any sound "
+                "files in it.\n\nSPASynth expects either a folder of WAV "
+                "files, or a library folder whose subfolders (packs) contain "
+                "WAV files.\n\nChoose a different library folder now?",
+                this,
+                juce::ModalCallbackFunction::create ([safe = juce::Component::SafePointer<ContentComponent> (this)] (int result)
+                {
+                    if (result != 0 && safe != nullptr)
+                        safe->chooseLibraryFolder();
+                }));
+        }
+
         return;
     }
 
@@ -1258,15 +1284,38 @@ void ContentComponent::chooseLibraryFolder()
 
     fileChooser->launchAsync (juce::FileBrowserComponent::openMode
                             | juce::FileBrowserComponent::canSelectDirectories,
-                              [this] (const juce::FileChooser& fc)
+                              [safe = juce::Component::SafePointer<ContentComponent> (this)] (const juce::FileChooser& fc)
     {
+        if (safe == nullptr)
+            return;
+
         const auto folder = fc.getResult();
         if (! folder.isDirectory())
             return;
 
+        // Validate BEFORE saving -- a pick that yields zero packs (no loose
+        // WAVs, no pack subfolders with WAVs) must never overwrite the
+        // existing library setting. This used to be discovered only deep
+        // inside refreshLibrary()/findLibraryRoot(), which silently
+        // discarded the user's choice with no message shown at all.
+        const auto packs = library::scanLibrary (folder);
+        if (packs.empty())
+        {
+            juce::NativeMessageBox::showMessageBoxAsync (
+                juce::MessageBoxIconType::WarningIcon,
+                "No Sound Files Found",
+                "We couldn't find any sound files in \"" + folder.getFullPathName()
+                    + "\".\n\nSPASynth expects either a folder of WAV files, or a "
+                      "library folder whose subfolders (packs) contain WAV "
+                      "files.\n\nYour current library folder has been left "
+                      "unchanged.",
+                safe.getComponent());
+            return;
+        }
+
         library::setLibraryRoot (folder);
-        processor.refreshLibrary();
-        refreshAll();
+        safe->processor.refreshLibrary();
+        safe->refreshAll();
     });
 }
 

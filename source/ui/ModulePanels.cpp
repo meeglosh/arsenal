@@ -53,11 +53,21 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
     phaseMode = std::make_unique<Choice> (apvts, pid (id::osc::phaseMode));
 
     sampleKnobs.push_back (knob (pid (id::osc::sampleStart), "START"));
-    sampleKnobs.push_back (knob (pid (id::osc::loopStart), "LOOP ST"));
-    sampleKnobs.push_back (knob (pid (id::osc::loopEnd), "LOOP END"));
+    auto loopStartKnob = knob (pid (id::osc::loopStart), "LOOP ST");
+    auto loopEndKnob = knob (pid (id::osc::loopEnd), "LOOP END");
+    auto* loopStartPtr = loopStartKnob.get();
+    auto* loopEndPtr = loopEndKnob.get();
+    sampleKnobs.push_back (std::move (loopStartKnob));
+    sampleKnobs.push_back (std::move (loopEndKnob));
     sampleKnobs.push_back (knob (pid (id::osc::rootNote), "ROOT"));
     loop = std::make_unique<Toggle> (apvts, pid (id::osc::loop), "LOOP");
     keytrackSample = std::make_unique<Toggle> (apvts, pid (id::osc::keytrack), "KEY");
+
+    // LOOP ST/END only matter while looping is on -- independent of the
+    // mode-driven visibility switch below, so it survives mode round-trips.
+    loopRangeEnable = std::make_unique<DependentEnable> (
+        apvts, pid (id::osc::loop), [] (float v) { return v >= 0.5f; },
+        std::vector<juce::Component*> { loopStartPtr, loopEndPtr });
 
     granularKnobs.push_back (knob (pid (id::osc::grainSize), "SIZE"));
     granularKnobs.push_back (knob (pid (id::osc::grainDensity), "DENSITY"));
@@ -477,7 +487,11 @@ LFOPanel::LFOPanel (SPASynthProcessor& p, int lfoIndex)
       phase (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::phase), "PHASE", true),
       sync (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::sync), "SYNC"),
       retrig (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::retrig), "RETRIG"),
-      unipolar (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::unipolar), "UNI")
+      unipolar (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::unipolar), "UNI"),
+      rateEnable (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::sync),
+                 [] (float v) { return v < 0.5f; }, { &rate }),
+      divisionEnable (p.getAPVTS(), id::lfoParam (lfoIndex, id::lfo::sync),
+                      [] (float v) { return v >= 0.5f; }, { &division })
 {
     addAndMakeVisible (display);
     addAndMakeVisible (shape);
@@ -659,6 +673,19 @@ FXPanel::FXPanel (juce::AudioProcessorValueTreeState& apvts, FXDisplay::Kind kin
 {
     addAndMakeVisible (display);
     addAndMakeVisible (controls);
+
+    // Delay time only means anything free-running; division only means
+    // anything synced -- same rule as the LFO panels, wired post-hoc here
+    // since SectionPanel auto-builds its grid with no dependency concept.
+    if (section == params::Section::fxDelay)
+    {
+        delayTimeEnable = std::make_unique<DependentEnable> (
+            apvts, id::fx::delaySync, [] (float v) { return v < 0.5f; },
+            controls.findControlComponents (id::fx::delayTime));
+        delayDivisionEnable = std::make_unique<DependentEnable> (
+            apvts, id::fx::delaySync, [] (float v) { return v >= 0.5f; },
+            controls.findControlComponents (id::fx::delayDivision));
+    }
 }
 
 void FXPanel::paint (juce::Graphics& g)

@@ -146,4 +146,19 @@ void SectionPanel::resized()
     }
 }
 
+std::vector<juce::Component*> SectionPanel::findControlComponents (const juce::String& paramID) const
+{
+    for (auto& c : controls)
+    {
+        if (c.component->getProperties()["paramID"].toString() != paramID)
+            continue;
+
+        std::vector<juce::Component*> result { c.component.get() };
+        if (c.label != nullptr)
+            result.push_back (c.label.get());
+        return result;
+    }
+    return {};
+}
+
 } // namespace spa::ui

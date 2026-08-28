@@ -16,6 +16,8 @@ struct Pack
 };
 
 // Scans a library root: every direct subfolder containing WAVs is a pack.
+// WAV files sitting directly in the root (no subfolder) also form a pack of
+// their own, named after the root folder itself.
 std::vector<Pack> scanLibrary (const juce::File& root);
 
 // --- Machine-level settings (library location, not per-session) -----------
@@ -49,7 +51,8 @@ bool isPresetFavorite (const juce::String& key);
 void setPresetFavorite (const juce::String& key, bool favorite);
 
 // Quick structural check: does this folder look like an SPASynth library
-// (at least one pack subfolder containing WAVs)?
+// (at least one pack subfolder containing WAVs, or WAVs directly in the
+// root)? Agrees exactly with whether scanLibrary() would yield a pack.
 bool looksLikeLibrary (const juce::File&);
 
 // The standard install locations the content installers write to, most
@@ -69,9 +72,11 @@ std::vector<juce::File> expandLibraryCandidates (const std::vector<juce::File>& 
 juce::File discoverLibrary (const std::vector<juce::File>& candidates);
 
 // The library root SPASynth should use right now: the configured root if it
-// is still valid, otherwise the first valid default location (which is then
-// persisted). Returns an invalid File only if nothing is found — the manual
-// "Set Library Folder..." fallback covers that case.
+// still exists on disk (even if it currently has zero packs -- a user's
+// explicit folder choice is never second-guessed), otherwise the first valid
+// default location (which is then persisted). Returns an invalid File only
+// if nothing is found — the manual "Set Library Folder..." fallback covers
+// that case.
 juce::File findLibraryRoot();
 
 // Where presets live: <app data>/Silverplatter Audio/SPASynth/Presets with
