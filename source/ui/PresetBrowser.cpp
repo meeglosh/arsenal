@@ -27,7 +27,11 @@ namespace
 
 juce::String PresetBrowser::typeOf (const library::PresetManager::PresetInfo& p)
 {
-    if (p.category == "User")
+    // Any user preset counts for the USER quick-filter chip, whether it
+    // lives at the User/ root (category "User") or inside a bank subfolder
+    // (category = the bank's name) -- isUser is the source of truth, not
+    // the category string.
+    if (p.isUser)
         return "User";
 
     for (const auto* t : { "Keys", "Texture", "Pulse" })

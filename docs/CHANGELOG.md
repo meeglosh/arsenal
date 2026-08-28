@@ -1,17 +1,13 @@
 # SPASynth changelog
 
-## 1.0.9
+## 1.0.10
 
-A performance and stability pass, wrapping up ahead of launch.
+Fixes and polish from the latest round of tester feedback.
 
-- Bypassing SPASynth in your host now lets reverb, delay, and other effect
-  tails ring out naturally instead of cutting them off instantly.
-- Lower CPU use for long convolution impulses, and a lighter-weight reverb
-  tail engine, with no change to how either sounds.
-- The EQ's spectrum analyzer no longer uses CPU while its tab isn't in view.
-- General hardening: tightened internal safety margins and a smaller memory
-  footprint in a couple of engine components. Nothing here changes how any
-  patch sounds.
+- Playing notes from the computer keyboard no longer stops after clicking
+  buttons such as RANDOMIZE ALL, SAVE, the preset arrows, or the panic
+  button. A previous fix already covered knobs and dropdowns; every button
+  in SPASynth now leaves your QWERTY playing alone.
 - Fixed a library folder bug: picking a folder that held sound files
   directly (with no pack subfolders inside it) was silently rejected, and
   in some cases quietly replaced your chosen folder with the default
@@ -31,6 +27,38 @@ A performance and stability pass, wrapping up ahead of launch.
   preset's settings were being applied to that still-active leftover sound.
   Loading a preset now clears that leftover state first, so switching
   patches is always silent unless you're actually playing.
+- Added user preset banks. Inside the Save dialog, choose New Folder to
+  create a bank in your User presets folder, and it shows up as its own
+  category in the preset browser, right alongside your other presets.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
+## 1.0.9
+
+A performance and stability pass, wrapping up ahead of launch.
+
+- Bypassing SPASynth in your host now lets reverb, delay, and other effect
+  tails ring out naturally instead of cutting them off instantly.
+- Lower CPU use for long convolution impulses, and a lighter-weight reverb
+  tail engine, with no change to how either sounds.
+- The EQ's spectrum analyzer no longer uses CPU while its tab isn't in view.
+- General hardening: tightened internal safety margins and a smaller memory
+  footprint in a couple of engine components. Nothing here changes how any
+  patch sounds.
 
 **Notes for this build**
 

@@ -1984,6 +1984,85 @@ namespace
         presetsRoot.deleteRecursively();
     }
 
+    // User preset banks (subfolders of User/): rescan groups them by folder
+    // name, saveUserPreset honors a chosen bank folder (or falls back to the
+    // User root if the chosen folder is outside User/ entirely), and the
+    // isUser flag -- not category == "User" -- is what marks a preset as a
+    // user preset, so a bank preset still counts as one.
+    static void presetBankTest()
+    {
+        std::cout << "presetBankTest\n";
+
+        namespace lib = spa::library;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-bank-test", "");
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        const auto userRoot = pm.getUserPresetFolder();
+        const auto bankFolder = userRoot.getChildFile ("Leads");
+        bankFolder.createDirectory();
+        bankFolder.getChildFile ("x" + juce::String (lib::PresetManager::presetExtension))
+            .replaceWithText ("placeholder");
+        userRoot.getChildFile ("y" + juce::String (lib::PresetManager::presetExtension))
+            .replaceWithText ("placeholder");
+
+        pm.rescan();
+
+        const lib::PresetManager::PresetInfo* bankPreset = nullptr;
+        const lib::PresetManager::PresetInfo* rootPreset = nullptr;
+        for (const auto& p : pm.getPresets())
+        {
+            if (p.name == "x") bankPreset = &p;
+            if (p.name == "y") rootPreset = &p;
+        }
+        expect (bankPreset != nullptr && rootPreset != nullptr, "both presets found on rescan");
+        if (bankPreset != nullptr)
+        {
+            expect (bankPreset->category == "Leads", "bank preset category is the bank folder name");
+            expect (bankPreset->isUser, "bank preset is flagged as a user preset");
+        }
+        if (rootPreset != nullptr)
+        {
+            expect (rootPreset->category == "User", "root-level user preset keeps category \"User\"");
+            expect (rootPreset->isUser, "root-level user preset is flagged as a user preset");
+        }
+
+        const auto categories = pm.getCategories();
+        expect (categories.contains ("Leads") && categories.contains ("User"),
+                "both \"Leads\" and \"User\" appear as categories");
+
+        // Saving into a bank subfolder chosen in the save dialog (as if the
+        // user had picked it, or just created it via "New Folder").
+        expect (pm.saveUserPreset ("Saved In Bank", bankFolder),
+                "saves into a chosen bank folder");
+        expect (bankFolder.getChildFile ("Saved In Bank" + juce::String (lib::PresetManager::presetExtension))
+                    .existsAsFile(),
+                "preset file lands inside the chosen bank folder, not the User root");
+
+        // A folder outside User/ entirely must fall back to the User root
+        // rather than writing somewhere the browser will never scan.
+        const auto outsideFolder = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                       .getNonexistentChildFile ("spasynth-bank-outside", "");
+        outsideFolder.createDirectory();
+        expect (pm.saveUserPreset ("Saved Outside", outsideFolder),
+                "still saves successfully when the chosen folder is outside User/");
+        expect (! outsideFolder.getChildFile ("Saved Outside"
+                        + juce::String (lib::PresetManager::presetExtension)).existsAsFile(),
+                "does not write into the folder outside User/");
+        expect (userRoot.getChildFile ("Saved Outside" + juce::String (lib::PresetManager::presetExtension))
+                    .existsAsFile(),
+                "falls back to the User root instead");
+
+        outsideFolder.deleteRecursively();
+        presetsRoot.deleteRecursively();
+    }
+
     // A hand-edited or damaged .spasynth file must fail to load cleanly
     // rather than crash: valid XML with the right root tag but no child
     // state element, and outright XML garbage.
@@ -3352,16 +3431,18 @@ namespace
         using Browser = spa::ui::PresetBrowser;
 
         const std::vector<Info> presets {
-            { "Anvil Keys",    "Anvil", {} },
-            { "Anvil Texture", "Anvil", {} },
-            { "Bells Pulse",   "Bells", {} },
-            { "My Lead",       "User",  {} },
+            { "Anvil Keys",    "Anvil", {}, false },
+            { "Anvil Texture", "Anvil", {}, false },
+            { "Bells Pulse",   "Bells", {}, false },
+            { "My Lead",       "User",  {}, true  },
         };
 
         expect (Browser::typeOf (presets[0]) == "Keys", "factory type derives from name suffix");
-        expect (Browser::typeOf (presets[3]) == "User", "user category wins over name");
-        expect (Browser::typeOf ({ "Weird Name", "Bells", {} }).isEmpty(),
+        expect (Browser::typeOf (presets[3]) == "User", "isUser flag wins over name, not the category string");
+        expect (Browser::typeOf ({ "Weird Name", "Bells", {}, false }).isEmpty(),
                 "unknown factory shape has no type");
+        expect (Browser::typeOf ({ "Bank Lead", "Leads", {}, true }) == "User",
+                "a bank preset (category != \"User\") still counts as User via the isUser flag");
 
         const auto names = [&] (const std::vector<int>& idx)
         {
@@ -3494,6 +3575,7 @@ int main (int argc, char* argv[])
     looseWavLibraryTest();
     libraryRootPersistsWhenEmptyTest();
     presetRoundTripTest();
+    presetBankTest();
     malformedPresetTest();
     presetResetToDefaultTest();
     presetLoadNoiseBurstTest();

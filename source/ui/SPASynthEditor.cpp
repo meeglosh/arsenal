@@ -1334,9 +1334,10 @@ void ContentComponent::saveUserPreset()
                             | juce::FileBrowserComponent::canSelectFiles,
                               [this] (const juce::FileChooser& fc)
     {
-        if (fc.getResult() != juce::File())
+        const auto result = fc.getResult();
+        if (result != juce::File())
             processor.getPresetManager().saveUserPreset (
-                fc.getResult().getFileNameWithoutExtension());
+                result.getFileNameWithoutExtension(), result.getParentDirectory());
     });
 }
 

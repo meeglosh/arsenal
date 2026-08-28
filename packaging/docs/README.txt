@@ -57,6 +57,13 @@ automatically.
 Standard edition: your Library/ folder contains the starter selection.
 Every add-on pack you buy later installs exactly the same way.
 
+ORGANIZING YOUR OWN PRESETS
+----------------------------
+Want to group your saved presets into banks? In the Save dialog, choose
+New Folder inside your User presets folder and give it a name. Each
+folder you create shows up as its own category in the preset browser,
+right alongside your other presets.
+
 SUPPORT
 -------
   https://www.silverplatteraudio.com

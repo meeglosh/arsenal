@@ -14,7 +14,11 @@ namespace spa::library
 //
 // Directory layout under the presets root:
 //   Factory/<Category>/<Name>.spasynth   (generated from library packs)
-//   User/<Name>.spasynth
+//   User/<Name>.spasynth                 (category "User")
+//   User/<Bank>/[.../]<Name>.spasynth    (a user preset bank -- category is
+//                                          the bank's folder name; anything
+//                                          nested deeper still belongs to
+//                                          its top-level bank)
 class PresetManager : public juce::ChangeBroadcaster
 {
 public:
@@ -25,6 +29,10 @@ public:
         juce::String name;
         juce::String category;
         juce::File file;
+        bool isUser = false;   // true for anything under User/ (root or a
+                                // bank subfolder). NOT the same as
+                                // category == "User" -- a bank's category is
+                                // its own folder name.
     };
 
     PresetManager (std::function<juce::ValueTree()> captureState,
@@ -45,7 +53,10 @@ public:
     // load) — "start afresh" after randomizing or a long tweak session.
     void resetToDefault();
 
-    bool saveUserPreset (const juce::String& name);
+    // If chosenFolder is inside the User presets folder (a bank the user
+    // just picked or created via the save dialog's "New Folder"), the
+    // preset is written there; otherwise it falls back to the User root.
+    bool saveUserPreset (const juce::String& name, const juce::File& chosenFolder = {});
     juce::File getUserPresetFolder() const { return presetsRoot.getChildFile ("User"); }
 
     juce::String getCurrentName() const { return currentName; }

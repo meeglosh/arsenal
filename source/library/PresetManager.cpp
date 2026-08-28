@@ -53,18 +53,26 @@ void PresetManager::rescan()
 {
     presets.clear();
 
-    const auto addFrom = [this] (const juce::File& folder, const juce::String& category)
+    const auto addFrom = [this] (const juce::File& folder, const juce::String& category,
+                                 bool isUser, bool recursive)
     {
-        for (const auto& f : folder.findChildFiles (juce::File::findFiles, false,
+        for (const auto& f : folder.findChildFiles (juce::File::findFiles, recursive,
                                                     "*" + juce::String (presetExtension)))
-            presets.push_back ({ f.getFileNameWithoutExtension(), category, f });
+            presets.push_back ({ f.getFileNameWithoutExtension(), category, f, isUser });
     };
 
     const auto factory = presetsRoot.getChildFile ("Factory");
     for (const auto& categoryDir : factory.findChildFiles (juce::File::findDirectories, false))
-        addFrom (categoryDir, categoryDir.getFileName());
+        addFrom (categoryDir, categoryDir.getFileName(), false, false);
 
-    addFrom (presetsRoot.getChildFile ("User"), "User");
+    const auto userRoot = presetsRoot.getChildFile ("User");
+    addFrom (userRoot, "User", true, false);
+
+    // Bank subfolders: each immediate subfolder of User/ is its own bank
+    // (category = folder name), scanned recursively so nested folders
+    // inside a bank still count as that same bank.
+    for (const auto& bankDir : userRoot.findChildFiles (juce::File::findDirectories, false))
+        addFrom (bankDir, bankDir.getFileName(), true, true);
 
     std::sort (presets.begin(), presets.end(),
                [] (const PresetInfo& a, const PresetInfo& b)
@@ -148,11 +156,19 @@ bool PresetManager::writePreset (const juce::File& file, const juce::String& nam
     return root.writeTo (file);
 }
 
-bool PresetManager::saveUserPreset (const juce::String& name)
+bool PresetManager::saveUserPreset (const juce::String& name, const juce::File& chosenFolder)
 {
-    const auto file = getUserPresetFolder()
-                          .getChildFile (juce::File::createLegalFileName (name)
-                                         + presetExtension);
+    // Honor a bank subfolder chosen in the save dialog (including one just
+    // created via "New Folder"), but only if it's actually inside the User
+    // presets tree -- anywhere else falls back to the User root so the
+    // preset browser can always find what was saved.
+    auto targetFolder = getUserPresetFolder();
+    if (chosenFolder != juce::File()
+        && (chosenFolder == targetFolder || chosenFolder.isAChildOf (targetFolder)))
+        targetFolder = chosenFolder;
+
+    const auto file = targetFolder.getChildFile (juce::File::createLegalFileName (name)
+                                                  + presetExtension);
 
     if (! writePreset (file, name, captureState()))
         return false;
