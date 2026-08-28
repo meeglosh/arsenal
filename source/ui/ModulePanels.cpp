@@ -28,8 +28,10 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
     addAndMakeVisible (mode);
 
     loadButton.onClick = [this] { chooseContent(); };
+    loadButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (loadButton);
     factoryButton.onClick = [this] { processor.setFactoryWavetable (slot); };
+    factoryButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (factoryButton);
 
     const auto knob = [&apvts] (const juce::String& paramID, const juce::String& label)

@@ -40,6 +40,7 @@ namespace
             for (auto* selector : { &audioSelector, &modSelector })
             {
                 selector->addChangeListener (this);
+                selector->setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
                 addAndMakeVisible (*selector);
             }
 
@@ -56,6 +57,7 @@ namespace
                 resized();
                 repaint();
             };
+            linkButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
             addAndMakeVisible (linkButton);
 
             resetButton.onClick = [this]
@@ -72,6 +74,7 @@ namespace
                 if (onChanged)
                     onChanged();
             };
+            resetButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
             addAndMakeVisible (resetButton);
 
             setSize (480, 260);
@@ -256,10 +259,12 @@ public:
         tap.setButtonText ("TAP");
         tap.setTooltip ("Tap tempo");
         tap.onClick = [this] { onTap(); };
+        tap.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
         addAndMakeVisible (tap);
 
         sync.setTooltip ("Tempo source: INT = internal clock, EXT = external MIDI clock");
         sync.onClick = [this] { toggleSync(); };
+        sync.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
         addAndMakeVisible (sync);
 
         applyMode();
@@ -412,8 +417,10 @@ public:
     {
         libraryButton.setTooltip ("Pick an impulse from a pack in your loaded library");
         libraryButton.onClick = [this] { chooseLibraryPack(); };
+        libraryButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
         irButton.setTooltip ("Load any WAV file as an impulse");
         irButton.onClick = [this] { chooseIR(); };
+        irButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
         title.setText ("CONVOLVE", juce::dontSendNotification);
         title.setFont (metrics::sectionFont());
         title.setColour (juce::Label::textColourId, currentTheme().accent);
@@ -624,6 +631,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     // unlike the standalone wrapper's audio-device "Options" menu.
     settingsButton.setTooltip ("Settings: library folder, accent colors, keyboard, MIDI Learn");
     settingsButton.onClick = [this] { showSettingsMenu(); };
+    settingsButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (settingsButton);
 
     keyboard.setKeyWidth (28.0f);
@@ -637,10 +645,12 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     keyboardButton.setTooltip ("Show or hide the on-screen keyboard");
     keyboardButton.onClick = [this] { setKeyboardVisible (! keyboardVisible); };
     keyboardButton.setToggleState (keyboardVisible, juce::dontSendNotification);
+    keyboardButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (keyboardButton);
 
     panicButton.setTooltip ("Panic: stop all sound and clear stuck notes");
     panicButton.onClick = [this] { processor.panic(); };
+    panicButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (panicButton);
 
     // The standalone has no host tempo, so it gets a tempo bar (internal BPM /
@@ -654,19 +664,24 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     prevPresetButton.setComponentID ("navPrev");   // drawn as a left chevron
     prevPresetButton.setTooltip ("Previous preset");
     prevPresetButton.onClick = [this] { processor.getPresetManager().loadPrevious(); };
+    prevPresetButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (prevPresetButton);
     nextPresetButton.setComponentID ("navNext");   // drawn as a right chevron
     nextPresetButton.setTooltip ("Next preset");
     nextPresetButton.onClick = [this] { processor.getPresetManager().loadNext(); };
+    nextPresetButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (nextPresetButton);
     presetNameButton.onClick = [this] { togglePresetBrowser(); };
     presetNameButton.setTooltip ("Browse presets");
+    presetNameButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (presetNameButton);
     savePresetButton.onClick = [this] { saveUserPreset(); };
+    savePresetButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (savePresetButton);
 
     randomizeButton.setComponentID ("primary");
     randomizeButton.onClick = [this] { processor.randomizeAll(); };
+    randomizeButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (randomizeButton);
 
     wildnessSlider.setComponentID ("wild");   // value ring heats teal -> red with amount
@@ -729,10 +744,12 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         juce::CallOutBox::launchAsynchronously (std::move (panel),
                                                 voiceButton.getScreenBounds(), nullptr);
     };
+    voiceButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (voiceButton);
 
     accentButton.setTooltip ("Customize the accent colors");
     accentButton.onClick = [this] { showAccentPicker(); };
+    accentButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (accentButton);
 
     masterSlider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);

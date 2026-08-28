@@ -80,6 +80,7 @@ PresetBrowser::PresetBrowser (SPASynthProcessor& p,
     closeButton.setComponentID ("browser");
     closeButton.setTooltip ("Close the preset browser (Esc)");
     closeButton.onClick = [this] { if (onClose) onClose(); };
+    closeButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (closeButton);
 
     searchBox.setSelectAllWhenFocused (true);
@@ -110,6 +111,7 @@ PresetBrowser::PresetBrowser (SPASynthProcessor& p,
     favoritesChip.setClickingTogglesState (true);
     favoritesChip.setTooltip ("Show favorites only");
     favoritesChip.onClick = [this] { applyFilter(); };
+    favoritesChip.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (favoritesChip);
 
     list.setRowHeight (36);
@@ -123,11 +125,13 @@ PresetBrowser::PresetBrowser (SPASynthProcessor& p,
     libraryButton.setComponentID ("browser");
     libraryButton.setTooltip ("Point SPASynth at the Silverplatter library folder");
     libraryButton.onClick = [this] { if (onChooseLibrary) onChooseLibrary(); };
+    libraryButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (libraryButton);
 
     rescanButton.setComponentID ("browser");
     rescanButton.setTooltip ("Rescan the library and preset folders");
     rescanButton.onClick = [this] { processor.refreshLibrary(); };
+    rescanButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (rescanButton);
 
     processor.getPresetManager().addChangeListener (this);
