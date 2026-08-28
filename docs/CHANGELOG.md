@@ -25,6 +25,12 @@ A performance and stability pass, wrapping up ahead of launch.
   division menu while it isn't), a sample oscillator's loop range while
   looping is off, the delay's time knob while it's synced to tempo, and
   glide time while glide is off.
+- Fixed a short burst of noise on clicking a preset in the browser. It could
+  happen if you'd just played and released a note (or the delay/reverb/mod
+  tail was still ringing) right before switching patches, since the new
+  preset's settings were being applied to that still-active leftover sound.
+  Loading a preset now clears that leftover state first, so switching
+  patches is always silent unless you're actually playing.
 
 **Notes for this build**
 

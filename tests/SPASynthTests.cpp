@@ -1785,6 +1785,164 @@ namespace
         lib::setLibraryRoot (savedRoot);
     }
 
+    // Regression test for a tester-reported bug (v1.0.8): clicking a preset
+    // in the browser produced a short burst of noise even though nothing was
+    // playing (there is no preview/audition feature). Root cause: a preset
+    // click routinely lands while the previous note's voice is still in its
+    // release tail and/or the FX chain (delay/reverb/mod) still holds ringing
+    // feedback state; restoreStateTree()'s apvts.replaceState() swaps every
+    // coefficient-driving parameter out from under that live, non-zero state
+    // in one shot -- e.g. the FDN reverb's feedback matrix recomputed for a
+    // totally different size/decay while its delay lines still held the old
+    // preset's tail -- and a coefficient jump against non-zero history
+    // produces an audible click/burst. Fixed by having restoreStateTree() do
+    // the same hard reset panic() performs (kill all voices, clear the arp
+    // latch, flush the FX chain's stateful buffers), synchronously inside the
+    // getCallbackLock() already held for replaceState(), so the very next
+    // block sees new parameters applied to already-silent state.
+    static void presetLoadNoiseBurstTest()
+    {
+        std::cout << "presetLoadNoiseBurstTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+        namespace lib = spa::library;
+
+        constexpr double sr = 48000.0;
+        constexpr int n = 512;
+        constexpr float silentPeak = 1.0e-4f;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sr, n);
+
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-burst-presets", "");
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        // Two presets with hot, very different delay/reverb/mod/filter settings
+        // -- the kind of jump a real preset browsing session produces.
+        auto configureA = [&]
+        {
+            setParam (proc, id::fx::delayEnable, 1.0f);
+            setParam (proc, id::fx::delaySync, 0.0f);
+            setParam (proc, id::fx::delayTime, 220.0f);
+            setParam (proc, id::fx::delayFeedback, 0.55f);
+            setParam (proc, id::fx::delayMix, 0.5f);
+            setParam (proc, id::fx::reverbEnable, 1.0f);
+            setParam (proc, id::fx::reverbMode, 0.0f);
+            setParam (proc, id::fx::reverbDecay, 2.5f);
+            setParam (proc, id::fx::reverbSize, 0.6f);
+            setParam (proc, id::fx::reverbMix, 0.4f);
+            setParam (proc, id::fx::modEnable, 1.0f);
+            setParam (proc, id::fx::modType, 1.0f);
+            setParam (proc, id::fx::modRate, 0.3f);
+            setParam (proc, id::fx::modFeedback, 0.85f);
+            setParam (proc, id::fx::modMix, 0.6f);
+            setParam (proc, id::filter1Cutoff, 3000.0f);
+            setParam (proc, id::filter1Resonance, 0.6f);
+        };
+        auto configureB = [&]
+        {
+            setParam (proc, id::fx::delayEnable, 1.0f);
+            setParam (proc, id::fx::delaySync, 0.0f);
+            setParam (proc, id::fx::delayTime, 380.0f);
+            setParam (proc, id::fx::delayFeedback, 0.7f);
+            setParam (proc, id::fx::delayMix, 0.35f);
+            setParam (proc, id::fx::reverbEnable, 1.0f);
+            setParam (proc, id::fx::reverbMode, 2.0f);
+            setParam (proc, id::fx::reverbDecay, 6.0f);
+            setParam (proc, id::fx::reverbSize, 0.9f);
+            setParam (proc, id::fx::reverbMix, 0.7f);
+            setParam (proc, id::fx::modEnable, 1.0f);
+            setParam (proc, id::fx::modType, 0.0f);
+            setParam (proc, id::fx::modRate, 1.4f);
+            setParam (proc, id::fx::modFeedback, 0.2f);
+            setParam (proc, id::fx::modMix, 0.3f);
+            setParam (proc, id::filter1Cutoff, 900.0f);
+            setParam (proc, id::filter1Resonance, 0.85f);
+        };
+
+        configureA();
+        expect (pm.saveUserPreset ("BurstA"), "preset A saves");
+        configureB();
+        expect (pm.saveUserPreset ("BurstB"), "preset B saves");
+        pm.rescan();
+
+        juce::File fileA, fileB;
+        for (const auto& p : pm.getPresets())
+        {
+            if (p.name == "BurstA") fileA = p.file;
+            if (p.name == "BurstB") fileB = p.file;
+        }
+        expect (fileA.existsAsFile() && fileB.existsAsFile(), "both burst presets on disk");
+
+        juce::AudioBuffer<float> buf (2, n);
+        juce::MidiBuffer midi;
+
+        auto peakOverSilentBlocks = [&] (int blocks)
+        {
+            float peak = 0.0f;
+            for (int b = 0; b < blocks; ++b)
+            {
+                buf.clear();
+                proc.processBlock (buf, midi);
+                peak = juce::jmax (peak, buf.getMagnitude (0, n));
+            }
+            return peak;
+        };
+
+        // A short note + release, leaving the voice mid-release and the FX
+        // chain's feedback lines still hot when the preset switch lands.
+        auto playNoteAndReleaseSome = [&]
+        {
+            midi.clear();
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            for (int b = 0; b < 12; ++b) { buf.clear(); proc.processBlock (buf, midi); midi.clear(); }
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            for (int b = 0; b < 4; ++b) { buf.clear(); proc.processBlock (buf, midi); midi.clear(); }
+        };
+
+        // Cold transitions: never played, nothing to ring out.
+        pm.loadPresetFile (fileA);
+        expect (peakOverSilentBlocks (50) < silentPeak, "cold A load stays silent");
+        pm.loadPresetFile (fileB);
+        expect (peakOverSilentBlocks (50) < silentPeak, "cold A->B stays silent");
+
+        // Hot-tail transitions: this is the tester's actual repro -- a voice
+        // still releasing and FX feedback still ringing when the click lands.
+        playNoteAndReleaseSome();
+        pm.loadPresetFile (fileA);
+        expect (peakOverSilentBlocks (50) < silentPeak,
+                "hot-tail B->A stays silent (no burst on preset click)");
+        playNoteAndReleaseSome();
+        pm.loadPresetFile (fileB);
+        expect (peakOverSilentBlocks (50) < silentPeak,
+                "hot-tail A->B stays silent (no burst on preset click)");
+
+        // Loading the SAME preset twice in a row while hot must also stay
+        // silent (not just a difference-in-parameters case).
+        playNoteAndReleaseSome();
+        pm.loadPresetFile (fileB);
+        peakOverSilentBlocks (5);
+        pm.loadPresetFile (fileB);
+        expect (peakOverSilentBlocks (50) < silentPeak, "hot same-preset reload stays silent");
+
+        // Async sample/wavetable/convolution-IR loads pending vs settled must
+        // not matter either -- measure both before and after pumping the
+        // message loop.
+        playNoteAndReleaseSome();
+        pm.loadPresetFile (fileA);
+        expect (peakOverSilentBlocks (10) < silentPeak,
+                "hot reload stays silent before pending async loads settle");
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (peakOverSilentBlocks (50) < silentPeak,
+                "hot reload stays silent after pending async loads settle");
+
+        presetsRoot.deleteRecursively();
+    }
+
     static void presetRoundTripTest()
     {
         std::cout << "presetRoundTripTest\n";
@@ -3338,6 +3496,7 @@ int main (int argc, char* argv[])
     presetRoundTripTest();
     malformedPresetTest();
     presetResetToDefaultTest();
+    presetLoadNoiseBurstTest();
     factoryPresetGenerationTest();
     factoryPresetRootPackTest();
     presetBrowserFilterTest();

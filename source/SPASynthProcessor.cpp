@@ -1371,6 +1371,16 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
 
         apvts.replaceState (state);
 
+        // Tester-reported burst on preset clicks: replaceState() above just
+        // swapped every coefficient under live, non-zero voice/FX state (FDN
+        // reverb was the worst offender). A preset load is a full state
+        // replacement, so reuse panic()'s hard reset here, synchronously
+        // under the lock, so the first block after this sees new params
+        // applied to already-silent state.
+        synth.allNotesOff (0, false);
+        arp.reset();
+        fxChain.reset();
+
         // Standalone tempo settings ride in the state tree (not parameters).
         internalBpm.store ((double) apvts.state.getProperty ("standaloneBpm", 120.0),
                            std::memory_order_relaxed);
