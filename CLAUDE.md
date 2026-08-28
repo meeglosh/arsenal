@@ -10,7 +10,92 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
-## Current state (2026-08-25): v1.0.9 staged (pending Mike's test); v1.0.8 confirmed working + shipped to testers; a QWERTY focus-steal follow-up is in progress, uncommitted
+## Current state (2026-08-28): v1.0.10 built + staged (pending Mike's test); 1.0.9 superseded, never sent
+
+**1.0.9 was never distributed** and Mike chose to call the next build 1.0.10
+anyway ("there already was a 1.0.9"), so the changelog now splits: 1.0.9 =
+the 2026-08-21 hardening batch only; 1.0.10 = everything below.
+
+**Session flow (Mike as orchestrator, Sonnet subagents implementing, Fable
+reviewing every diff before commit):**
+- `8833a57` — the RANDOMIZE-ALL-and-friends focus fix from the 08-25 session,
+  **confirmed by Mike** and committed.
+- **Paul's round-2 feedback** (macOS, on 1.0.8) drove four fixes:
+  - `9f7c6c8` **library folder bug (real, confirmed in source).**
+    `chooseLibraryFolder` saved the pick, then `refreshLibrary` →
+    `findLibraryRoot` re-validated it with `looksLikeLibrary` (which required
+    `root/<pack>/*.wav`) and, on failure, silently reverted the setting to the
+    auto-discovered install location or blanked it — no message. A plain
+    folder of WAVs never worked. Now: loose WAVs in the root form a pack named
+    after the folder; `looksLikeLibrary` agrees exactly with `scanLibrary`; a
+    configured root that still exists is never second-guessed (discovery only
+    when the path is gone); the picker scans BEFORE saving and shows a
+    plain-English dialog if nothing is found; Rescan warns on an empty root.
+    This also explains Paul's "previews not playing" (there is NO preview
+    feature; presets went silent because samples didn't resolve) and why
+    wiping settings with Pearcleaner "fixed" it (settings + `Presets/User/`
+    both live in `~/Library/Application Support/Silverplatter Audio/SPASynth/`
+    — he lost one user preset; Pearcleaner trashes rather than deletes).
+  - `9f7c6c8` **dependent-control dimming** — `DependentEnable` helper in
+    `Controls.h` (APVTS listener + AsyncUpdater → `setEnabled`; the rotary
+    LnF already painted a disabled state, ComboBox/ToggleButton dimming
+    added). Wired: LFO rate↔division on sync, sample loop start/end on LOOP,
+    delay time↔division on delay sync, glide time when glide mode is Off.
+  - `1997217` **noise burst on preset click** (Paul mistook it for a "C1
+    preview note"). Reproduced deterministically: cold loads are silent; a
+    load while a released note's tail or the reverb/delay/mod feedback state
+    is still non-zero peaks up to ~2.0 (FDN reverb worst) because
+    `apvts.replaceState` swaps every coefficient under live state. Fix:
+    `restoreStateTree` now does panic()'s hard reset (`synth.allNotesOff(0,
+    false)`, `arp.reset()`, `fxChain.reset()`) synchronously inside the
+    callback lock it already holds. Reached only from preset load,
+    reset-to-default and host session restore; RANDOMIZE ALL doesn't go
+    through it. **Design consequence: loading a preset while holding a note
+    hard-cuts it** — Mike was told, hasn't objected.
+  - `88e3145` **user preset banks** — each immediate subfolder of `User/` is a
+    bank (category = folder name, scanned recursively); new
+    `PresetInfo::isUser` flag replaces the `category == "User"` inference in
+    the USER quick-filter; Save honors the folder chosen in the native dialog
+    (New Folder creates a bank) only if inside `User/`, else falls back to the
+    root. Favorites keys already include the category. README documents it.
+  - Paul's "installer didn't ask to move to trash" = Apple's Installer.app
+    (only prompts for a quarantined download in Downloads). Not ours.
+- `c8f846c` **CI: Windows exe → draft GitHub Release asset.** The Windows job
+  hit the account-wide Actions storage quota ("Artifact storage quota has
+  been hit") at the raw-binaries `upload-artifact` step even though the build
+  passed; live storage was ~11MB, the meter is cumulative GB-month. Release
+  assets don't count. Both `upload-artifact` steps removed from the Windows
+  job; it now creates a draft release `ci-windows-<sha7>` (job-scoped
+  `contents: write`; workflow default stays read; drafts are invisible to
+  the public and create no tag) and prunes older `ci-windows-*` drafts to 5.
+  Fetch with `scripts/fetch_windows_build.sh <sha7>` (drafts can't be fetched
+  by tag; the script goes through the releases list API). **Verified live on
+  run `33213356459`.** The first agent pass removed the wrong upload step —
+  the failing one runs BEFORE the installer upload — caught in review.
+- Suite 185 → **231 assertions, ALL PASS** (`dependentEnableTest`,
+  `looseWavLibraryTest`, `libraryRootPersistsWhenEmptyTest`,
+  `factoryPresetRootPackTest`, `presetLoadNoiseBurstTest`,
+  `presetBankTest`). auval SUCCEEDED on every step.
+
+**1.0.10 built + staged 2026-08-28, NOT yet tested by Mike, NOT sent:**
+macOS pkg signed + notarized + stapled, md5
+`176075022554bb1846f9c4d521cbc960`; Windows exe from draft release
+`ci-windows-88e3145`, md5 `c190be6903f209920003117bbc24c93e`; both
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.10/`. The 1.0.9 artifacts in
+`dist/` are obsolete (the 1.0.9 Windows exe even predates the focus fix).
+
+**Remaining for launch:**
+1. Mike installs 1.0.10 (`sudo installer -pkg … -target /`, agent can't
+   sudo) and tests in Logic: RANDOMIZE ALL + QWERTY, SET LIBRARY on a plain
+   folder of WAVs, greyed-out LFO rate under SYNC, silent preset clicks after
+   playing a note, saving into a New Folder bank. Also the 1.0.9 hardening
+   (soft bypass) which he never test-drove.
+2. Tell Paul: folder-of-WAVs fixed; the "preview" was a bug, fixed; check the
+   Trash for his lost preset; banks exist now.
+3. Tester round vs. announce; Shopify build-out; send launch email/posts.
+
+## Current state (2026-08-25): v1.0.9 staged; QWERTY focus follow-up (historical — superseded by the 2026-08-28 section above)
 
 **v1.0.8 — two attempts, the first was wrong and Mike caught it.** Fixes
 QWERTY (computer-keyboard) note input via the on-screen keyboard silently
