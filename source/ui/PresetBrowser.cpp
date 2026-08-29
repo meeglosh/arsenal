@@ -75,8 +75,10 @@ std::vector<int> PresetBrowser::filterIndices (
 
 PresetBrowser::PresetBrowser (SPASynthProcessor& p,
                               std::function<void()> close,
-                              std::function<void()> chooseLibrary)
-    : processor (p), onClose (std::move (close)), onChooseLibrary (std::move (chooseLibrary))
+                              std::function<void()> chooseLibrary,
+                              std::function<void()> requestKeyboardFocus)
+    : processor (p), onClose (std::move (close)), onChooseLibrary (std::move (chooseLibrary)),
+      onRequestKeyboardFocus (std::move (requestKeyboardFocus))
 {
     setComponentID ("presetBrowser");
     setWantsKeyboardFocus (true);
@@ -138,6 +140,19 @@ PresetBrowser::PresetBrowser (SPASynthProcessor& p,
     rescanButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (rescanButton);
 
+    // Blanket sweep for everything else in the drawer -- the ListBox (and its
+    // internal viewport/rows/scrollbars), the type chips, and any other
+    // click-grabbing default JUCE gives its widgets. searchBox is the one
+    // deliberate exception: it needs to take focus on click so the user can
+    // type. A listener on the row container is also needed below: rows are
+    // created lazily while scrolling, after this sweep has already run.
+    for (int i = 0; i < getNumChildComponents(); ++i)
+        if (auto* child = getChildComponent (i); child != &searchBox)
+            disableMouseClickFocusGrab (*child);
+
+    if (auto* viewedContent = list.getViewport()->getViewedComponent())
+        viewedContent->addComponentListener (this);   // rows created lazily on scroll
+
     processor.getPresetManager().addChangeListener (this);
     refresh();
 }
@@ -150,6 +165,16 @@ PresetBrowser::~PresetBrowser()
 void PresetBrowser::changeListenerCallback (juce::ChangeBroadcaster*)
 {
     refresh();
+}
+
+void PresetBrowser::componentChildrenChanged (juce::Component& c)
+{
+    // Re-sweep from the row container whenever it gains/loses children (new
+    // ListBox rows scrolled into view). Cheap and idempotent -- does NOT
+    // re-register listeners, so it can't re-enter the ListenerList that's
+    // mid-callback for this very notification. disableMouseClickFocusGrab
+    // is the shared helper in Controls.h.
+    disableMouseClickFocusGrab (c);
 }
 
 void PresetBrowser::openImmediately()
@@ -300,7 +325,19 @@ void PresetBrowser::listBoxItemClicked (int row, const juce::MouseEvent& e)
         return;
     }
 
+    // searchBox is the one component in this drawer allowed to keep keyboard
+    // focus on click (it needs it to type). If it had focus and the user
+    // then picks a preset, hand focus to the on-screen keyboard (if visible)
+    // so QWERTY note-play resumes instead of silently staying in the search
+    // field -- everything else in the drawer no longer moves focus at all,
+    // so without this the keyboard would only get focus back if the user
+    // happened to click a virtual key.
+    const bool searchHadFocus = searchBox.hasKeyboardFocus (false);
+
     processor.getPresetManager().loadPresetFile (p.file);
+
+    if (searchHadFocus && onRequestKeyboardFocus)
+        onRequestKeyboardFocus();
 }
 
 bool PresetBrowser::keyPressed (const juce::KeyPress& key)

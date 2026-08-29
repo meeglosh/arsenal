@@ -846,7 +846,8 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     presetBrowser = std::make_unique<PresetBrowser> (
         processor,
         [this] { togglePresetBrowser(); },
-        [this] { chooseLibraryFolder(); });
+        [this] { chooseLibraryFolder(); },
+        [this] { if (keyboardVisible) keyboard.grabKeyboardFocus(); });
     addChildComponent (*presetBrowser);
 
     processor.addChangeListener (this);
@@ -1360,6 +1361,47 @@ SPASynthEditor::SPASynthEditor (SPASynthProcessor& p)
 
     setResizable (true, true);
     configureConstrainer();
+
+    // Every mouse-clickable JUCE widget defaults to grabbing keyboard focus
+    // on click, which kills QWERTY note-play via the on-screen keyboard
+    // until a virtual key is clicked again (CLAUDE.md's 1.0.8/1.0.10
+    // notes). Individual call sites (Controls.h's Knob/Choice/Toggle, ~25
+    // action buttons, SectionPanel's auto-built controls, the preset
+    // browser) are fixed at their own point of construction -- but rather
+    // than also hand-auditing every remaining raw JUCE widget across every
+    // panel/tab (EqEditor, the accent picker, the FX tab bar, the mod
+    // matrix, the standalone tempo bar, the resize-corner grip
+    // setResizable() just added, ...), sweep the WHOLE tree here once, now
+    // that everything -- content AND the window chrome above -- is fully
+    // built (every tab/section is constructed up front, even ones not
+    // currently showing). Must run after setResizable(), not before: that
+    // call adds its own ResizableCornerComponent child, which a sweep run
+    // any earlier would miss. Three exceptions, matching the structural
+    // regression test's allowlist:
+    //  - any juce::TextEditor and everything inside it (composite, not a
+    //    leaf) -- needs focus on click to type.
+    //  - juce::MidiKeyboardComponent itself -- needs to KEEP click-grabs-
+    //    focus; that's how clicking a virtual key resumes QWERTY today.
+    //    Its own child controls (octave buttons) are still swept: clicking
+    //    them still ends up focusing the keyboard via JUCE's parent-walk,
+    //    since the keyboard's own flag is untouched.
+    //  - the preset browser itself -- deliberately grabs focus directly
+    //    (not via a click) when its drawer opens, so Esc can close it (see
+    //    togglePresetBrowser()); its children are handled by its own
+    //    constructor already, this just leaves ITS flag alone too.
+    std::function<void (juce::Component&)> sweepFocusGrab = [&] (juce::Component& c)
+    {
+        if (dynamic_cast<juce::TextEditor*> (&c) != nullptr)
+            return;
+
+        if (dynamic_cast<juce::MidiKeyboardComponent*> (&c) == nullptr
+            && dynamic_cast<ui::PresetBrowser*> (&c) == nullptr)
+            c.setMouseClickGrabsKeyboardFocus (false);
+
+        for (auto* child : c.getChildren())
+            sweepFocusGrab (*child);
+    };
+    sweepFocusGrab (*this);
 
     // Restore the remembered window scale, clamped so the whole editor
     // (including the resize corner) always fits the host's screen — on small

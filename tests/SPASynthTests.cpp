@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <limits>
+#include <typeinfo>
 
 namespace
 {
@@ -3519,6 +3520,184 @@ namespace
         expect (! division->isEnabled(), "division re-disabled after sync turned back off");
     }
 
+    // Structural regression test for the whole-app QWERTY focus-steal fix
+    // (CLAUDE.md's 1.0.8/1.0.10 notes): every mouse-clickable JUCE widget
+    // defaults to grabbing keyboard focus on click (Component::
+    // internalMouseDown -> grabKeyboardFocusInternal, unconditional, walking
+    // up the parent chain, re-checking each ancestor's OWN
+    // dontFocusOnMouseClickFlag in turn, until something either takes focus
+    // or blocks the attempt) -- which silently kills computer-keyboard
+    // note-play via the on-screen keyboard until a virtual key is clicked
+    // again, since MidiKeyboardComponent::keyStateChanged only fires while
+    // it's the focused component (and focusLost() cuts any held notes).
+    //
+    // Walks the ENTIRE editor tree (every tab/section is constructed at
+    // build time even when its tab isn't current, so a single build with
+    // the preset drawer opened reaches everything) and asserts
+    // getMouseClickGrabsKeyboardFocus() == false on every single component,
+    // except a 3-item allowlist, each justified:
+    //  - any juce::TextEditor, and anything inside one (its internal
+    //    viewport/scrollbars/caret -- TextEditor is a composite component,
+    //    not a leaf): these legitimately need focus on click so the user
+    //    can type (the preset browser's search box today; any future
+    //    TextEditor gets the same pass).
+    //  - juce::MidiKeyboardComponent: needs to KEEP click-grabs-focus --
+    //    that's how clicking a virtual key resumes QWERTY play today.
+    //  - the PresetBrowser itself: togglePresetBrowser() deliberately calls
+    //    grabKeyboardFocus() directly (not via a click) when the drawer
+    //    opens, so Esc can close it -- a pre-existing, intentional design
+    //    unrelated to this bug, so its own background click is allowed to
+    //    keep holding focus too.
+    static void presetBrowserFocusGrabTest()
+    {
+        std::cout << "presetBrowserFocusGrabTest\n";
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        // Give the browser's list real, loadable rows without touching the
+        // machine's actual factory/user preset folders: a handful of
+        // throwaway user presets, clearly tagged so cleanup can't miss or
+        // clobber anything real. saveUserPreset() just serializes the
+        // current APVTS state -- no audio content needed.
+        auto& pm = proc.getPresetManager();
+        for (int i = 0; i < 8; ++i)
+            expect (pm.saveUserPreset ("ZZ SPASynth Focus Test " + juce::String (i)),
+                    "throwaway focus-test preset " + juce::String (i) + " saves");
+
+        juce::Array<juce::File> createdFiles;
+        for (const auto& p : pm.getPresets())
+            if (p.name.startsWith ("ZZ SPASynth Focus Test"))
+                createdFiles.add (p.file);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        spa::ui::PresetBrowser* browser = nullptr;
+        juce::MidiKeyboardComponent* keyboard = nullptr;
+        juce::Component* prevPresetButton = nullptr;
+        juce::Component* nextPresetButton = nullptr;
+        std::function<void (juce::Component&)> findParts = [&] (juce::Component& c)
+        {
+            if (browser == nullptr)
+                browser = dynamic_cast<spa::ui::PresetBrowser*> (&c);
+            if (keyboard == nullptr)
+                keyboard = dynamic_cast<juce::MidiKeyboardComponent*> (&c);
+            if (prevPresetButton == nullptr && c.getComponentID() == "navPrev")
+                prevPresetButton = &c;
+            if (nextPresetButton == nullptr && c.getComponentID() == "navNext")
+                nextPresetButton = &c;
+            for (auto* child : c.getChildren())
+                findParts (*child);
+        };
+        findParts (*editor);
+
+        expect (browser != nullptr, "preset browser found in the editor tree");
+        expect (keyboard != nullptr, "on-screen keyboard found in the editor tree");
+        expect (prevPresetButton != nullptr && nextPresetButton != nullptr,
+                "top-bar preset nav carets found");
+
+        if (browser == nullptr)
+        {
+            for (auto& f : createdFiles)
+                f.deleteFile();
+            return;
+        }
+
+        browser->openImmediately();
+        browser->resized();   // force layout now, not on the next paint, so ListBox rows exist
+
+        // Let anything deferred (animation/async) settle -- same idiom as
+        // dependentEnableTest's pumpUntil above.
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 500u;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+
+        // Confirm the list actually has row components before trusting the
+        // walk below to have exercised them -- an empty list would make
+        // "rows are covered" vacuous.
+        juce::ListBox* list = nullptr;
+        std::function<void (juce::Component&)> findList = [&] (juce::Component& c)
+        {
+            if (list == nullptr)
+                list = dynamic_cast<juce::ListBox*> (&c);
+            for (auto* child : c.getChildren())
+                findList (*child);
+        };
+        findList (*browser);
+        expect (list != nullptr, "browser's ListBox found");
+
+        int rowChildren = 0;
+        if (list != nullptr)
+            if (auto* vp = list->getViewport())
+                if (auto* content = vp->getViewedComponent())
+                    rowChildren = content->getNumChildComponents();
+        expect (rowChildren > 0,
+                "ListBox has row components after layout (" + juce::String (rowChildren) + " found)");
+
+        // Builds "Type#id <- Type#id <- ..." from a component up to the
+        // editor root, for offender diagnostics below.
+        auto describeParentChain = [] (juce::Component& c)
+        {
+            juce::String chain;
+            for (auto* p = c.getParentComponent(); p != nullptr; p = p->getParentComponent())
+            {
+                if (chain.isNotEmpty())
+                    chain << " <- ";
+                chain << typeid (*p).name();
+                if (p->getComponentID().isNotEmpty())
+                    chain << "#" << p->getComponentID();
+            }
+            return chain;
+        };
+
+        // The whole-editor sweep: zero tolerance except the 3-item
+        // allowlist documented above the test.
+        int offenders = 0;
+        std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+        {
+            const bool allowed = dynamic_cast<juce::TextEditor*> (&c) != nullptr
+                               || c.findParentComponentOfClass<juce::TextEditor>() != nullptr
+                               || dynamic_cast<juce::MidiKeyboardComponent*> (&c) != nullptr
+                               || &c == browser;
+
+            if (! allowed && c.getMouseClickGrabsKeyboardFocus())
+            {
+                ++offenders;
+                std::cout << "  FAIL   focus-grab left on: " << typeid (c).name()
+                          << "  name=\"" << c.getName() << "\""
+                          << "  id=\"" << c.getComponentID() << "\""
+                          << "  parents: " << describeParentChain (c) << "\n";
+            }
+
+            for (auto* child : c.getChildren())
+                walk (*child);
+        };
+        walk (*editor);
+        expect (offenders == 0,
+                juce::String (offenders)
+                    + " component(s) in the editor still grab keyboard focus on click");
+
+        // Sanity check on the specific top-bar controls this bug report
+        // names -- redundant with the sweep above, but pinned explicitly so
+        // a future refactor that renames/moves them still gets a targeted
+        // failure message.
+        if (prevPresetButton != nullptr)
+            expect (! prevPresetButton->getMouseClickGrabsKeyboardFocus(),
+                    "prev-preset caret doesn't grab focus (8833a57)");
+        if (nextPresetButton != nullptr)
+            expect (! nextPresetButton->getMouseClickGrabsKeyboardFocus(),
+                    "next-preset caret doesn't grab focus (8833a57)");
+        if (keyboard != nullptr)
+            expect (keyboard->getMouseClickGrabsKeyboardFocus(),
+                    "on-screen keyboard keeps click-grabs-focus (needed for keyStateChanged/QWERTY)");
+
+        for (auto& f : createdFiles)
+            f.deleteFile();
+    }
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -3584,6 +3763,7 @@ int main (int argc, char* argv[])
     presetBrowserFilterTest();
     licenseLineTest();
     dependentEnableTest();
+    presetBrowserFocusGrabTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

@@ -527,6 +527,15 @@ void SPASynthLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height
     g.strokePath (chevron, juce::PathStrokeType (1.4f));
 }
 
+juce::Label* SPASynthLookAndFeel::createComboBoxTextBox (juce::ComboBox&)
+{
+    // Matches LookAndFeel_V2's default (juce_LookAndFeel_V2.cpp) except for
+    // the focus flag -- see this override's declaration comment.
+    auto* label = new juce::Label();
+    label->setMouseClickGrabsKeyboardFocus (false);
+    return label;
+}
+
 // Draggable FX tabs draw a grip-dots handle at the left; reserve room for it so
 // a re-laid-out (tight) bar never slides the centred text onto the grip.
 static constexpr int tabGripReserve = 16;

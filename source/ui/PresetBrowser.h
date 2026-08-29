@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Theme.h"
+#include "Controls.h"
 #include "../library/PresetManager.h"
 
 namespace spa
@@ -17,12 +18,18 @@ namespace ui
 // row loads it; the star toggles favourite. Esc or the X closes the drawer.
 class PresetBrowser : public juce::Component,
                       private juce::ChangeListener,
-                      private juce::ListBoxModel
+                      private juce::ListBoxModel,
+                      private juce::ComponentListener
 {
 public:
+    // onRequestKeyboardFocus: called after a preset row click loads a preset
+    // if the search box had keyboard focus at click time, so the caller can
+    // hand focus to the on-screen keyboard (if visible) and resume QWERTY
+    // note-play -- see listBoxItemClicked.
     PresetBrowser (SPASynthProcessor&,
                    std::function<void()> onClose,
-                   std::function<void()> onChooseLibrary);
+                   std::function<void()> onChooseLibrary,
+                   std::function<void()> onRequestKeyboardFocus);
     ~PresetBrowser() override;
 
     // --- pure filtering (testable without a UI) ------------------------------
@@ -61,8 +68,17 @@ private:
                            bool rowIsSelected) override;
     void listBoxItemClicked (int row, const juce::MouseEvent&) override;
 
+    // ListBox rows are created lazily while scrolling -- new RowComponents
+    // introduce fresh children after construction that would otherwise
+    // revert to JUCE's click-grabs-focus default. Re-sweep whenever the
+    // watched row container's children change. (ComboBox's internal Label
+    // rebuild -- the other source of fresh post-construction children --
+    // is handled once, application-wide, by SPASynthLookAndFeel::
+    // createComboBoxTextBox instead of a listener here.)
+    void componentChildrenChanged (juce::Component&) override;
+
     SPASynthProcessor& processor;
-    std::function<void()> onClose, onChooseLibrary;
+    std::function<void()> onClose, onChooseLibrary, onRequestKeyboardFocus;
 
     juce::TextButton closeButton { juce::String::fromUTF8 ("\xc3\x97") };   // ×
     juce::TextEditor searchBox;

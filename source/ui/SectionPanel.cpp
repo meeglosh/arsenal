@@ -85,6 +85,19 @@ SectionPanel::SectionPanel (juce::AudioProcessorValueTreeState& apvts,
         if (control.label != nullptr)
             addAndMakeVisible (*control.label);
 
+        // Unlike Controls.h's Knob/Choice/Toggle, these controls are raw
+        // JUCE widgets built straight off the parameter registry, so they
+        // never picked up the click-grabs-keyboard-focus fix (CLAUDE.md's
+        // 1.0.8/1.0.10 notes) -- every ToggleButton and ComboBox this loop
+        // builds, for every registry-driven section in the app, was still
+        // capable of stealing focus from the on-screen keyboard. Sweep the
+        // whole control (covers a ComboBox's internal Label too) and its
+        // caption label. disableMouseClickFocusGrab is the shared helper
+        // in Controls.h.
+        disableMouseClickFocusGrab (*control.component);
+        if (control.label != nullptr)
+            disableMouseClickFocusGrab (*control.label);
+
         controls.push_back (std::move (control));
     }
 }

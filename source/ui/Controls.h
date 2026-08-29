@@ -6,6 +6,29 @@
 namespace spa::ui
 {
 
+// Recursively clears setMouseClickGrabsKeyboardFocus on a component and
+// every current descendant. setWantsKeyboardFocus(false) alone does NOT
+// stop a click from grabbing focus -- JUCE grabs keyboard focus on every
+// mouse click unconditionally (Component::internalMouseDown ->
+// grabKeyboardFocusInternal), walking up the parent chain, re-checking each
+// ancestor's OWN dontFocusOnMouseClickFlag in turn, until it finds one that
+// either wants focus (and takes it) or blocks the attempt outright.
+// setMouseClickGrabsKeyboardFocus(false) is the flag that's actually
+// checked first at each step and short-circuits the walk. Shared here so
+// every part of the UI that assembles composite JUCE widgets (the preset
+// browser's ListBox, SectionPanel's auto-built controls, etc.) can sweep a
+// whole subtree -- including JUCE-internal helpers like ListBox's
+// RowComponent/viewport/scrollbars or a ComboBox's internal text Label --
+// in one call instead of hand-tracking every leaf.
+inline void disableMouseClickFocusGrab (juce::Component& c)
+{
+    c.setMouseClickGrabsKeyboardFocus (false);
+
+    for (int i = 0; i < c.getNumChildComponents(); ++i)
+        if (auto* child = c.getChildComponent (i))
+            disableMouseClickFocusGrab (*child);
+}
+
 // A thin-ring knob with its label underneath — the atomic control of the UI.
 // Set modColoured for modulation-domain knobs (cyan ring).
 class Knob : public juce::Component
