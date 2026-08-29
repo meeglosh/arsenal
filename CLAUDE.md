@@ -100,10 +100,20 @@ reviewing every diff before commit):**
   --team-id 7K9WY5T49S`. Then submit + staple the already-signed pkg and
   stage by hand (the script skips staging after a notarize failure).
 
-**1.0.10 FINAL, built + staged 2026-08-29 from `94213fa`, NOT yet tested by
+- `e1e2d18` **opening the preset browser took focus from the keyboard**
+  (Mike, on the `94213fa` build). `togglePresetBrowser` grabbed focus for the
+  browser so Esc could close it. Now it only does that when the keyboard
+  strip is hidden; otherwise focus stays on the keyboard and Esc bubbles up
+  (`MidiKeyboardComponent::keyPressed` only claims mapped notes →
+  `ComponentPeer::handleKeyPress` parent walk → new
+  `ContentComponent::keyPressed` closes the drawer). Closing hands focus back
+  to the keyboard. `presetBrowserKeyboardFocusTest` puts the editor on the
+  desktop and checks REAL focus + Esc through the peer. Suite **256**.
+
+**1.0.10 FINAL, built + staged 2026-08-29 from `e1e2d18`, NOT yet tested by
 Mike, NOT sent:** macOS pkg signed + notarized + stapled, `spctl` accepted,
-md5 `060647227ef2a1cb07f20ca9b4cd0975`; Windows exe from draft release
-`ci-windows-94213fa`, md5 `06ad947cf338151273b112fdab85d0eb`; both
+md5 `c21abd598c55f96c11a6d8b4c1153580`; Windows exe from draft release
+`ci-windows-e1e2d18`, md5 `1b8eb5e3e0258dfdd9e905a411fcaaa2`; both
 byte-identical across `dist/installers/` and
 `dist/shopify/SPASynth-{Standard,Pro}-1.0.10/`. Everything 1.0.9 in `dist/`
 is obsolete.
