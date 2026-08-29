@@ -77,19 +77,43 @@ reviewing every diff before commit):**
   `factoryPresetRootPackTest`, `presetLoadNoiseBurstTest`,
   `presetBankTest`). auval SUCCEEDED on every step.
 
-**1.0.10 built + staged 2026-08-28, NOT yet tested by Mike, NOT sent:**
-macOS pkg signed + notarized + stapled, md5
-`176075022554bb1846f9c4d521cbc960`; Windows exe from draft release
-`ci-windows-88e3145`, md5 `c190be6903f209920003117bbc24c93e`; both
+- `94213fa` **QWERTY died on anything in the preset browser** (Mike found it
+  on the first 1.0.10 build). JUCE trace: a row click lands on ListBox's
+  private RowComponent, which doesn't want focus, so the grab walks up to the
+  ListBox, which does. Closed the whole class this time: a whole-tree
+  `setMouseClickGrabsKeyboardFocus(false)` sweep in the SPASynthEditor
+  constructor (after `setResizable`, so the corner grip is included), plus
+  hooks for the two things created later — ListBox rows (ComponentListener
+  on the row container) and ComboBox text labels
+  (`SPASynthLookAndFeel::createComboBoxTextBox` override). Exceptions:
+  TextEditor subtrees, the MidiKeyboardComponent itself, the browser's own
+  Esc-to-close self-focus. `presetBrowserFocusGrabTest` walks the ENTIRE
+  editor with the drawer open and fails on any offender (it found 304 before
+  the sweep — every FX section toggle/combo, tab bars, scrollbars…). Suite
+  now **248 assertions**. Shared helper `disableMouseClickFocusGrab` in
+  Controls.h.
+- **`SPASYNTH_NOTARY` vanished a THIRD time** (2026-08-28, mid-rebuild;
+  `build_release.sh` exited 69 after signing). Recreating it via the `!`
+  prefix in Claude Code FAILS with an instant 401 — the hidden password
+  prompt doesn't get real input there. It must be run in Terminal.app:
+  `xcrun notarytool store-credentials SPASYNTH_NOTARY --apple-id <id>
+  --team-id 7K9WY5T49S`. Then submit + staple the already-signed pkg and
+  stage by hand (the script skips staging after a notarize failure).
+
+**1.0.10 FINAL, built + staged 2026-08-29 from `94213fa`, NOT yet tested by
+Mike, NOT sent:** macOS pkg signed + notarized + stapled, `spctl` accepted,
+md5 `060647227ef2a1cb07f20ca9b4cd0975`; Windows exe from draft release
+`ci-windows-94213fa`, md5 `06ad947cf338151273b112fdab85d0eb`; both
 byte-identical across `dist/installers/` and
-`dist/shopify/SPASynth-{Standard,Pro}-1.0.10/`. The 1.0.9 artifacts in
-`dist/` are obsolete (the 1.0.9 Windows exe even predates the focus fix).
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.10/`. Everything 1.0.9 in `dist/`
+is obsolete.
 
 **Remaining for launch:**
 1. Mike installs 1.0.10 (`sudo installer -pkg … -target /`, agent can't
    sudo) and tests in Logic: RANDOMIZE ALL + QWERTY, SET LIBRARY on a plain
    folder of WAVs, greyed-out LFO rate under SYNC, silent preset clicks after
-   playing a note, saving into a New Folder bank. Also the 1.0.9 hardening
+   playing a note, saving into a New Folder bank, and QWERTY surviving
+   clicks anywhere in the preset browser and on FX section toggles. Also the 1.0.9 hardening
    (soft bypass) which he never test-drove.
 2. Tell Paul: folder-of-WAVs fixed; the "preview" was a bug, fixed; check the
    Trash for his lost preset; banks exist now.
