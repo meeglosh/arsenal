@@ -31,6 +31,9 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;   // right-click = MIDI Learn
+    bool keyPressed (const juce::KeyPress&) override;    // Esc closes the preset browser
+                                                          // even when focus stayed on the
+                                                          // on-screen keyboard (see .cpp)
     void refreshAll();
 
     // Base height grows by the keyboard strip when it is shown; the editor

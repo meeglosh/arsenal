@@ -8,12 +8,14 @@ Fixes and polish from the latest round of tester feedback.
   buttons such as RANDOMIZE ALL, SAVE, the preset arrows, or the panic
   button. A previous fix already covered knobs and dropdowns; every button
   in SPASynth now leaves your QWERTY playing alone. This also covers the
-  preset browser (picking a preset from the list, changing the pack
-  category, and using the KEYS/TEXTURE/PULSE/USER filter chips) and every
-  remaining on/off switch and dropdown across the FX sections and filters
-  (for example an effect's own ON toggle or character menu) that had been
-  missed by the earlier pass. Computer-keyboard playing should now survive
-  any click anywhere in SPASynth.
+  preset browser (opening the browser itself while the on-screen keyboard is
+  showing, picking a preset from the list, changing the pack category, and
+  using the KEYS/TEXTURE/PULSE/USER filter chips) and every remaining on/off
+  switch and dropdown across the FX sections and filters (for example an
+  effect's own ON toggle or character menu) that had been missed by the
+  earlier pass. Computer-keyboard playing should now survive any click
+  anywhere in SPASynth, including opening the preset browser itself, and
+  Esc still closes the browser either way.
 - Fixed a library folder bug: picking a folder that held sound files
   directly (with no pack subfolders inside it) was silently rejected, and
   in some cases quietly replaced your chosen folder with the default

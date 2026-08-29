@@ -3545,9 +3545,13 @@ namespace
     //    that's how clicking a virtual key resumes QWERTY play today.
     //  - the PresetBrowser itself: togglePresetBrowser() deliberately calls
     //    grabKeyboardFocus() directly (not via a click) when the drawer
-    //    opens, so Esc can close it -- a pre-existing, intentional design
-    //    unrelated to this bug, so its own background click is allowed to
-    //    keep holding focus too.
+    //    opens AND the on-screen keyboard isn't visible, so Esc can still
+    //    close it -- a pre-existing, intentional design unrelated to this
+    //    bug, so its own background click is allowed to keep holding focus
+    //    too. (This test's editor never shows the keyboard strip, so that
+    //    branch is the one exercised here; see
+    //    presetBrowserKeyboardFocusTest below for the keyboard-visible case,
+    //    where opening the drawer must NOT steal focus.)
     static void presetBrowserFocusGrabTest()
     {
         std::cout << "presetBrowserFocusGrabTest\n";
@@ -3698,6 +3702,165 @@ namespace
             f.deleteFile();
     }
 
+    // Behavioral regression for the "opening the preset browser with the
+    // on-screen keyboard visible steals QWERTY focus" bug (found on
+    // 1.0.10's first build, after presetBrowserFocusGrabTest's whole-tree
+    // sweep landed). togglePresetBrowser() used to grabKeyboardFocus() on
+    // the browser unconditionally on open; now it only does that when the
+    // keyboard strip is hidden, and Esc is handled by ContentComponent::
+    // keyPressed instead when focus stayed on the keyboard.
+    //
+    // Parts (a) and (b) below need REAL OS keyboard focus (grabKeyboardFocus
+    // only takes effect when Component::isShowing() is true, which at the
+    // root requires an actual peer -- see Component::grabKeyboardFocusInternal
+    // in juce_Component.cpp), so the editor is addToDesktop()'d, unlike every
+    // other test in this file. If that doesn't hold real focus in a given
+    // headless CI environment, grabKeyboardFocus() silently no-ops (release
+    // builds don't assert) and the "still focused" checks below would fail
+    // honestly rather than pass vacuously -- so a failure here should be
+    // read as "couldn't get real focus in this environment" before assuming
+    // a code regression; the structural allowlist sweep in
+    // presetBrowserFocusGrabTest above covers the same fix without needing
+    // real focus.
+    static void presetBrowserKeyboardFocusTest()
+    {
+        std::cout << "presetBrowserKeyboardFocusTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        auto findParts = [] (juce::Component& root, spa::ui::PresetBrowser*& browser,
+                             juce::MidiKeyboardComponent*& keyboard,
+                             juce::TextButton*& presetButton)
+        {
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+            {
+                if (browser == nullptr)
+                    browser = dynamic_cast<spa::ui::PresetBrowser*> (&c);
+                if (keyboard == nullptr)
+                    keyboard = dynamic_cast<juce::MidiKeyboardComponent*> (&c);
+                if (presetButton == nullptr)
+                    if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                        if (b->getTooltip() == "Browse presets")
+                            presetButton = b;
+                for (auto* child : c.getChildren())
+                    walk (*child);
+            };
+            walk (root);
+        };
+
+        // (a) + (b): keyboard strip visible.
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (48000.0, 512);
+            proc.getAPVTS().state.setProperty ("uiKeyboardVisible", true, nullptr);
+
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            editor->setSize (spa::ui::metrics::baseWidth,
+                             spa::ui::metrics::baseHeight + spa::ui::metrics::keyboardStripHeight);
+            editor->addToDesktop (0);
+            editor->setVisible (true);
+            pumpFor (200);   // let the peer settle before asking it to hold focus
+
+            spa::ui::PresetBrowser* browser = nullptr;
+            juce::MidiKeyboardComponent* keyboard = nullptr;
+            juce::TextButton* presetButton = nullptr;
+            findParts (*editor, browser, keyboard, presetButton);
+
+            expect (browser != nullptr && keyboard != nullptr && presetButton != nullptr,
+                    "browser/keyboard/preset button found (keyboard-visible editor)");
+
+            if (browser != nullptr && keyboard != nullptr && presetButton != nullptr)
+            {
+                keyboard->grabKeyboardFocus();
+                pumpFor (50);
+                const bool gotRealFocus = keyboard->hasKeyboardFocus (false);
+
+                if (! gotRealFocus)
+                {
+                    std::cout << "  ..   couldn't obtain real OS keyboard focus in this "
+                                 "environment -- skipping (a)/(b), covered structurally "
+                                 "by presetBrowserFocusGrabTest instead\n";
+                }
+                else
+                {
+                    // (a) Opening the drawer must NOT move focus off the keyboard.
+                    presetButton->triggerClick();
+                    pumpFor (300);   // outlast the 170ms open animation
+
+                    expect (keyboard->hasKeyboardFocus (false),
+                            "(a) on-screen keyboard keeps real focus when the drawer opens "
+                            "over it");
+                    expect (! browser->hasKeyboardFocus (true),
+                            "(a) preset browser does NOT take focus while the keyboard is "
+                            "visible");
+
+                    // (b) Esc must still close the drawer, reaching
+                    // ContentComponent::keyPressed via the parent walk since
+                    // MidiKeyboardComponent::keyPressed returns false for a key
+                    // it doesn't map (juce_MidiKeyboardComponent.cpp) --
+                    // exercised through the real peer, the same path a live
+                    // Esc keystroke takes (ComponentPeer::handleKeyPress in
+                    // juce_ComponentPeer.cpp).
+                    const auto openBounds = browser->getOpenBounds();
+                    const auto closedBounds = openBounds.translated (
+                        -openBounds.getWidth() - 12, 0);
+                    expect (browser->getBounds() == openBounds,
+                            "(b) drawer is at its open bounds before Esc");
+
+                    if (auto* peer = editor->getPeer())
+                        peer->handleKeyPress (juce::KeyPress::escapeKey, 0);
+                    pumpFor (500);   // outlast the 170ms close animation
+
+                    expect (browser->getBounds() == closedBounds,
+                            "(b) Esc closed the drawer while focus was on the keyboard");
+                    expect (keyboard->hasKeyboardFocus (false),
+                            "(b) keyboard still/again has focus after Esc closed the drawer");
+                }
+            }
+
+            editor->removeFromDesktop();
+        }
+
+        // (c) keyboard strip hidden: opening the drawer still gives the
+        // browser focus, so Esc has something focused to reach it through.
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (48000.0, 512);
+            // uiKeyboardVisible defaults to false -- don't set it.
+
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+            editor->addToDesktop (0);
+            editor->setVisible (true);
+            pumpFor (200);
+
+            spa::ui::PresetBrowser* browser = nullptr;
+            juce::MidiKeyboardComponent* keyboard = nullptr;
+            juce::TextButton* presetButton = nullptr;
+            findParts (*editor, browser, keyboard, presetButton);
+
+            expect (browser != nullptr && presetButton != nullptr,
+                    "browser/preset button found (keyboard-hidden editor)");
+
+            if (browser != nullptr && presetButton != nullptr)
+            {
+                presetButton->triggerClick();
+                pumpFor (50);
+
+                expect (browser->hasKeyboardFocus (true),
+                        "(c) preset browser (or a child, e.g. search box) takes focus when "
+                        "opened with the keyboard strip hidden, so Esc still works there");
+            }
+
+            editor->removeFromDesktop();
+        }
+    }
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -3764,6 +3927,7 @@ int main (int argc, char* argv[])
     licenseLineTest();
     dependentEnableTest();
     presetBrowserFocusGrabTest();
+    presetBrowserKeyboardFocusTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

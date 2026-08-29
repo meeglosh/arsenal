@@ -1229,7 +1229,44 @@ void ContentComponent::togglePresetBrowser()
         1.0f, 170, false, 1.0, 0.7);
 
     if (presetBrowserOpen)
-        presetBrowser->grabKeyboardFocus();   // Esc closes
+    {
+        // Esc needs a focused component somewhere in the chain to reach us.
+        // If the on-screen keyboard is showing, leave focus there instead of
+        // stealing it -- that's what silently killed QWERTY the instant the
+        // drawer opened, needing a virtual-key click to resume.
+        // MidiKeyboardComponent::keyPressed only claims the notes it maps
+        // (juce_MidiKeyboardComponent.cpp), so Esc falls through to us via
+        // ComponentPeer::handleKeyPress's parent walk and
+        // ContentComponent::keyPressed (below) closes the drawer from there.
+        // When the keyboard isn't showing there's nothing to protect, so keep
+        // grabbing the browser directly (also covers Esc reaching the search
+        // box, which is exempt from the click-focus-grab sweep).
+        if (! keyboardVisible)
+            presetBrowser->grabKeyboardFocus();   // Esc closes
+    }
+    else if (keyboardVisible)
+    {
+        // Closing: whatever had focus inside the drawer (the browser itself,
+        // or the search box) is about to slide off-screen -- hand focus back
+        // to the keyboard so QWERTY resumes without needing a click.
+        keyboard.grabKeyboardFocus();
+    }
+}
+
+bool ContentComponent::keyPressed (const juce::KeyPress& key)
+{
+    // Only reached when the on-screen keyboard (or some other component that
+    // doesn't map the key itself) has focus and the key bubbles up past it --
+    // see the comment in togglePresetBrowser(). Mirrors PresetBrowser::
+    // keyPressed's own Esc handling for the case where focus is inside the
+    // browser instead.
+    if (key == juce::KeyPress::escapeKey && presetBrowserOpen)
+    {
+        togglePresetBrowser();
+        return true;
+    }
+
+    return false;
 }
 
 void ContentComponent::rescanLibrary()
