@@ -338,9 +338,10 @@ public:
     {
         const auto& t = currentTheme();
         auto area = getLocalBounds().toFloat().reduced (1.0f);
-        g.setColour (t.display);
-        g.fillRoundedRectangle (area, 4.0f);
-        g.setColour (t.outline.withAlpha (0.5f));
+        // Faceplate restyle: no display-well fill/border — the shaped-IR
+        // envelope draws straight on the faceplate surface. Keep a faint
+        // centre reference line (matches draw::displayWell's judgment call).
+        g.setColour (t.outline.withAlpha (0.18f));
         g.drawHorizontalLine ((int) area.getCentreY(), area.getX(), area.getRight());
 
         if (! processor.hasConvolutionIR())
@@ -348,8 +349,6 @@ public:
             g.setColour (t.textSecondary.withAlpha (0.5f));
             g.setFont (metrics::smallFont());
             g.drawText ("No impulse loaded - pick one above", area, juce::Justification::centred);
-            g.setColour (t.outline);
-            g.drawRoundedRectangle (area, 4.0f, 1.0f);
             return;
         }
 
@@ -390,9 +389,6 @@ public:
             g.setColour (t.textSecondary.withAlpha (0.5f));
             g.drawVerticalLine ((int) x0, area.getY(), area.getBottom());
         }
-
-        g.setColour (t.outline);
-        g.drawRoundedRectangle (area, 4.0f, 1.0f);
     }
 
     void timerCallback() override { repaint(); }
@@ -437,7 +433,9 @@ public:
 
     ~ConvolvePanel() override { processor.removeChangeListener (this); }
 
-    void paint (juce::Graphics& g) override { g.fillAll (currentTheme().panel); }
+    // Faceplate restyle: FX-chain tab content, same as FXPanel's other tabs
+    // (DIST/CHORUS/DELAY/...) — no card fill, continuous surface shows through.
+    void paint (juce::Graphics&) override {}
 
     void resized() override
     {
@@ -586,7 +584,14 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (currentTheme().panel);
+        // Popup call-out, not a module — it sits over other modules and
+        // must occlude, so (unlike the module cards) it keeps a flat fill.
+        // A subtle darker edge (rather than the old drop-shadow card) reads
+        // as "detached from the surface" without introducing a new card look.
+        const auto& t = currentTheme();
+        g.fillAll (t.panel);
+        g.setColour (t.seam);
+        g.drawRect (getLocalBounds(), 1);
     }
 
     void resized() override
@@ -612,6 +617,27 @@ private:
     Knob voices, detune, width;
     juce::Label modeLabel, priorityLabel;
 };
+
+// Faceplate restyle: a small, seeded (not time-seeded) per-pixel noise tile,
+// generated once and tiled across the whole surface at very low opacity for
+// the "very subtle fine-grain texture" the brief asks for. A fixed-size tile
+// drawn via Graphics::setTiledImageFill needs no regeneration on resize (it
+// simply repeats), keeps this fully deterministic run-to-run for snapshot
+// tests, and never allocates in paint().
+static juce::Image makeFaceplateNoiseTexture()
+{
+    constexpr int size = 96;
+    juce::Image img (juce::Image::ARGB, size, size, false);
+    juce::Random rng (0x5b0a5adeu);   // fixed seed -- never getSystemRandom()
+    juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x)
+        {
+            const auto v = (juce::uint8) rng.nextInt (256);
+            bd.setPixelColour (x, y, juce::Colour (v, v, v));   // opaque grey; opacity applied at draw time
+        }
+    return img;
+}
 } // namespace
 
 ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> themeChanged)
@@ -626,6 +652,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
                                                     SPAAssets::SPAudio_logo_white_svgSize);
     logoLight = juce::Drawable::createFromImageData (SPAAssets::SPAudio_logo_white_svg,
                                                      SPAAssets::SPAudio_logo_white_svgSize);
+    noiseTexture = makeFaceplateNoiseTexture();   // faceplate grain: generated once, message thread
 
     // Logo (top-left) opens the SPASynth settings menu. Works in the plugin too,
     // unlike the standalone wrapper's audio-device "Options" menu.
@@ -960,6 +987,15 @@ void ContentComponent::paint (juce::Graphics& g)
     const auto& t = currentTheme();
     g.fillAll (t.background);
 
+    // Faceplate grain: a tiled, low-opacity noise texture over the whole
+    // surface. Kept restrained (must be invisible at a glance) -- see
+    // makeFaceplateNoiseTexture() for the determinism/caching notes.
+    if (noiseTexture.isValid())
+    {
+        g.setTiledImageFill (noiseTexture, 0, 0, 0.03f);
+        g.fillRect (getLocalBounds());
+    }
+
     // Brand band: the big tracked wordmark, centred (per the redesign mock).
     auto band = getLocalBounds().removeFromTop (metrics::brandBandHeight);
     g.setColour (t.header.darker (0.25f));
@@ -1030,6 +1066,30 @@ void ContentComponent::paint (juce::Graphics& g)
     g.setColour (t.textSecondary);
     g.setFont (metrics::smallFont());
     g.drawText ("LOCKS", lockCaption, juce::Justification::centredLeft);
+
+    // --- Faceplate seams + row shadows -----------------------------------
+    // Painted here (parent, before children) so they sit UNDER every module's
+    // (now transparent) content -- reads as the surface itself being milled,
+    // not an overlay on top of the controls. Geometry comes from resized(),
+    // never hardcoded.
+    constexpr int shadowBandHeight = 11;
+    for (const auto rowY : rowShadowYs)
+    {
+        if (rowY <= 0) continue;
+        const juce::Rectangle<float> shadowBand (0.0f, (float) rowY, (float) getWidth(), (float) shadowBandHeight);
+        g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.22f),
+                                                 shadowBand.getX(), shadowBand.getY(),
+                                                 juce::Colours::transparentBlack,
+                                                 shadowBand.getX(), shadowBand.getBottom(), false));
+        g.fillRect (shadowBand);
+    }
+
+    g.setColour (t.seam);
+    for (const auto& gutter : moduleGutters)
+    {
+        const auto x = gutter.getCentreX();
+        g.drawVerticalLine (x, (float) gutter.getY(), (float) gutter.getBottom());
+    }
 }
 
 void ContentComponent::resized()
@@ -1102,6 +1162,10 @@ void ContentComponent::resized()
     // --- Module grid ----------------------------------------------------------
     auto main = bounds.reduced (metrics::unit, 4);
     constexpr int gap = 6;
+    moduleGutters.clear();
+    // Faceplate restyle: the shadow band "under the header" sits at the top
+    // of the module grid, i.e. where the header/lock strip hands off to row 1.
+    rowShadowYs[0] = main.getY();
 
     // Row 1: three oscillators + filter.
     auto row1 = main.removeFromTop (juce::roundToInt ((float) main.getHeight() * 0.40f));
@@ -1109,27 +1173,35 @@ void ContentComponent::resized()
     for (int s = 0; s < params::numOscSlots; ++s)
     {
         oscStrips[(size_t) s]->setBounds (row1.removeFromLeft (oscW));
-        row1.removeFromLeft (gap);
+        moduleGutters.push_back (row1.removeFromLeft (gap));
     }
     filterTabs.setBounds (row1);
     main.removeFromTop (gap);
 
     // Row 2: envelopes, LFOs, chaos, macros.
+    rowShadowYs[1] = main.getY();
     auto row2 = main.removeFromTop (juce::roundToInt ((float) main.getHeight() * 0.48f));
     envTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 22 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
     lfoTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 28 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
     chaosPanel.setBounds (row2.removeFromLeft (row2.getWidth() * 52 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
     arpPanel.setBounds (row2);
     main.removeFromTop (gap);
 
     // Row 3: FX + matrix.
+    rowShadowYs[2] = main.getY();
     auto row3 = main;
     fxTabs.setBounds (row3.removeFromLeft (row3.getWidth() * 44 / 100));
-    row3.removeFromLeft (gap);
+    moduleGutters.push_back (row3.removeFromLeft (gap));
     matrixPanel.setBounds (row3);
+
+    // Shadow band "above the footer": the footer strip is always pinned to
+    // the very bottom of the component (sliced off `bounds` above, ahead of
+    // the keyboard strip), so its top edge is a fixed offset from the height
+    // regardless of keyboard-strip visibility.
+    rowShadowYs[3] = getHeight() - metrics::footerHeight;
 
     // --- Preset drawer (overlay, left) ----------------------------------------
     const auto drawerArea = getLocalBounds()

@@ -136,6 +136,13 @@ private:
 
     juce::String licenseLine;   // footer ownership stamp (refreshed with the library)
 
+    // Faceplate restyle: geometry captured in resized() so paint() can draw
+    // the recessed vertical seams + horizontal shadow bands from the live
+    // module grid rather than hardcoded pixel positions.
+    std::array<int, 4> rowShadowYs {};               // y of each row-transition shadow band
+    std::vector<juce::Rectangle<int>> moduleGutters; // gap rects between adjacent modules in a row
+    juce::Image noiseTexture;                        // cached fine-grain texture tile (seeded once)
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContentComponent)
 };
 

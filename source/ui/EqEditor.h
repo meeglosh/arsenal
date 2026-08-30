@@ -61,9 +61,8 @@ public:
         const auto& t = currentTheme();
         const bool on = value (params::id::fx::eqEnable) >= 0.5f;
 
-        g.setColour (t.display);
-        g.fillRoundedRectangle (graph, 4.0f);
-
+        // Faceplate restyle: no display-well fill/border behind the graph —
+        // the grid + spectrum + curve draw straight on the faceplate surface.
         drawGrid (g, t);
         drawSpectrum (g, t);
 
@@ -139,9 +138,6 @@ public:
         g.drawText ("double-click: add / remove    " + modName + "-drag or wheel: Q",
                     graph.reduced (8.0f, 5.0f).removeFromTop (13.0f),
                     juce::Justification::topRight);
-
-        g.setColour (t.outline);
-        g.drawRoundedRectangle (graph, 4.0f, 1.0f);
     }
 
     void mouseDown (const juce::MouseEvent& e) override

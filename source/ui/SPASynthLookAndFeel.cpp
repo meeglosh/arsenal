@@ -43,32 +43,14 @@ void resetAccentColors()
 namespace draw
 {
 
-void panel (juce::Graphics& g, juce::Rectangle<float> bounds)
+void panel (juce::Graphics&, juce::Rectangle<float>)
 {
-    const auto& t = currentTheme();
-
-    // Soft elevation shadow (two feathered passes — cheap and convincing).
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.fillRoundedRectangle (bounds.translated (0.0f, 2.5f).expanded (1.0f),
-                            metrics::cornerRadius + 2.0f);
-    g.setColour (juce::Colours::black.withAlpha (0.20f));
-    g.fillRoundedRectangle (bounds.translated (0.0f, 4.5f).expanded (2.5f),
-                            metrics::cornerRadius + 4.0f);
-
-    // Panel face with a whisper of vertical gradient.
-    g.setGradientFill (juce::ColourGradient (t.panel.brighter (0.05f),
-                                             bounds.getX(), bounds.getY(),
-                                             t.panel.darker (0.06f),
-                                             bounds.getX(), bounds.getBottom(), false));
-    g.fillRoundedRectangle (bounds, metrics::cornerRadius);
-
-    g.setColour (t.outline);
-    g.drawRoundedRectangle (bounds.reduced (0.5f), metrics::cornerRadius, 1.0f);
-
-    // Hairline top highlight — the "edge catch" the mock's panels have.
-    g.setColour (juce::Colours::white.withAlpha (0.045f));
-    g.drawLine (bounds.getX() + metrics::cornerRadius, bounds.getY() + 1.0f,
-                bounds.getRight() - metrics::cornerRadius, bounds.getY() + 1.0f, 1.0f);
+    // Faceplate restyle: modules no longer paint their own card. The
+    // continuous surface (fill + texture + seams + row shadows) is painted
+    // once behind everything by ContentComponent::paint, so it shows
+    // through unbroken. Kept as a no-op (rather than deleting every call
+    // site) so draw::panel(...) stays the single place to reintroduce a
+    // module fill if that's ever needed again.
 }
 
 juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> bounds,
@@ -131,21 +113,20 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
     return bounds;
 }
 
-void displayWell (juce::Graphics& g, juce::Rectangle<float> bounds)
+void displayWell (juce::Graphics& g, juce::Rectangle<float> bounds, bool centreLine)
 {
     const auto& t = currentTheme();
 
-    // Recessed well: vertical gradient, slightly darker at the top.
-    g.setGradientFill (juce::ColourGradient (t.display.darker (0.25f),
-                                             bounds.getX(), bounds.getY(),
-                                             t.display.brighter (0.08f),
-                                             bounds.getX(), bounds.getBottom(), false));
-    g.fillRoundedRectangle (bounds, 3.0f);
-    g.setColour (t.outline);
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 3.0f, 1.0f);
+    // Faceplate restyle: no LED-screen well any more — curves render
+    // straight on the faceplate surface (glowStroke). Keep only an
+    // extremely faint zero/centre reference line; several scopes (LFO,
+    // bipolar wave, filter) are otherwise hard to read with no baseline.
+    // Non-scope callers (e.g. a plain list container) can opt out — a
+    // reference line has no meaning there and just bisects the content.
+    if (! centreLine)
+        return;
 
-    // Faint centre line, like the reference scopes.
-    g.setColour (t.outline.withAlpha (0.45f));
+    g.setColour (t.outline.withAlpha (0.18f));
     g.drawHorizontalLine ((int) bounds.getCentreY(), bounds.getX() + 2.0f,
                           bounds.getRight() - 2.0f);
 }
@@ -204,6 +185,13 @@ void SPASynthLookAndFeel::refreshPalette()
     setColour (juce::BubbleComponent::backgroundColourId, t.panel);
     setColour (juce::TabbedButtonBar::tabTextColourId, t.textSecondary);
     setColour (juce::TabbedButtonBar::frontTextColourId, t.textPrimary);
+    // JUCE's TabbedComponent fills a 1px outline around its content area in
+    // this colour whenever outlineThickness > 0 (the default); it was never
+    // tokenized, so it painted with the stock LookAndFeel_V4 default rather
+    // than any theme colour. Faceplate restyle has no card/frame around the
+    // filter/env/lfo/fx tab content any more, so make it fully transparent
+    // instead of chasing setOutline(0) on every TabbedComponent instance.
+    setColour (juce::TabbedComponent::outlineColourId, juce::Colours::transparentBlack);
     setColour (juce::AlertWindow::backgroundColourId, t.panel);
     setColour (juce::AlertWindow::textColourId, t.textPrimary);
 }
@@ -558,15 +546,16 @@ void SPASynthLookAndFeel::drawTabButton (juce::TabBarButton& button, juce::Graph
 
     if (front)
     {
-        g.setColour (t.display);
-        g.fillRoundedRectangle (bounds, 2.0f);
+        // Faceplate restyle: no display-black pill behind the front tab —
+        // just the accent underline against the continuous surface, with
+        // brighter text (below) carrying the "selected" read.
         auto underline = bounds;
         g.setColour (t.accent);
         g.fillRect (underline.removeFromBottom (2.0f).reduced (4.0f, 0.0f));
     }
     else if (isMouseOver)
     {
-        g.setColour (t.display.withAlpha (0.5f));
+        g.setColour (t.seam.withAlpha (0.6f));
         g.fillRoundedRectangle (bounds, 2.0f);
     }
 

@@ -373,7 +373,7 @@ void PresetBrowser::paint (juce::Graphics& g)
     g.setFont (metrics::sectionFont().withHeight (metrics::sectionFont().getHeight() + 2.0f));
     g.drawText ("PRESETS", titleArea, juce::Justification::centredLeft);
 
-    draw::displayWell (g, listWell.toFloat().expanded (2.0f));
+    draw::displayWell (g, listWell.toFloat().expanded (2.0f), false);
 }
 
 void PresetBrowser::resized()

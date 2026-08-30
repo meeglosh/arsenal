@@ -9,17 +9,22 @@ namespace spa::ui
 // through here so the whole look can be restyled without touching component
 // code.
 //
-// Direction (per reference set: Serum 2 / Massive X / Pigments / MiniFreak):
-// flat graphite surfaces, hairline rules, display-first modules, thin-ring
-// knobs. Both accents default to the Silverplatter teal (#51D0BF — the old
-// orange/cyan pair read too close to MiniFreak) and are user-tintable via
-// the header colour picker, where the two roles can diverge.
+// Direction (faceplate restyle): one continuous charcoal-graphite surface —
+// no per-module cards, no LED-screen display wells. Modules are separated by
+// dark recessed seams and soft horizontal shadow bands painted directly on
+// the surface (see ContentComponent::paint), not by their own panel fills.
+// `panel` intentionally equals `background` so anything that still fills
+// with it (transient overlays: popups, the preset drawer, call-outs) reads
+// as the same surface rather than a card. Flat knobs, hairline rules and
+// both teal accents (#51D0BF, user-tintable) are unchanged from the prior
+// direction.
 struct Theme
 {
-    juce::Colour background;      // window
-    juce::Colour panel;           // module panels
-    juce::Colour display;         // scope/curve display wells
-    juce::Colour header;          // top bar
+    juce::Colour background;      // window / continuous faceplate surface
+    juce::Colour panel;           // transient overlay fills (popups, drawer) — == background
+    juce::Colour display;         // recessed fields (combo/chip backgrounds); NOT used by scopes/wells
+    juce::Colour header;          // top bar / footer rail
+    juce::Colour seam;            // recessed vertical grooves between modules + meter lanes
     juce::Colour textPrimary;
     juce::Colour textSecondary;
     juce::Colour accent;          // audio signal, primary actions
@@ -30,19 +35,20 @@ struct Theme
 
     static Theme dark()
     {
-        // Deep blue-teal register per the redesign mock.
+        // Flat charcoal-graphite faceplate register.
         Theme t;
-        t.background    = juce::Colour (0xff0c1114);
-        t.panel         = juce::Colour (0xff151c21);
-        t.display       = juce::Colour (0xff0a0f13);
-        t.header        = juce::Colour (0xff090d10);
+        t.background    = juce::Colour (0xff212829);
+        t.panel         = t.background;
+        t.display       = juce::Colour (0xff181e1f);
+        t.header        = juce::Colour (0xff1c2223);
+        t.seam          = t.background.darker (0.45f);
         t.textPrimary   = juce::Colour (0xffe7ecef);
-        t.textSecondary = juce::Colour (0xff7f8d97);
+        t.textSecondary = juce::Colour (0xff8b989f);
         t.accent        = juce::Colour (0xff51d0bf);
         t.accentMod     = juce::Colour (0xff51d0bf);
-        t.outline       = juce::Colour (0xff222d35);
-        t.knobFace      = juce::Colour (0xff1e262d);
-        t.knobTrack     = juce::Colour (0xff2c3841);
+        t.outline       = juce::Colour (0xff333e40);
+        t.knobFace      = juce::Colour (0xff2c363a);
+        t.knobTrack     = juce::Colour (0xff384447);
         return t;
     }
 
@@ -106,8 +112,10 @@ namespace draw
                                         const juce::String& readout = {},
                                         juce::Colour titleColour = {});
 
-    // Display well behind scopes/curves.
-    void displayWell (juce::Graphics&, juce::Rectangle<float>);
+    // Display well behind scopes/curves. centreLine draws a faint
+    // zero/centre reference line (useful for bipolar scopes, pointless for
+    // plain list/text containers that happen to reuse this helper).
+    void displayWell (juce::Graphics&, juce::Rectangle<float>, bool centreLine = true);
 
     // Curve stroke with a soft under-glow, the reference look for scopes.
     void glowStroke (juce::Graphics&, const juce::Path&, juce::Colour, float thickness = 1.8f);
