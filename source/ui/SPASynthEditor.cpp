@@ -1072,23 +1072,53 @@ void ContentComponent::paint (juce::Graphics& g)
     // (now transparent) content -- reads as the surface itself being milled,
     // not an overlay on top of the controls. Geometry comes from resized(),
     // never hardcoded.
-    constexpr int shadowBandHeight = 11;
+    //
+    // Iteration 2 (2026-08-30): rebuilt as a real "overhang" -- a crisp dark
+    // edge on the underside of the upper plate, then a long soft cast shadow
+    // eased across ~26px (Thorus XT reference: crisp bottom edge on the
+    // overhanging band, long soft falloff onto the band below).
+    constexpr float edgeLineAlpha    = 0.55f;   // crisp 1px edge, underside of the upper plate
+    constexpr float shadowStartAlpha = 0.42f;   // cast shadow, darkest right under the edge line
+    constexpr float shadowSoftLength = 27.0f;   // falloff distance (px)
     for (const auto rowY : rowShadowYs)
     {
         if (rowY <= 0) continue;
-        const juce::Rectangle<float> shadowBand (0.0f, (float) rowY, (float) getWidth(), (float) shadowBandHeight);
-        g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.22f),
-                                                 shadowBand.getX(), shadowBand.getY(),
-                                                 juce::Colours::transparentBlack,
-                                                 shadowBand.getX(), shadowBand.getBottom(), false));
-        g.fillRect (shadowBand);
+        const auto w = (float) getWidth();
+
+        g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, (float) rowY, w, 1.0f));
+
+        const float gradTop = (float) rowY + 1.0f;
+        juce::ColourGradient shadow (juce::Colours::black.withAlpha (shadowStartAlpha),
+                                     0.0f, gradTop,
+                                     juce::Colours::transparentBlack,
+                                     0.0f, gradTop + shadowSoftLength, false);
+        // Eased falloff (concave -- steep near the edge, long soft tail) rather
+        // than a flat linear ramp, so the band doesn't read as a visible strip.
+        shadow.addColour (0.30, juce::Colours::black.withAlpha (shadowStartAlpha * 0.50f));
+        shadow.addColour (0.62, juce::Colours::black.withAlpha (shadowStartAlpha * 0.20f));
+        shadow.addColour (0.85, juce::Colours::black.withAlpha (shadowStartAlpha * 0.07f));
+        g.setGradientFill (shadow);
+        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+        // (A faint top-light on the plate below was tried here and dropped --
+        // at a restrained alpha it was imperceptible even under 4x contrast
+        // boost, so it was decoration rather than a real 3D cue.)
     }
 
+    // Vertical seams: recessed grooves between modules, running the FULL
+    // height of their row band (top boundary to bottom boundary -- the same
+    // rowShadowYs geometry the horizontal shadows use), not just the
+    // clamped bounds of the module components either side. Thorus XT's
+    // bottom-row dividers run edge to edge of the band; this matches that.
     g.setColour (t.seam);
-    for (const auto& gutter : moduleGutters)
+    for (size_t i = 0; i < moduleGutters.size(); ++i)
     {
+        const auto& gutter = moduleGutters[i];
+        const auto row = (size_t) moduleGutterRows[i];
         const auto x = gutter.getCentreX();
-        g.drawVerticalLine (x, (float) gutter.getY(), (float) gutter.getBottom());
+        const auto top = (float) rowShadowYs[row];
+        const auto bottom = (float) rowShadowYs[row + 1];
+        g.drawVerticalLine (x, top, bottom);
     }
 }
 
@@ -1163,6 +1193,7 @@ void ContentComponent::resized()
     auto main = bounds.reduced (metrics::unit, 4);
     constexpr int gap = 6;
     moduleGutters.clear();
+    moduleGutterRows.clear();
     // Faceplate restyle: the shadow band "under the header" sits at the top
     // of the module grid, i.e. where the header/lock strip hands off to row 1.
     rowShadowYs[0] = main.getY();
@@ -1174,6 +1205,7 @@ void ContentComponent::resized()
     {
         oscStrips[(size_t) s]->setBounds (row1.removeFromLeft (oscW));
         moduleGutters.push_back (row1.removeFromLeft (gap));
+        moduleGutterRows.push_back (0);
     }
     filterTabs.setBounds (row1);
     main.removeFromTop (gap);
@@ -1183,10 +1215,13 @@ void ContentComponent::resized()
     auto row2 = main.removeFromTop (juce::roundToInt ((float) main.getHeight() * 0.48f));
     envTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 22 / 100));
     moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     lfoTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 28 / 100));
     moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     chaosPanel.setBounds (row2.removeFromLeft (row2.getWidth() * 52 / 100));
     moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     arpPanel.setBounds (row2);
     main.removeFromTop (gap);
 
@@ -1195,6 +1230,7 @@ void ContentComponent::resized()
     auto row3 = main;
     fxTabs.setBounds (row3.removeFromLeft (row3.getWidth() * 44 / 100));
     moduleGutters.push_back (row3.removeFromLeft (gap));
+    moduleGutterRows.push_back (2);
     matrixPanel.setBounds (row3);
 
     // Shadow band "above the footer": the footer strip is always pinned to

@@ -141,6 +141,9 @@ private:
     // module grid rather than hardcoded pixel positions.
     std::array<int, 4> rowShadowYs {};               // y of each row-transition shadow band
     std::vector<juce::Rectangle<int>> moduleGutters; // gap rects between adjacent modules in a row
+                                                      // (x/width only -- paint() stretches each to its
+                                                      // full row band via moduleGutterRows/rowShadowYs)
+    std::vector<int> moduleGutterRows;               // row index (into rowShadowYs) each gutter belongs to
     juce::Image noiseTexture;                        // cached fine-grain texture tile (seeded once)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContentComponent)

@@ -35,20 +35,23 @@ struct Theme
 
     static Theme dark()
     {
-        // Flat charcoal-graphite faceplate register.
+        // Flat charcoal-graphite faceplate register. (Iteration 2, 2026-08-30:
+        // darkened toward Mike's design spec — background sampled directly off
+        // the spec mock, the rest offset-preserved from the old background so
+        // every control keeps its original relative contrast.)
         Theme t;
-        t.background    = juce::Colour (0xff212829);
+        t.background    = juce::Colour (0xff181d20);
         t.panel         = t.background;
-        t.display       = juce::Colour (0xff181e1f);
-        t.header        = juce::Colour (0xff1c2223);
+        t.display       = juce::Colour (0xff0d1318);
+        t.header        = juce::Colour (0xff13171a);
         t.seam          = t.background.darker (0.45f);
         t.textPrimary   = juce::Colour (0xffe7ecef);
         t.textSecondary = juce::Colour (0xff8b989f);
         t.accent        = juce::Colour (0xff51d0bf);
         t.accentMod     = juce::Colour (0xff51d0bf);
-        t.outline       = juce::Colour (0xff333e40);
-        t.knobFace      = juce::Colour (0xff2c363a);
-        t.knobTrack     = juce::Colour (0xff384447);
+        t.outline       = juce::Colour (0xff2a3337);
+        t.knobFace      = juce::Colour (0xff232b31);
+        t.knobTrack     = juce::Colour (0xff2f393e);
         return t;
     }
 
