@@ -24,7 +24,12 @@ struct Theme
     juce::Colour panel;           // transient overlay fills (popups, drawer) — == background
     juce::Colour display;         // recessed fields (combo/chip backgrounds); NOT used by scopes/wells
     juce::Colour header;          // top bar / footer rail
-    juce::Colour seam;            // recessed vertical grooves between modules + meter lanes
+    juce::Colour seam;            // recessed vertical grooves between modules, tab hover fill,
+                                   // call-out edges -- NOT the OutputMeter lane, see meterLane
+    juce::Colour meterLane;       // OutputMeter's unlit bar lane -- deliberately lighter than
+                                   // seam (iteration 3: seam darkened into near-display-well
+                                   // territory, which read as a dead/black meter; split off so
+                                   // the groove could go darker without dragging the meter down)
     juce::Colour textPrimary;
     juce::Colour textSecondary;
     juce::Colour accent;          // audio signal, primary actions
@@ -44,7 +49,8 @@ struct Theme
         t.panel         = t.background;
         t.display       = juce::Colour (0xff0d1318);
         t.header        = juce::Colour (0xff13171a);
-        t.seam          = t.background.darker (0.45f);
+        t.seam          = t.background.darker (0.9f);
+        t.meterLane     = t.background.darker (0.45f);   // the old seam tone, kept for the meter
         t.textPrimary   = juce::Colour (0xffe7ecef);
         t.textSecondary = juce::Colour (0xff8b989f);
         t.accent        = juce::Colour (0xff51d0bf);
@@ -78,6 +84,18 @@ namespace metrics
     inline constexpr int keyboardStripHeight = 96;   // on-screen keyboard when shown
     inline constexpr int unit = 8;
     inline constexpr float cornerRadius = 7.0f;  // softer, elevated panels
+
+    // Section-title row (draw::sectionHeader) reserved from the top of every
+    // module panel's bounds. Shared so any site that needs to know where the
+    // header ends and content begins -- OscStrip's headerNameRect click/popup
+    // hit-test chief among them (iteration 3 restyle bug: it used to hardcode
+    // its own copy of this, and every resized() below independently re-trimmed
+    // it too) -- can't drift out of sync with what sectionHeader() actually
+    // paints. Grew from 20 (iteration 2) for more air around the title, per
+    // Mike's spec mock.
+    inline constexpr int sectionHeaderHeight = 32;
+    inline constexpr int sectionHeaderTopInset = 6;    // air above the title text
+    inline constexpr int sectionHeaderLeftInset = 12;  // air to the left of the title text
 
     inline juce::Font titleFont()   { return juce::Font (juce::FontOptions (17.0f, juce::Font::bold)); }
     inline juce::Font sectionFont()

@@ -833,8 +833,10 @@ void OutputMeter::paint (juce::Graphics& g)
     const auto drawBar = [&] (juce::Rectangle<float> bar, float level)
     {
         // A meter still needs a visible lane, but not the old display-well
-        // black -- use the faceplate's recessed-groove tone instead.
-        g.setColour (t.seam);
+        // black -- use meterLane (iteration 3: seam itself darkened enough
+        // that it started reading as display-well black again, so the meter
+        // now has its own, lighter, token instead of following seam down).
+        g.setColour (t.meterLane);
         g.fillRoundedRectangle (bar, 1.5f);
 
         const auto dB = juce::Decibels::gainToDecibels (level, -60.0f);

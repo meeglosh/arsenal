@@ -45,7 +45,11 @@ private:
     };
 
     static constexpr int cellWidth = 66;
-    static constexpr int headerHeight = 20;
+    // Shares draw::sectionHeader()'s reserved title-row height (Theme.h) --
+    // this panel is only ever built with drawFrame=false today (FXPanel owns
+    // its own header instead), but keep the constant in sync in case a
+    // future framed use appears.
+    static constexpr int headerHeight = metrics::sectionHeaderHeight;
 
     int cellHeight = 72;   // compacted in bare (embedded) mode
     juce::String panelTitle;

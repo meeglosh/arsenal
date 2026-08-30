@@ -58,8 +58,9 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
                                     juce::Colour titleColour)
 {
     const auto& t = currentTheme();
-    auto header = bounds.removeFromTop (20);
-    auto text = header.reduced (8, 0);
+    auto header = bounds.removeFromTop (metrics::sectionHeaderHeight);
+    header.removeFromTop (metrics::sectionHeaderTopInset);
+    auto text = header.reduced (metrics::sectionHeaderLeftInset, 0);
 
     if (titleColour == juce::Colour())
         titleColour = t.textPrimary;

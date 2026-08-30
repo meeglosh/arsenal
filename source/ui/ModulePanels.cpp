@@ -226,9 +226,17 @@ void OscStrip::paint (juce::Graphics& g)
 
 juce::Rectangle<int> OscStrip::headerNameRect() const
 {
-    auto header = getLocalBounds().removeFromTop (20).reduced (8, 0);
-    const int w = juce::jlimit (80, 240, juce::roundToInt (header.getWidth() * 0.62f));
-    return header.removeFromRight (w);
+    // Must reconstruct the exact same rect draw::sectionHeader() computes for
+    // its readout text -- this is the click/popup-anchor hit-test for the
+    // quick-swap widget painted in that same spot (paintSampleSwapper()), so
+    // it shares the metrics constants rather than its own copy (iteration 3
+    // restyle: iteration 2's fix here just relocated the duplication when the
+    // header height changed, it didn't remove it).
+    auto header = getLocalBounds().removeFromTop (metrics::sectionHeaderHeight);
+    header.removeFromTop (metrics::sectionHeaderTopInset);
+    auto text = header.reduced (metrics::sectionHeaderLeftInset, 0);
+    const int w = juce::jlimit (80, 240, juce::roundToInt (text.getWidth() * 0.62f));
+    return text.removeFromRight (w);
 }
 
 bool OscStrip::sampleSwapAvailable() const
@@ -315,7 +323,7 @@ void OscStrip::openSampleMenu()
 
 void OscStrip::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     display.setBounds (area.removeFromTop (86));
     area.removeFromTop (4);
@@ -417,7 +425,7 @@ void FilterPanel::paint (juce::Graphics& g)
 
 void FilterPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
     display.setBounds (area.removeFromTop (index == 2 ? 64 : 86));
     area.removeFromTop (4);
 
@@ -565,7 +573,7 @@ void ChaosPanel::paint (juce::Graphics& g)
 
 void ChaosPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     auto top = area.removeFromTop (juce::jmax (78, area.getHeight() - 84));
     auto scope = top.removeFromLeft (juce::jmin (200, top.getWidth() / 2));
@@ -630,7 +638,7 @@ void ArpPanel::paint (juce::Graphics& g)
 
 void ArpPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     auto row1 = area.removeFromTop (24);
     enable.setBounds (row1.removeFromLeft (48));
@@ -696,7 +704,7 @@ void FXPanel::paint (juce::Graphics& g)
 
 void FXPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     // Controls take exactly the height their grid needs (they wrap by
     // width); the scope gets whatever remains, with a survivable minimum.
