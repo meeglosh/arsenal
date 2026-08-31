@@ -884,7 +884,14 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     // Right-clicks anywhere inside get routed here for MIDI Learn.
     addMouseListener (this, true);
 
-    setSize (metrics::baseWidth, getContentBaseHeight());
+    // Deliberately NOT setSize()'d here -- see SPASynthEditor's constructor,
+    // which gives this its first real layout AFTER addAndMakeVisible()
+    // parents it. A setSize() call in THIS constructor would run while `this`
+    // has no parent yet, and every descendant's getLookAndFeel() falls back
+    // to JUCE's global default LookAndFeel whenever it can't find one by
+    // walking up an (as yet nonexistent) parent chain -- silently wrong for
+    // one-off layout decisions like TabbedButtonBar's tab widths (see
+    // SPASynthLookAndFeel::getTabButtonBestWidth's comment).
 }
 
 int ContentComponent::getContentBaseHeight() const
@@ -1503,6 +1510,17 @@ SPASynthEditor::SPASynthEditor (SPASynthProcessor& p)
     constexpr auto baseW = ui::metrics::baseWidth;
     // Base height includes the keyboard strip if it was left open last session.
     const auto baseH = content->getContentBaseHeight();
+
+    // content's real (base/untransformed) size is set HERE, after it's been
+    // parented above -- not inside ContentComponent's own constructor. This
+    // editor's resized() only ever applies an AffineTransform to `content`
+    // for the fixed-aspect scaling shell (see below); it never calls
+    // content->setSize()/setBounds() again. So this is content's ONE AND
+    // ONLY real layout pass, and every descendant (including the ENV/LFO/
+    // Filter tab bars) needs a fully-resolvable LookAndFeel parent chain
+    // when it runs, or JUCE's global default LookAndFeel silently stands in
+    // for `lookAndFeel` above for that first (and otherwise only) pass.
+    content->setSize (baseW, baseH);
 
     setResizable (true, true);
     configureConstrainer();

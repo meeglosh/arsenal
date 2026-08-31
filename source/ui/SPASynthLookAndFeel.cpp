@@ -529,12 +529,21 @@ juce::Label* SPASynthLookAndFeel::createComboBoxTextBox (juce::ComboBox&)
 // a re-laid-out (tight) bar never slides the centred text onto the grip.
 static constexpr int tabGripReserve = 16;
 
-int SPASynthLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& button, int)
+int SPASynthLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& button, int tabDepth)
 {
     juce::GlyphArrangement glyphs;
     glyphs.addLineOfText (metrics::smallFont(), button.getButtonText(), 0.0f, 0.0f);
     const int grip = dynamic_cast<DraggableTabButton*> (&button) != nullptr ? tabGripReserve : 0;
-    return juce::jmax (36, (int) std::ceil (glyphs.getBoundingBox (0, -1, true).getWidth())
+    // Floor of 2x the tab-bar depth deliberately matches JUCE's own
+    // LookAndFeel_V2 default (see its getTabButtonBestWidth) -- short tab
+    // names (AMP, ENV 2, LFO 1...) need a floor at all, and this is the one
+    // that was already baked into the generous/evenly-spaced look every FX
+    // and ENV/LFO/Filter tab bar shipped with, since every one of those bars
+    // gets its real width computed only once (see SPASynthEditor's
+    // constructor) and, before that constructor fix, briefly fell back to
+    // LookAndFeel_V2's formula for that one pass. Longer names (FILTER 1,
+    // CHORUS...) are unaffected -- their text width already clears this.
+    return juce::jmax (tabDepth * 2, (int) std::ceil (glyphs.getBoundingBox (0, -1, true).getWidth())
                               + 16 + grip);
 }
 

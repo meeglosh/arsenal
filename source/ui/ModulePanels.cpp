@@ -706,14 +706,26 @@ void FXPanel::resized()
 {
     auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
-    // Controls take exactly the height their grid needs (they wrap by
-    // width); the scope gets whatever remains, with a survivable minimum.
+    // Layout priority: caption labels must never clip, so the control grid
+    // always gets the FULL height its rows need (heightForWidth) -- never
+    // capped down. The scope/display shrinks into whatever remains, down to
+    // nothing if the panel is that short (Mike's call: visualizers may
+    // shrink, captions never do). This used to cap controlsH at
+    // area.getHeight()-44 to guarantee the display a minimum, which at base
+    // size squeezed TREM/VIB's two-row grid short enough that its bottom
+    // row's labels rendered partially off the bottom of the panel.
     const auto controlsNeeded = controls.heightForWidth (area.getWidth());
-    const auto controlsH = juce::jmin (controlsNeeded,
-                                       juce::jmax (60, area.getHeight() - 44));
+    const auto controlsH = juce::jmin (controlsNeeded, area.getHeight());
     controls.setBounds (area.removeFromBottom (controlsH));
-    area.removeFromBottom (4);
-    display.setBounds (area);
+    if (area.getHeight() > 4)
+    {
+        area.removeFromBottom (4);
+        display.setBounds (area);
+    }
+    else
+    {
+        display.setBounds ({});
+    }
 }
 
 } // namespace spa::ui

@@ -126,6 +126,25 @@ void SectionPanel::resized()
     const auto area = getLocalBounds().withTrimmedTop (framed ? headerHeight : 0).reduced (6, 0);
     const auto columns = juce::jmax (1, area.getWidth() / cellWidth);
 
+    int cellsUsed = 0;
+    for (const auto& c : controls)
+        cellsUsed += c.wide ? 2 : 1;
+    const auto rows = juce::jmax (1, (cellsUsed + columns - 1) / columns);
+
+    // Caption labels get their full height reserved first, always -- never
+    // less than this, whatever else happens. The knob/control area is what
+    // actually adapts: rowHeight normally matches cellHeight (the "ideal"
+    // heightForWidth() spacing above), but shrinks -- down to just enough
+    // for the label -- when this panel was given less real height than
+    // that (e.g. FXPanel already collapsed its display to nothing and a
+    // section still has more rows than fit at full cellHeight). This is
+    // what actually keeps captions from clipping off the bottom on a
+    // control-heavy tab like TREM/VIB: the caller (FXPanel) shrinks the
+    // display as its first line of defense, but for sections with enough
+    // rows even that isn't enough, so the row height itself must adapt too.
+    const auto labelH = framed ? 16 : 13;
+    const auto rowHeight = juce::jlimit (labelH, cellHeight, area.getHeight() / rows);
+
     int cell = 0;
     for (auto& control : controls)
     {
@@ -137,24 +156,24 @@ void SectionPanel::resized()
         const auto col = cell % columns;
         const auto row = cell / columns;
         auto cellBounds = juce::Rectangle<int> (area.getX() + col * cellWidth,
-                                                area.getY() + row * cellHeight,
-                                                cellWidth * span, cellHeight);
+                                                area.getY() + row * rowHeight,
+                                                cellWidth * span, rowHeight);
         cell += span;
 
         if (control.label != nullptr)
         {
-            control.label->setBounds (cellBounds.removeFromBottom (framed ? 16 : 13));
+            control.label->setBounds (cellBounds.removeFromBottom (labelH));
             control.component->setBounds (cellBounds.reduced (framed ? 4 : 2));
         }
         else if (dynamic_cast<juce::ComboBox*> (control.component.get()) != nullptr)
         {
             control.component->setBounds (cellBounds.withSizeKeepingCentre (
-                cellBounds.getWidth() - 10, 24));
+                cellBounds.getWidth() - 10, juce::jmin (24, cellBounds.getHeight())));
         }
         else  // toggle
         {
             control.component->setBounds (cellBounds.withSizeKeepingCentre (
-                cellBounds.getWidth() - 10, 22));
+                cellBounds.getWidth() - 10, juce::jmin (22, cellBounds.getHeight())));
         }
     }
 }
