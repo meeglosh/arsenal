@@ -153,6 +153,12 @@ namespace draw
     // shadow languages can never drift apart again.
     juce::ColourGradient easedShadowGradient (juce::Point<float> from, juce::Point<float> to,
                                               float startAlpha);
+
+    // Single tunable for both shadow-language call sites (ContentComponent::
+    // paint's row-overhang shadows, SPASynthLookAndFeel::
+    // drawTabAreaBehindFrontButton's tab-strip recess). Was 0.42f; Mike
+    // called both a little dark, lightened to 0.30f (2026-08-31).
+    constexpr float shadowStartAlpha = 0.30f;
 }
 
 } // namespace spa::ui

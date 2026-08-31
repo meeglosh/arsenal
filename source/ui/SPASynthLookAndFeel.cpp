@@ -627,19 +627,20 @@ void SPASynthLookAndFeel::drawTabAreaBehindFrontButton (juce::TabbedButtonBar& b
     // same eased stop shape -- via draw::easedShadowGradient) so the two
     // read as one shadow language. An earlier iteration boosted this strip's
     // alpha to 0.62, reasoning that its near-black surface (no lighter card
-    // underneath, unlike the module rows) would wash the 0.42 recipe out --
-    // pixel-sampling proved that reasoning wrong (0.42 was nearly
-    // imperceptible here, not washed out), and Mike decided he prefers that
-    // subtler read anyway. Geometry stays mirrored (the shadow rises from
-    // the strip's own bottom rule rather than falling from a row boundary)
-    // and the falloff stays capped to the strip's actual depth so it never
-    // bleeds into the tab labels' own row above.
-    constexpr float shadowStartAlpha = 0.42f;
+    // underneath, unlike the module rows) would wash the recipe out --
+    // pixel-sampling proved that reasoning wrong, and Mike decided he
+    // prefers the subtler read anyway. Both call sites share
+    // draw::shadowStartAlpha (Theme.h) so they can't drift apart; lightened
+    // from 0.42f to 0.30f (2026-08-31, Mike: "a little dark"). Geometry
+    // stays mirrored (the shadow rises from the strip's own bottom rule
+    // rather than falling from a row boundary) and the falloff stays capped
+    // to the strip's actual depth so it never bleeds into the tab labels'
+    // own row above.
     const float shadowLength = juce::jmin (13.0f, (float) h);
     const float lineY = (float) h - 1.0f;
 
     g.setGradientFill (draw::easedShadowGradient ({ 0.0f, lineY }, { 0.0f, lineY - shadowLength },
-                                                  shadowStartAlpha));
+                                                  draw::shadowStartAlpha));
     g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, (float) w, shadowLength));
 
     // The rule itself -- kept exactly as stock JUCE draws it (same colour,

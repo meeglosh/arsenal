@@ -1084,8 +1084,11 @@ void ContentComponent::paint (juce::Graphics& g)
     // edge on the underside of the upper plate, then a long soft cast shadow
     // eased across ~26px (Thorus XT reference: crisp bottom edge on the
     // overhanging band, long soft falloff onto the band below).
-    constexpr float edgeLineAlpha    = 0.55f;   // crisp 1px edge, underside of the upper plate
-    constexpr float shadowStartAlpha = 0.42f;   // cast shadow, darkest right under the edge line
+    // Lightened 2026-08-31 (Mike: both shadow families "a little dark") --
+    // edge line 0.55f -> 0.44f, cast shadow now shares draw::shadowStartAlpha
+    // (Theme.h, 0.42f -> 0.30f) with the tab-strip recess.
+    constexpr float edgeLineAlpha    = 0.44f;   // crisp 1px edge, underside of the upper plate
+    constexpr float shadowStartAlpha = draw::shadowStartAlpha; // cast shadow, darkest under the edge line
     constexpr float shadowSoftLength = 27.0f;   // falloff distance (px)
     for (const auto rowY : rowShadowYs)
     {
