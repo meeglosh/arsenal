@@ -76,6 +76,12 @@ public:
                         bool isMouseOver, bool isMouseDown) override;
     void drawTabbedButtonBarBackground (juce::TabbedButtonBar&, juce::Graphics&) override;
 
+    // Draws the light dividing line under every tab strip (envTabs, lfoTabs,
+    // filterTabs, fxTabs) AND the recessed-into-the-faceplate inner shadow
+    // cast upward from it -- see the .cpp for the recipe.
+    void drawTabAreaBehindFrontButton (juce::TabbedButtonBar&, juce::Graphics&,
+                                       int w, int h) override;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SPASynthLookAndFeel)
 };
 

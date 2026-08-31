@@ -581,4 +581,66 @@ void SPASynthLookAndFeel::drawTabbedButtonBarBackground (juce::TabbedButtonBar&,
 {
 }
 
+void SPASynthLookAndFeel::drawTabAreaBehindFrontButton (juce::TabbedButtonBar& bar, juce::Graphics& g,
+                                                        int w, int h)
+{
+    // This is where the light rule under every tab strip actually comes
+    // from: it's JUCE's stock LookAndFeel_V3::drawTabAreaBehindFrontButton
+    // (never overridden before now -- drawTabbedButtonBarBackground above is
+    // a no-op, and drawTabButton only paints each button itself), which
+    // draws a 1px TabbedButtonBar::tabOutlineColourId line along the bar's
+    // own bottom edge (the bar component's height IS the tab-strip depth --
+    // just the tab-label row itself, not the panel below). It also paints
+    // its own very faint
+    // built-in shadow -- replaced here with a real one matched to the
+    // faceplate's shadow language.
+    //
+    // Faceplate restyle: recess the whole strip -- an inner shadow cast
+    // UPWARDS from that line, darkest right above it and fading out as it
+    // rises through the tab-strip area, so the selector reads as milled
+    // into the plate rather than floating on it. Same family as
+    // ContentComponent::paint's row-overhang shadows (crisp edge + eased
+    // falloff), same alphas -- only the geometry is mirrored (shadow rises
+    // from the strip's own bottom edge instead of falling from a row
+    // boundary) and the falloff length is capped to the strip's actual
+    // depth so it never bleeds into the tab labels' own row above.
+    if (bar.getOrientation() != juce::TabbedButtonBar::TabsAtTop)
+    {
+        // Not used anywhere in this codebase (every tab bar runs TabsAtTop),
+        // but keep other orientations correct via the stock JUCE look.
+        juce::LookAndFeel_V3::drawTabAreaBehindFrontButton (bar, g, w, h);
+        return;
+    }
+
+    // The row-overhang recipe's alphas (0.42 start, 27px falloff) were tuned
+    // against a comparatively lighter module-row surface. This strip's own
+    // surface sits much closer to black already (near-black faceplate +
+    // grain, no lighter card underneath), so the same alpha reads as almost
+    // nothing at a glance -- boosted here to land at a similar PERCEIVED
+    // strength, and the falloff shortened so it stays a tight, deliberate
+    // band right above the rule (a "lip") rather than washing the whole
+    // strip (measured ~21px tall at the default tabDepth) -- the tab text
+    // sits comfortably above it, untouched.
+    constexpr float shadowStartAlpha = 0.62f;
+    const float shadowLength = juce::jmin (13.0f, (float) h);
+    const float lineY = (float) h - 1.0f;
+
+    juce::ColourGradient shadow (juce::Colours::black.withAlpha (shadowStartAlpha),
+                                 0.0f, lineY,
+                                 juce::Colours::transparentBlack,
+                                 0.0f, lineY - shadowLength, false);
+    shadow.addColour (0.30, juce::Colours::black.withAlpha (shadowStartAlpha * 0.50f));
+    shadow.addColour (0.62, juce::Colours::black.withAlpha (shadowStartAlpha * 0.20f));
+    shadow.addColour (0.85, juce::Colours::black.withAlpha (shadowStartAlpha * 0.07f));
+    g.setGradientFill (shadow);
+    g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, (float) w, shadowLength));
+
+    // The rule itself -- kept exactly as stock JUCE draws it (same colour,
+    // same 1px bottom edge) so the tab bar's contract with the rest of the
+    // look and feel (tabOutlineColourId) is unchanged; it's now the lip the
+    // recess reads against instead of a bare divider.
+    g.setColour (bar.findColour (juce::TabbedButtonBar::tabOutlineColourId));
+    g.fillRect (juce::Rectangle<int> (0, h - 1, w, 1));
+}
+
 } // namespace spa::ui
