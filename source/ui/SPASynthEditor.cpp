@@ -1082,30 +1082,6 @@ void ContentComponent::paint (juce::Graphics& g)
     g.setFont (metrics::smallFont());
     g.drawText ("LOCKS", lockCaption, juce::Justification::centredLeft);
 
-    // --- Top nav row (lock strip) recessed band ---------------------------
-    // The OSC/FILTER/ENV/LFO/CHAOS/ARP/FX/MATRIX lock row gets the same
-    // recessed-channel treatment as every title band and tab strip below it
-    // (draw::sectionHeader / SPASynthLookAndFeel::drawTabAreaBehindFrontButton):
-    // a light rule (t.outline, unified with the tab strips' rule) at the
-    // band's own bottom edge, eased inner shadow rising from it -- full
-    // width, truly edge to edge of the window rather than the module grid's
-    // own left/right margins. This IS the seam between the lock strip and
-    // row 1, so the row-shadow loop just below deliberately skips
-    // rowShadowYs[0] (its old black-edge/falling-shadow treatment) to avoid
-    // painting two shadows a few pixels apart at what reads as one seam.
-    {
-        const float w = (float) getWidth();
-        const float lineY = (float) topNavRuleY - 1.0f;
-        const float shadowLength = juce::jmin (13.0f, (float) metrics::lockRowHeight);
-
-        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, lineY }, { 0.0f, lineY - shadowLength },
-                                                       draw::shadowStartAlpha));
-        g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, w, shadowLength));
-
-        g.setColour (t.outline);
-        g.fillRect (juce::Rectangle<float> (0.0f, lineY, w, 1.0f));
-    }
-
     // --- Faceplate seams + row shadows -----------------------------------
     // Painted here (parent, before children) so they sit UNDER every module's
     // (now transparent) content -- reads as the surface itself being milled,
@@ -1122,11 +1098,37 @@ void ContentComponent::paint (juce::Graphics& g)
     constexpr float edgeLineAlpha    = 0.44f;   // crisp 1px edge, underside of the upper plate
     constexpr float shadowStartAlpha = draw::shadowStartAlpha; // cast shadow, darkest under the edge line
     constexpr float shadowSoftLength = 27.0f;   // falloff distance (px)
+
+    // --- Top nav row (lock strip) boundary ---------------------------------
+    // The OSC/FILTER/ENV/LFO/CHAOS/ARP/FX/MATRIX lock row's bottom edge gets
+    // the exact same falling-shadow treatment as every row boundary below it
+    // (the loop just after this): a crisp dark edge line, then the eased cast
+    // shadow falling DOWN onto row 1's header bands, so OSCILLATOR A/B/C reads
+    // recessed the same way ORGANIC CHAOS/ARPEGGIATOR do under row 2's
+    // boundary. Drawn as its own block (not folded into the loop) because
+    // this seam sits at topNavRuleY -- the lock strip's own true bottom edge,
+    // captured in resized() -- a few px above rowShadowYs[0] (main.getY(),
+    // once the module grid's own top margin is applied), so the loop below
+    // still skips index 0 to avoid a second, offset shadow a few pixels away.
+    {
+        const float w = (float) getWidth();
+        const float edgeY = (float) topNavRuleY;
+
+        g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, edgeY, w, 1.0f));
+
+        const float gradTop = edgeY + 1.0f;
+        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
+                                                       { 0.0f, gradTop + shadowSoftLength },
+                                                       shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+    }
+
     for (size_t i = 0; i < rowShadowYs.size(); ++i)
     {
         // Index 0 (row 1's top boundary) is the lock-strip seam, already
-        // painted above with the recessed-band treatment -- skip it here so
-        // it doesn't get a second, different shadow a few pixels away.
+        // painted above at topNavRuleY -- skip it here so it doesn't get a
+        // second, offset falling shadow a few pixels away.
         if (i == 0)
             continue;
         const auto rowY = rowShadowYs[i];
