@@ -55,7 +55,7 @@ void panel (juce::Graphics&, juce::Rectangle<float>)
 
 juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> bounds,
                                     const juce::String& title, const juce::String& readout,
-                                    juce::Colour titleColour)
+                                    juce::Colour titleColour, bool recess)
 {
     const auto& t = currentTheme();
     const auto full = bounds.removeFromTop (metrics::sectionHeaderHeight);
@@ -116,14 +116,22 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
     // title band and every tab strip read as one shadow language; the two
     // rule colours were unified onto t.outline the same session (see
     // SPASynthLookAndFeel::refreshPalette's tabOutlineColourId comment).
-    const float lineY = (float) full.getBottom() - 1.0f;
-    const float shadowLength = juce::jmin (13.0f, (float) full.getHeight());
+    //
+    // recess=false (iteration: double-recess fix) skips just this shadow --
+    // used by headers that sit directly under a tab strip already casting
+    // the same recess (FilterPanel/FXPanel), so the module doesn't stack two
+    // recessed tiers. The rule itself always stays.
+    if (recess)
+    {
+        const float lineY = (float) full.getBottom() - 1.0f;
+        const float shadowLength = juce::jmin (13.0f, (float) full.getHeight());
 
-    g.setGradientFill (easedShadowGradient ({ (float) full.getX(), lineY },
-                                            { (float) full.getX(), lineY - shadowLength },
-                                            shadowStartAlpha));
-    g.fillRect (juce::Rectangle<float> ((float) full.getX(), lineY - shadowLength,
-                                        (float) full.getWidth(), shadowLength));
+        g.setGradientFill (easedShadowGradient ({ (float) full.getX(), lineY },
+                                                { (float) full.getX(), lineY - shadowLength },
+                                                shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> ((float) full.getX(), lineY - shadowLength,
+                                            (float) full.getWidth(), shadowLength));
+    }
 
     g.setColour (t.outline);
     g.fillRect (juce::Rectangle<int> (full.getX(), full.getBottom() - 1, full.getWidth(), 1));

@@ -128,10 +128,17 @@ namespace draw
 
     // MiniFreak-style section header: SMALL CAPS title, thin rule to the
     // right, optional right-aligned readout. Returns the content area below.
+    // recess: draw the eased inner shadow rising from the rule (the same
+    // recessed-channel look a tab strip casts). false keeps the title text
+    // and the rule but omits the shadow -- for headers that sit directly
+    // beneath a tab strip already carrying that recess (FilterPanel inside
+    // filterTabs, FXPanel inside fxTabs), so the module doesn't show two
+    // stacked recessed tiers.
     juce::Rectangle<int> sectionHeader (juce::Graphics&, juce::Rectangle<int> bounds,
                                         const juce::String& title,
                                         const juce::String& readout = {},
-                                        juce::Colour titleColour = {});
+                                        juce::Colour titleColour = {},
+                                        bool recess = true);
 
     // Display well behind scopes/curves. centreLine draws a faint
     // zero/centre reference line (useful for bipolar scopes, pointless for

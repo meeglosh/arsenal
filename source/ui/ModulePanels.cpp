@@ -418,9 +418,12 @@ FilterPanel::FilterPanel (SPASynthProcessor& p, int filterIndex)
 void FilterPanel::paint (juce::Graphics& g)
 {
     draw::panel (g, getLocalBounds().toFloat());
+    // recess=false: FilterPanel is always embedded inside filterTabs, whose
+    // FILTER 1/FILTER 2 tab strip already casts the recessed-channel shadow
+    // above this header -- a second one here would stack two recessed tiers.
     draw::sectionHeader (g, getLocalBounds(),
                          index == 1 ? "Filter 1" : "Filter 2", {},
-                         currentTheme().accent);
+                         currentTheme().accent, false);
 }
 
 void FilterPanel::resized()
@@ -699,7 +702,12 @@ FXPanel::FXPanel (juce::AudioProcessorValueTreeState& apvts, FXDisplay::Kind kin
 void FXPanel::paint (juce::Graphics& g)
 {
     draw::panel (g, getLocalBounds().toFloat());
-    draw::sectionHeader (g, getLocalBounds(), panelTitle, {}, currentTheme().accent);
+    // recess=false: every FXPanel is embedded inside fxTabs (DIST/CHORUS/...
+    // strip), which already casts the recessed-channel shadow above this
+    // header -- a second one here would stack two recessed tiers. The
+    // embedded `controls` (SectionPanel, drawFrame=false) draws no header of
+    // its own, so this stays the only header painted per FX tab.
+    draw::sectionHeader (g, getLocalBounds(), panelTitle, {}, currentTheme().accent, false);
 }
 
 void FXPanel::resized()
