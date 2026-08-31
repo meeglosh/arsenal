@@ -140,6 +140,19 @@ namespace draw
 
     // Curve stroke with a soft under-glow, the reference look for scopes.
     void glowStroke (juce::Graphics&, const juce::Path&, juce::Colour, float thickness = 1.8f);
+
+    // Eased cast-shadow gradient shared by every recessed edge on the
+    // faceplate (ContentComponent::paint's row-overhang shadows,
+    // SPASynthLookAndFeel::drawTabAreaBehindFrontButton's tab-strip recess):
+    // darkest (alpha = startAlpha) at `from`, fading through three eased
+    // stops -- steep near the edge, long soft tail -- to fully transparent
+    // at `to`, rather than a flat linear ramp, so the band never reads as a
+    // visible strip. Pass `from`/`to` flipped to fade the shadow in the
+    // other direction (e.g. upward into a recess instead of downward off an
+    // overhang). Both call sites must use the same startAlpha so the two
+    // shadow languages can never drift apart again.
+    juce::ColourGradient easedShadowGradient (juce::Point<float> from, juce::Point<float> to,
+                                              float startAlpha);
 }
 
 } // namespace spa::ui

@@ -149,6 +149,17 @@ void glowStroke (juce::Graphics& g, const juce::Path& path, juce::Colour colour,
                                               juce::PathStrokeType::rounded));
 }
 
+juce::ColourGradient easedShadowGradient (juce::Point<float> from, juce::Point<float> to,
+                                          float startAlpha)
+{
+    juce::ColourGradient shadow (juce::Colours::black.withAlpha (startAlpha), from,
+                                 juce::Colours::transparentBlack, to, false);
+    shadow.addColour (0.30, juce::Colours::black.withAlpha (startAlpha * 0.50f));
+    shadow.addColour (0.62, juce::Colours::black.withAlpha (startAlpha * 0.20f));
+    shadow.addColour (0.85, juce::Colours::black.withAlpha (startAlpha * 0.07f));
+    return shadow;
+}
+
 } // namespace draw
 
 SPASynthLookAndFeel::SPASynthLookAndFeel()
@@ -612,27 +623,23 @@ void SPASynthLookAndFeel::drawTabAreaBehindFrontButton (juce::TabbedButtonBar& b
         return;
     }
 
-    // The row-overhang recipe's alphas (0.42 start, 27px falloff) were tuned
-    // against a comparatively lighter module-row surface. This strip's own
-    // surface sits much closer to black already (near-black faceplate +
-    // grain, no lighter card underneath), so the same alpha reads as almost
-    // nothing at a glance -- boosted here to land at a similar PERCEIVED
-    // strength, and the falloff shortened so it stays a tight, deliberate
-    // band right above the rule (a "lip") rather than washing the whole
-    // strip (measured ~21px tall at the default tabDepth) -- the tab text
-    // sits comfortably above it, untouched.
-    constexpr float shadowStartAlpha = 0.62f;
+    // Literally the same recipe as the row-overhang shadow (same startAlpha,
+    // same eased stop shape -- via draw::easedShadowGradient) so the two
+    // read as one shadow language. An earlier iteration boosted this strip's
+    // alpha to 0.62, reasoning that its near-black surface (no lighter card
+    // underneath, unlike the module rows) would wash the 0.42 recipe out --
+    // pixel-sampling proved that reasoning wrong (0.42 was nearly
+    // imperceptible here, not washed out), and Mike decided he prefers that
+    // subtler read anyway. Geometry stays mirrored (the shadow rises from
+    // the strip's own bottom rule rather than falling from a row boundary)
+    // and the falloff stays capped to the strip's actual depth so it never
+    // bleeds into the tab labels' own row above.
+    constexpr float shadowStartAlpha = 0.42f;
     const float shadowLength = juce::jmin (13.0f, (float) h);
     const float lineY = (float) h - 1.0f;
 
-    juce::ColourGradient shadow (juce::Colours::black.withAlpha (shadowStartAlpha),
-                                 0.0f, lineY,
-                                 juce::Colours::transparentBlack,
-                                 0.0f, lineY - shadowLength, false);
-    shadow.addColour (0.30, juce::Colours::black.withAlpha (shadowStartAlpha * 0.50f));
-    shadow.addColour (0.62, juce::Colours::black.withAlpha (shadowStartAlpha * 0.20f));
-    shadow.addColour (0.85, juce::Colours::black.withAlpha (shadowStartAlpha * 0.07f));
-    g.setGradientFill (shadow);
+    g.setGradientFill (draw::easedShadowGradient ({ 0.0f, lineY }, { 0.0f, lineY - shadowLength },
+                                                  shadowStartAlpha));
     g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, (float) w, shadowLength));
 
     // The rule itself -- kept exactly as stock JUCE draws it (same colour,

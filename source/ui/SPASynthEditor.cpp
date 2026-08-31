@@ -1096,16 +1096,14 @@ void ContentComponent::paint (juce::Graphics& g)
         g.fillRect (juce::Rectangle<float> (0.0f, (float) rowY, w, 1.0f));
 
         const float gradTop = (float) rowY + 1.0f;
-        juce::ColourGradient shadow (juce::Colours::black.withAlpha (shadowStartAlpha),
-                                     0.0f, gradTop,
-                                     juce::Colours::transparentBlack,
-                                     0.0f, gradTop + shadowSoftLength, false);
         // Eased falloff (concave -- steep near the edge, long soft tail) rather
         // than a flat linear ramp, so the band doesn't read as a visible strip.
-        shadow.addColour (0.30, juce::Colours::black.withAlpha (shadowStartAlpha * 0.50f));
-        shadow.addColour (0.62, juce::Colours::black.withAlpha (shadowStartAlpha * 0.20f));
-        shadow.addColour (0.85, juce::Colours::black.withAlpha (shadowStartAlpha * 0.07f));
-        g.setGradientFill (shadow);
+        // Same recipe as the tab-strip recess (SPASynthLookAndFeel::
+        // drawTabAreaBehindFrontButton) via draw::easedShadowGradient, so the
+        // two shadow languages can't drift apart.
+        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
+                                                       { 0.0f, gradTop + shadowSoftLength },
+                                                       shadowStartAlpha));
         g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
         // (A faint top-light on the plate below was tried here and dropped --
         // at a restrained alpha it was imperceptible even under 4x contrast
