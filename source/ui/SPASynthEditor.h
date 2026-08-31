@@ -144,6 +144,11 @@ private:
                                                       // (x/width only -- paint() stretches each to its
                                                       // full row band via moduleGutterRows/rowShadowYs)
     std::vector<int> moduleGutterRows;               // row index (into rowShadowYs) each gutter belongs to
+    int topNavRuleY = 0;                             // bottom edge of the lock-strip (top nav) band --
+                                                      // separate from rowShadowYs[0] (which stays the true
+                                                      // top of row 1, for the vertical seams) so the top nav
+                                                      // row's own recessed-band rule can sit flush against
+                                                      // it with no extra shadow doubling up nearby
     juce::Image noiseTexture;                        // cached fine-grain texture tile (seeded once)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContentComponent)

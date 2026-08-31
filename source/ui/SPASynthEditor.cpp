@@ -821,6 +821,14 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         addAndMakeVisible (*oscStrips[(size_t) s]);
     }
 
+    // Faceplate restyle: tab-strip depth reconciled with the title bands
+    // (draw::sectionHeader / metrics::sectionHeaderHeight) rather than
+    // JUCE's own default (30px) so a tab strip and a title band sitting in
+    // the same grid row land their bottom rule at the same y -- the channel
+    // has to read continuously across the row, seams aside.
+    for (auto* tabs : { &filterTabs, &envTabs, &lfoTabs, static_cast<juce::TabbedComponent*> (&fxTabs) })
+        tabs->setTabBarDepth (metrics::sectionHeaderHeight);
+
     const auto tabBg = juce::Colours::transparentBlack;
     envTabs.addTab ("AMP", tabBg, new EnvPanel (processor, "ampEnv", 0), true);
     envTabs.addTab ("ENV 2", tabBg, new EnvPanel (processor, "env2", 1), true);
@@ -1074,6 +1082,30 @@ void ContentComponent::paint (juce::Graphics& g)
     g.setFont (metrics::smallFont());
     g.drawText ("LOCKS", lockCaption, juce::Justification::centredLeft);
 
+    // --- Top nav row (lock strip) recessed band ---------------------------
+    // The OSC/FILTER/ENV/LFO/CHAOS/ARP/FX/MATRIX lock row gets the same
+    // recessed-channel treatment as every title band and tab strip below it
+    // (draw::sectionHeader / SPASynthLookAndFeel::drawTabAreaBehindFrontButton):
+    // a light rule (t.outline, unified with the tab strips' rule) at the
+    // band's own bottom edge, eased inner shadow rising from it -- full
+    // width, truly edge to edge of the window rather than the module grid's
+    // own left/right margins. This IS the seam between the lock strip and
+    // row 1, so the row-shadow loop just below deliberately skips
+    // rowShadowYs[0] (its old black-edge/falling-shadow treatment) to avoid
+    // painting two shadows a few pixels apart at what reads as one seam.
+    {
+        const float w = (float) getWidth();
+        const float lineY = (float) topNavRuleY - 1.0f;
+        const float shadowLength = juce::jmin (13.0f, (float) metrics::lockRowHeight);
+
+        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, lineY }, { 0.0f, lineY - shadowLength },
+                                                       draw::shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, w, shadowLength));
+
+        g.setColour (t.outline);
+        g.fillRect (juce::Rectangle<float> (0.0f, lineY, w, 1.0f));
+    }
+
     // --- Faceplate seams + row shadows -----------------------------------
     // Painted here (parent, before children) so they sit UNDER every module's
     // (now transparent) content -- reads as the surface itself being milled,
@@ -1090,8 +1122,14 @@ void ContentComponent::paint (juce::Graphics& g)
     constexpr float edgeLineAlpha    = 0.44f;   // crisp 1px edge, underside of the upper plate
     constexpr float shadowStartAlpha = draw::shadowStartAlpha; // cast shadow, darkest under the edge line
     constexpr float shadowSoftLength = 27.0f;   // falloff distance (px)
-    for (const auto rowY : rowShadowYs)
+    for (size_t i = 0; i < rowShadowYs.size(); ++i)
     {
+        // Index 0 (row 1's top boundary) is the lock-strip seam, already
+        // painted above with the recessed-band treatment -- skip it here so
+        // it doesn't get a second, different shadow a few pixels away.
+        if (i == 0)
+            continue;
+        const auto rowY = rowShadowYs[i];
         if (rowY <= 0) continue;
         const auto w = (float) getWidth();
 
@@ -1181,6 +1219,11 @@ void ContentComponent::resized()
         if (button.isVisible())
             button.setBounds (lockRow.removeFromLeft (lockWidth).reduced (2, 1));
 
+    // Faceplate restyle: the lock strip's own true bottom edge, captured
+    // right here (before the module grid's separate top margin below) so
+    // the top-nav recessed-band rule paint() draws sits flush against it.
+    topNavRuleY = bounds.getY();
+
     bounds.removeFromBottom (metrics::footerHeight);
 
     // Keyboard toggle button: bottom-right of the footer (Kontakt-style), kept
@@ -1202,8 +1245,11 @@ void ContentComponent::resized()
     constexpr int gap = 6;
     moduleGutters.clear();
     moduleGutterRows.clear();
-    // Faceplate restyle: the shadow band "under the header" sits at the top
-    // of the module grid, i.e. where the header/lock strip hands off to row 1.
+    // Row 1's own top boundary -- used below only as the top of row 1's
+    // vertical gutter seams (moduleGutterRows/rowShadowYs). The horizontal
+    // recessed band for this seam is now painted at the lock strip's own
+    // bottom edge (topNavRuleY, captured above, ~4px higher) instead of
+    // here, so it doesn't double up with that treatment -- see paint().
     rowShadowYs[0] = main.getY();
 
     // Row 1: three oscillators + filter.

@@ -58,7 +58,8 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
                                     juce::Colour titleColour)
 {
     const auto& t = currentTheme();
-    auto header = bounds.removeFromTop (metrics::sectionHeaderHeight);
+    const auto full = bounds.removeFromTop (metrics::sectionHeaderHeight);
+    auto header = full;
     header.removeFromTop (metrics::sectionHeaderTopInset);
     auto text = header.reduced (metrics::sectionHeaderLeftInset, 0);
 
@@ -75,7 +76,6 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
     g.setColour (titleColour);
     g.drawText (titleText, text, juce::Justification::centredLeft);
 
-    int readoutWidth = 0;
     if (readout.isNotEmpty())
     {
         const auto stringWidth = [] (const juce::String& s)
@@ -86,7 +86,10 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
         };
 
         // Never run under the title: fit into the space after title + a
-        // minimum rule, ellipsizing the tail of long content names.
+        // minimum gap, ellipsizing the tail of long content names. (Used to
+        // measure against a rule drawn between title and readout; the rule
+        // has since moved to the band's bottom edge, but the same margin
+        // still keeps the readout from crowding the title.)
         const auto available = text.getWidth() - titleWidth - 8 - 14;
         auto fitted = readout;
         if (stringWidth (fitted) > available)
@@ -101,15 +104,29 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
             g.setColour (t.textSecondary);
             g.setFont (metrics::labelFont());
             g.drawText (fitted, text, juce::Justification::centredRight);
-            readoutWidth = 8 + stringWidth (fitted);
         }
     }
 
-    // Thin rule between title and readout.
-    const auto ruleY = (float) header.getCentreY();
+    // Faceplate restyle: the rule moves from beside the title (old: a thin
+    // line between title and readout, at title mid-height) to beneath it --
+    // full header width, at the band's own bottom edge -- with the same
+    // eased inner shadow rising from it that SPASynthLookAndFeel::
+    // drawTabAreaBehindFrontButton casts over a tab strip. Identical recipe
+    // (same helper, same draw::shadowStartAlpha, same 13px cap) so every
+    // title band and every tab strip read as one shadow language; the two
+    // rule colours were unified onto t.outline the same session (see
+    // SPASynthLookAndFeel::refreshPalette's tabOutlineColourId comment).
+    const float lineY = (float) full.getBottom() - 1.0f;
+    const float shadowLength = juce::jmin (13.0f, (float) full.getHeight());
+
+    g.setGradientFill (easedShadowGradient ({ (float) full.getX(), lineY },
+                                            { (float) full.getX(), lineY - shadowLength },
+                                            shadowStartAlpha));
+    g.fillRect (juce::Rectangle<float> ((float) full.getX(), lineY - shadowLength,
+                                        (float) full.getWidth(), shadowLength));
+
     g.setColour (t.outline);
-    g.drawLine ((float) (text.getX() + titleWidth + 8), ruleY,
-                (float) (text.getRight() - readoutWidth), ruleY, 1.0f);
+    g.fillRect (juce::Rectangle<int> (full.getX(), full.getBottom() - 1, full.getWidth(), 1));
 
     return bounds;
 }
@@ -197,6 +214,14 @@ void SPASynthLookAndFeel::refreshPalette()
     setColour (juce::BubbleComponent::backgroundColourId, t.panel);
     setColour (juce::TabbedButtonBar::tabTextColourId, t.textSecondary);
     setColour (juce::TabbedButtonBar::frontTextColourId, t.textPrimary);
+    // Tab-strip recess rule (drawTabAreaBehindFrontButton's bottom-edge
+    // line). Never tokenized before -- it painted with LookAndFeel_V4's
+    // built-in dark-scheme default (a light, ~50%-alpha grey, nothing to do
+    // with this theme), while draw::sectionHeader's rule used t.outline
+    // directly. Restyle unifies both header-band families onto one rule
+    // colour so a tab strip and a title band read as the same milled
+    // channel where they sit in the same row.
+    setColour (juce::TabbedButtonBar::tabOutlineColourId, t.outline);
     // JUCE's TabbedComponent fills a 1px outline around its content area in
     // this colour whenever outlineThickness > 0 (the default); it was never
     // tokenized, so it painted with the stock LookAndFeel_V4 default rather
