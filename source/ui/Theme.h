@@ -49,7 +49,7 @@ struct Theme
         t.panel         = t.background;
         t.display       = juce::Colour (0xff0d1318);
         t.header        = juce::Colour (0xff13171a);
-        t.seam          = t.background.darker (0.9f);
+        t.seam          = t.background.darker (1.3f);
         t.meterLane     = t.background.darker (0.45f);   // the old seam tone, kept for the meter
         t.textPrimary   = juce::Colour (0xffe7ecef);
         t.textSecondary = juce::Colour (0xff8b989f);
