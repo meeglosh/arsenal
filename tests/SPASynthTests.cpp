@@ -2313,6 +2313,14 @@ namespace
             waitForSample (proc, 0, 15000);
             setParam (proc, id::oscSlot (0, id::osc::mode),
                       (float) (int) spa::params::OscMode::sample);
+
+            // Non-default start/loop points so every render below actually
+            // shows the loop-point overlay (defaults are start=0, loop 0..1,
+            // which would just band the whole waveform edge-to-edge). loop
+            // itself defaults on already.
+            setParam (proc, id::oscSlot (0, id::osc::sampleStart), 0.05f);
+            setParam (proc, id::oscSlot (0, id::osc::loopStart), 0.2f);
+            setParam (proc, id::oscSlot (0, id::osc::loopEnd), 0.8f);
         }
 
         // Remember the user's accents so the custom-accent render below
