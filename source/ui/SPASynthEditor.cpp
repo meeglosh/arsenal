@@ -562,12 +562,18 @@ private:
 class VoicePanel : public juce::Component
 {
 public:
-    explicit VoicePanel (juce::AudioProcessorValueTreeState& apvts)
+    // onDismissed fires from the destructor -- see the ctor comment on
+    // setWantsKeyboardFocus below for why the call-out needs this hook at
+    // all. Mirrors PresetBrowser's onRequestKeyboardFocus / togglePreset-
+    // Browser's close path: if the on-screen keyboard is showing, hand
+    // focus back to it so QWERTY resumes without needing a click.
+    VoicePanel (juce::AudioProcessorValueTreeState& apvts, std::function<void()> onDismissed)
         : mode (apvts, params::id::voiceMode),
           priority (apvts, params::id::notePriority),
           voices (apvts, params::id::unisonVoices, "Voices"),
           detune (apvts, params::id::unisonDetune, "Detune"),
-          width (apvts, params::id::unisonWidth, "Width")
+          width (apvts, params::id::unisonWidth, "Width"),
+          onDismissedCallback (std::move (onDismissed))
     {
         modeLabel.setText ("MODE", juce::dontSendNotification);
         priorityLabel.setText ("PRIORITY", juce::dontSendNotification);
@@ -576,10 +582,53 @@ public:
             l->setFont (metrics::smallFont());
             l->setJustificationType (juce::Justification::centredLeft);
             addAndMakeVisible (*l);
+            // This panel is built fresh each time the call-out opens (see
+            // the ctor comment below), long after the one-shot whole-tree
+            // sweep in SPASynthEditor's constructor runs -- so these two
+            // caption labels never picked up that fix. Shared helper, same
+            // as SectionPanel's registry-built controls.
+            disableMouseClickFocusGrab (*l);
         }
         for (auto* c : std::initializer_list<juce::Component*> { &mode, &priority, &voices, &detune, &width })
+        {
             addAndMakeVisible (*c);
+            disableMouseClickFocusGrab (*c);   // covers Choice/Knob's own wrapper too, not just the inner combo/slider
+        }
         setSize (244, 150);
+
+        // Unlike every other widget in this UI, this panel is deliberately
+        // LEFT focusable (default setWantsKeyboardFocus/setMouseClickGrabs-
+        // KeyboardFocus -- both true). Reason, traced through JUCE source:
+        // CallOutBox opens itself with enterModalState(true, ...)
+        // (juce_CallOutBox.cpp's CallOutBoxCallback ctor), which calls
+        // grabKeyboardFocus() expecting to find SOMETHING focusable inside
+        // it (juce_Component.cpp's enterModalState). Every control this
+        // panel hosts (mode/priority Choice, the three Knobs) has had
+        // wantsKeyboardFocus explicitly turned off since the QWERTY focus-
+        // steal fixes (Controls.h), so with nothing else to grab, that call
+        // used to silently find no target and no-op. The popup menu each
+        // combo opens then has no real Component::getCurrentlyFocusedComp-
+        // onent() to point to, so its own dismiss-on-focus-loss safety net
+        // (juce_PopupMenu.cpp's MouseSourceState::checkButtonState ->
+        // doesAnyJuceCompHaveFocus()) falls back to a native per-peer key-
+        // window check instead of the normal, reliable "the clicked combo
+        // already holds focus" case every other combo in this app gets --
+        // exactly the raciness Mike saw ("must click-and-hold", items not
+        // registering). Making this one panel focusable gives CallOutBox's
+        // own grab a real, deterministic target the instant it opens, so
+        // the popup's focus check is satisfied the same reliable way it is
+        // everywhere else. QWERTY itself is unaffected: the call-out is
+        // modal, so the on-screen keyboard can't receive play input while
+        // it's open regardless (see the accent picker/settings menu/etc,
+        // same story); onDismissedCallback below hands focus back to it on
+        // close.
+        setWantsKeyboardFocus (true);
+    }
+
+    ~VoicePanel() override
+    {
+        if (onDismissedCallback)
+            onDismissedCallback();
     }
 
     void paint (juce::Graphics& g) override
@@ -616,6 +665,7 @@ private:
     Choice mode, priority;
     Knob voices, detune, width;
     juce::Label modeLabel, priorityLabel;
+    std::function<void()> onDismissedCallback;
 };
 
 // Faceplate restyle: a small, seeded (not time-seeded) per-pixel noise tile,
@@ -772,9 +822,37 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     voiceButton.setTooltip ("Voice mode: Poly / Mono / Duo / Paraphonic / Unison");
     voiceButton.onClick = [this]
     {
-        auto panel = std::make_unique<VoicePanel> (processor.getAPVTS());
-        juce::CallOutBox::launchAsynchronously (std::move (panel),
-                                                voiceButton.getScreenBounds(), nullptr);
+        auto panel = std::make_unique<VoicePanel> (processor.getAPVTS(),
+            [this] { if (keyboardVisible) keyboard.grabKeyboardFocus(); });
+
+        // Parented to the editor shell, like showAccentPicker's call-out --
+        // NOT launched with a null parent (as this used to be). A null
+        // parent makes CallOutBox add itself straight to the desktop as its
+        // own native window, which starts a 100ms timer that force-
+        // activates that window (CallOutBox::timerCallback -> toFront
+        // (true) -> makeKeyAndOrderFront on macOS). That's a second native
+        // peer contending for real OS key-window status against the
+        // editor's own peer and the popup menu's peer (which deliberately
+        // never takes key-window status, windowIgnoresKeyPresses) right as
+        // the user clicks a combo inside it -- exactly the kind of native
+        // focus race that produced the "menu barely stays open" bug.
+        // Parenting to the editor avoids creating that second peer
+        // entirely, the same way the accent picker already does. The area
+        // must be converted to the parent's local space (getLocalArea),
+        // unlike the old screen-bounds call, which only made sense for the
+        // null-parent/desktop case.
+        if (auto* top = getTopLevelComponent())
+        {
+            auto& callout = juce::CallOutBox::launchAsynchronously (
+                std::move (panel),
+                top->getLocalArea (&voiceButton, voiceButton.getLocalBounds()),
+                top);
+            // The callout's own border/arrow area (its hitTest -- see
+            // juce_CallOutBox.cpp -- only the outline, not the content) can
+            // itself take a stray click; VoicePanel is the one deliberate
+            // exception in this call-out, not the frame around it.
+            callout.setMouseClickGrabsKeyboardFocus (false);
+        }
     };
     voiceButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (voiceButton);

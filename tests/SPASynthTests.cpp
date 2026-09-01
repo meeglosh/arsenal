@@ -3869,6 +3869,228 @@ namespace
         }
     }
 
+    // Regression for the VOICE call-out's MODE/PRIORITY dropdowns being
+    // "finnicky" in Logic (v1.0.11, Mike): needed a click-and-hold to keep
+    // the menu open at all, and items weren't selectable even then. Root
+    // cause traced through JUCE source: CallOutBox::launchAsynchronously was
+    // called with a null parent (SPASynthEditor.cpp), so it added itself
+    // straight to the desktop as its own native peer/window and started a
+    // 100ms self-toFront(true) timer that force-claims real OS key-window
+    // status (juce_CallOutBox.cpp) -- a second peer contending with the
+    // editor's own peer and the popup menu's peer right as the combo popup
+    // opens. On top of that, CallOutBox::enterModalState(true, ...) tries to
+    // grabKeyboardFocus() when it opens, but every control VoicePanel hosts
+    // has wantsKeyboardFocus explicitly off (Controls.h's Choice/Knob, part
+    // of the QWERTY focus-steal fixes), so the grab found no target and
+    // silently no-opped. With nothing holding real Component-level focus,
+    // the popup menu's own dismiss-on-focus-loss safety net
+    // (juce_PopupMenu.cpp's doesAnyJuceCompHaveFocus/checkButtonState) fell
+    // back to a racy native per-peer key-window check instead of the
+    // reliable "the clicked combo already holds focus" case every other
+    // combo in the app gets. Fixed two ways: (1) VoicePanel's call-out is
+    // now parented to the editor shell (getTopLevelComponent()), like the
+    // accent picker's call-out already was, so it never creates that second
+    // native peer; (2) VoicePanel itself is left focusable (unlike every
+    // other widget in this UI) so CallOutBox's own focus grab has a real,
+    // deterministic target the moment it opens.
+    static void voicePanelCallOutFocusTest()
+    {
+        std::cout << "voicePanelCallOutFocusTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        const auto findByTooltip = [] (juce::Component& root, const juce::String& tooltip) -> juce::Button*
+        {
+            juce::Button* found = nullptr;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+            {
+                if (found == nullptr)
+                    if (auto* b = dynamic_cast<juce::Button*> (&c))
+                        if (b->getTooltip() == tooltip)
+                            found = b;
+                for (auto* child : c.getChildren())
+                    walk (*child);
+            };
+            walk (root);
+            return found;
+        };
+
+        // --- structural: the call-out is reachable from the editor tree once
+        // open (proves it's parented, not a separate desktop peer), and its
+        // own focus flags are set as the fix intends. Needs a REAL peer
+        // (unlike presetBrowserFocusGrabTest's non-desktop editor): opening
+        // the call-out runs CallOutBox::enterModalState(true, ...), which
+        // calls grabKeyboardFocus() -> jassert (isShowing() || isOnDesktop())
+        // (juce_Component.cpp) -- that would trip in a debug build with no
+        // peer at all, the same reason presetBrowserKeyboardFocusTest's (a)/
+        // (b) parts need addToDesktop.
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (48000.0, 512);
+
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+            editor->addToDesktop (0);
+            editor->setVisible (true);
+            pumpFor (200);
+
+            auto* voiceButton = findByTooltip (*editor,
+                "Voice mode: Poly / Mono / Duo / Paraphonic / Unison");
+            expect (voiceButton != nullptr, "VOICE button found in the editor tree");
+
+            if (voiceButton != nullptr)
+            {
+                voiceButton->triggerClick();
+                pumpFor (50);
+
+                // Find the call-out by walking the WHOLE editor -- proves
+                // it's reachable there at all, i.e. actually parented
+                // (CallOutBox::launchAsynchronously's parent!=nullptr path,
+                // juce_CallOutBox.cpp), not off on its own as a bare
+                // desktop peer the rest of the tree can't see.
+                juce::CallOutBox* callout = nullptr;
+                std::function<void (juce::Component&)> findCallout = [&] (juce::Component& c)
+                {
+                    if (callout == nullptr)
+                        callout = dynamic_cast<juce::CallOutBox*> (&c);
+                    for (auto* child : c.getChildren())
+                        findCallout (*child);
+                };
+                findCallout (*editor);
+
+                expect (callout != nullptr,
+                        "VOICE call-out is a child of the editor (parented, not a bare "
+                        "desktop peer)");
+
+                // VoicePanel is anonymous-namespace-local to
+                // SPASynthEditor.cpp, so it can't be dynamic_cast by name
+                // here -- but it's CallOutBox's one and only content child
+                // (juce::CallOutBox's ctor: addAndMakeVisible (content)).
+                juce::Component* voicePanel = callout != nullptr && callout->getNumChildComponents() == 1
+                                                 ? callout->getChildComponent (0) : nullptr;
+                expect (voicePanel != nullptr, "VoicePanel found inside the call-out");
+                if (voicePanel != nullptr)
+                    expect (voicePanel->getWantsKeyboardFocus(),
+                            "VoicePanel itself wants keyboard focus, so CallOutBox's own "
+                            "enterModalState(true, ...) grab has a real target");
+
+                // Sweep the call-out's own subtree (not the whole editor --
+                // that's presetBrowserFocusGrabTest's job, with its own
+                // documented allowlist) for anything still grabbing focus on
+                // click. Same zero-tolerance shape as that test, with
+                // exactly one exception: VoicePanel itself, the root of the
+                // subtree, per the comment on setWantsKeyboardFocus in
+                // SPASynthEditor.cpp's VoicePanel.
+                if (callout != nullptr)
+                {
+                    int offenders = 0;
+                    std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+                    {
+                        const bool allowed = &c == voicePanel;
+                        if (! allowed && c.getMouseClickGrabsKeyboardFocus())
+                        {
+                            ++offenders;
+                            std::cout << "  FAIL   focus-grab left on: " << typeid (c).name() << "\n";
+                        }
+                        for (auto* child : c.getChildren())
+                            walk (*child);
+                    };
+                    walk (*callout);
+
+                    expect (offenders == 0,
+                            juce::String (offenders) + " control(s) inside the VOICE call-out "
+                            "(other than the panel itself) still grab keyboard focus on click");
+                }
+
+                if (callout != nullptr)
+                    callout->dismiss();
+                pumpFor (50);
+            }
+
+            editor->removeFromDesktop();
+        }
+
+        // --- behavioral: with a real OS peer, opening the call-out gives it
+        // real focus, and closing it hands focus back to the on-screen
+        // keyboard when the keyboard strip is showing -- same
+        // "gotRealFocus" best-effort pattern as presetBrowserKeyboardFocusTest,
+        // since headless CI can't always grant real OS keyboard focus.
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (48000.0, 512);
+            proc.getAPVTS().state.setProperty ("uiKeyboardVisible", true, nullptr);
+
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            editor->setSize (spa::ui::metrics::baseWidth,
+                             spa::ui::metrics::baseHeight + spa::ui::metrics::keyboardStripHeight);
+            editor->addToDesktop (0);
+            editor->setVisible (true);
+            pumpFor (200);
+
+            juce::MidiKeyboardComponent* keyboard = nullptr;
+            std::function<void (juce::Component&)> findKeyboard = [&] (juce::Component& c)
+            {
+                if (keyboard == nullptr)
+                    keyboard = dynamic_cast<juce::MidiKeyboardComponent*> (&c);
+                for (auto* child : c.getChildren())
+                    findKeyboard (*child);
+            };
+            findKeyboard (*editor);
+
+            auto* voiceButton = findByTooltip (*editor,
+                "Voice mode: Poly / Mono / Duo / Paraphonic / Unison");
+            expect (keyboard != nullptr && voiceButton != nullptr,
+                    "keyboard + VOICE button found (real-peer editor)");
+
+            if (keyboard != nullptr && voiceButton != nullptr)
+            {
+                keyboard->grabKeyboardFocus();
+                pumpFor (50);
+                const bool gotRealFocus = keyboard->hasKeyboardFocus (false);
+
+                if (! gotRealFocus)
+                {
+                    std::cout << "  ..   couldn't obtain real OS keyboard focus in this "
+                                 "environment -- skipping the behavioral half, covered "
+                                 "structurally above\n";
+                }
+                else
+                {
+                    voiceButton->triggerClick();
+                    pumpFor (150);
+
+                    juce::CallOutBox* callout = nullptr;
+                    std::function<void (juce::Component&)> findCallout = [&] (juce::Component& c)
+                    {
+                        if (callout == nullptr)
+                            callout = dynamic_cast<juce::CallOutBox*> (&c);
+                        for (auto* child : c.getChildren())
+                            findCallout (*child);
+                    };
+                    findCallout (*editor);
+                    expect (callout != nullptr, "call-out opened (real-peer editor)");
+
+                    if (callout != nullptr)
+                    {
+                        callout->dismiss();
+                        pumpFor (300);
+
+                        expect (keyboard->hasKeyboardFocus (false),
+                                "on-screen keyboard has real focus back after the VOICE "
+                                "call-out closes");
+                    }
+                }
+            }
+
+            editor->removeFromDesktop();
+        }
+    }
+
     // Regression for a bug Mike hit in Logic: the ENV/LFO tab bars rendered
     // with generous, evenly-spaced default widths, then snapped to a
     // condensed/bunched-left layout the instant another tab was clicked.
@@ -4159,6 +4381,7 @@ int main (int argc, char* argv[])
     dependentEnableTest();
     presetBrowserFocusGrabTest();
     presetBrowserKeyboardFocusTest();
+    voicePanelCallOutFocusTest();
     tabLayoutInvarianceTest();
     fxPanelLabelClippingTest();
 
