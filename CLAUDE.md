@@ -10,6 +10,49 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-01): v1.0.11 — faceplate redesign merged to main, release build in progress
+
+**1.0.10 was never sent; Mike chose a fresh number for the redesign.**
+Branch `faceplate-restyle` (2026-08-30..09-01, ~14 commits, merged as
+`3fb5391`) delivered a visual-only restyle per Mike's spec + a UVI Thorus
+reference, iterated through ~12 of his feedback rounds with rendered
+snapshots each time:
+- One continuous charcoal faceplate `0xff181d20` (sampled from his mock);
+  `draw::panel` is a no-op (no cards); LED display wells removed (scopes
+  draw on the surface; `displayWell` keeps an optional faint centre line);
+  seeded noise tile at 0.03 alpha; dark gutter seams (`seam` =
+  background.darker(1.3), full row-band height); layered row-overhang
+  shadows + recessed selector/title channels sharing ONE recipe:
+  `draw::easedShadowGradient` + `draw::shadowStartAlpha` (0.30, edge 0.44).
+  Headers live in 32px bands (`metrics::sectionHeaderHeight`, tab depth
+  matched so rules align per row; `OscStrip::headerNameRect` shares the
+  constants). FILTER/FX inner headers are title-only (no rule, no recess —
+  the selector above provides the line). Nav row overhangs row 1.
+  `meterLane` token split from `seam`. Tab rules unified on `t.outline`.
+- **Real bugs found by the restyle work, all fixed + regression-tested:**
+  tab bars re-laid-out narrower on first click (ContentComponent's only
+  setSize ran BEFORE parenting, so widths came from the default LnF;
+  `tabLayoutInvarianceTest`); FX caption labels could clip on dense panels
+  (labels reserve height first, display shrinks; `fxPanelLabelClippingTest`);
+  matrix last visible row clipped (viewport clamps to whole rows).
+- **Loop-point visualization** (Paul's request): sample mode overlays the
+  waveform with an accentMod loop band + 1px edge markers (LOOP on) and a
+  sampleStart tick; params verified normalized against
+  `SamplePlayer::getNextSample`; repaints via the existing display listener
+  + 24Hz timer. Snapshot seed sets OSC A loop points to demonstrate it.
+- Suite 185 → **377 assertions ALL PASS**; auval SUCCEEDED at every step;
+  committed `docs/spasynth-{dark,accent,loading,keyboard,marketing}.png`
+  refreshed (`c53935e`). Changelog has a customer-facing `## 1.0.11`.
+- Dev-copy workflow for design review: debug builds in `~/Library` shadow
+  the installed release (deliberately, for Mike's Logic look); the release
+  script clears them. **Never sign off a release while dev copies exist.**
+
+**Remaining:** finish the 1.0.11 release build (macOS + Windows draft
+release), stage `dist/shopify/SPASynth-{Standard,Pro}-1.0.11/`, Mike
+installs + signs off in Logic (functional gauntlet from the 1.0.10 list +
+the redesign + loop points), then send to Paul and Phil; the rest of the
+launch checklist (Shopify build-out, announce) is unchanged from below.
+
 ## Current state (2026-08-28): v1.0.10 built + staged (pending Mike's test); 1.0.9 superseded, never sent
 
 **1.0.9 was never distributed** and Mike chose to call the next build 1.0.10
