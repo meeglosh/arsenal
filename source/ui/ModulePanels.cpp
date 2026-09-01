@@ -420,7 +420,8 @@ void FilterPanel::paint (juce::Graphics& g)
     draw::panel (g, getLocalBounds().toFloat());
     // recess=false: FilterPanel is always embedded inside filterTabs, whose
     // FILTER 1/FILTER 2 tab strip already casts the recessed-channel shadow
-    // above this header -- a second one here would stack two recessed tiers.
+    // (and rule) above this header -- a second rule/shadow here would stack
+    // two recessed tiers, so the FILTER 1/2 band is title-only.
     draw::sectionHeader (g, getLocalBounds(),
                          index == 1 ? "Filter 1" : "Filter 2", {},
                          currentTheme().accent, false);
@@ -703,8 +704,9 @@ void FXPanel::paint (juce::Graphics& g)
 {
     draw::panel (g, getLocalBounds().toFloat());
     // recess=false: every FXPanel is embedded inside fxTabs (DIST/CHORUS/...
-    // strip), which already casts the recessed-channel shadow above this
-    // header -- a second one here would stack two recessed tiers. The
+    // strip), which already casts the recessed-channel shadow (and rule)
+    // above this header -- a second rule/shadow here would stack two
+    // recessed tiers, so the DISTORTION/etc. band is title-only. The
     // embedded `controls` (SectionPanel, drawFrame=false) draws no header of
     // its own, so this stays the only header painted per FX tab.
     draw::sectionHeader (g, getLocalBounds(), panelTitle, {}, currentTheme().accent, false);

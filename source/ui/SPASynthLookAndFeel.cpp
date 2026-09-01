@@ -117,10 +117,11 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
     // rule colours were unified onto t.outline the same session (see
     // SPASynthLookAndFeel::refreshPalette's tabOutlineColourId comment).
     //
-    // recess=false (iteration: double-recess fix) skips just this shadow --
-    // used by headers that sit directly under a tab strip already casting
-    // the same recess (FilterPanel/FXPanel), so the module doesn't stack two
-    // recessed tiers. The rule itself always stays.
+    // recess=false (iteration: double-recess fix, then no-rule-under-a-tab-
+    // strip fix) skips both the shadow AND the rule -- used by headers that
+    // sit directly under a tab strip already casting that same recessed
+    // channel + rule (FilterPanel/FXPanel), so the module doesn't stack two
+    // rule/shadow tiers. Title (and readout) still paint either way.
     if (recess)
     {
         const float lineY = (float) full.getBottom() - 1.0f;
@@ -131,10 +132,10 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
                                                 shadowStartAlpha));
         g.fillRect (juce::Rectangle<float> ((float) full.getX(), lineY - shadowLength,
                                             (float) full.getWidth(), shadowLength));
-    }
 
-    g.setColour (t.outline);
-    g.fillRect (juce::Rectangle<int> (full.getX(), full.getBottom() - 1, full.getWidth(), 1));
+        g.setColour (t.outline);
+        g.fillRect (juce::Rectangle<int> (full.getX(), full.getBottom() - 1, full.getWidth(), 1));
+    }
 
     return bounds;
 }
