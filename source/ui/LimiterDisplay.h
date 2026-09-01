@@ -30,9 +30,8 @@ public:
         const auto& t = currentTheme();
         const auto area = getLocalBounds().toFloat().reduced (1.0f);
 
-        g.setColour (t.display);
-        g.fillRoundedRectangle (area, 4.0f);
-
+        // Faceplate restyle: no display-well fill/border — the meter traces
+        // draw straight on the faceplate surface.
         const float cy = area.getCentreY();
         const float halfH = area.getHeight() * 0.46f;
 
@@ -108,9 +107,6 @@ public:
         g.drawText (lastGr < -0.05f ? "GR " + juce::String (lastGr, 1) + " dB" : "GR 0.0 dB",
                     area.reduced (7.0f, 4.0f).removeFromTop (14.0f),
                     juce::Justification::topLeft);
-
-        g.setColour (t.outline);
-        g.drawRoundedRectangle (area, 4.0f, 1.0f);
     }
 
     void timerCallback() override { repaint(); }
@@ -153,7 +149,10 @@ public:
             addAndMakeVisible (*c);
     }
 
-    void paint (juce::Graphics& g) override { g.fillAll (currentTheme().panel); }
+    // Faceplate restyle: this is FX-chain tab content, same as FXPanel's
+    // other tabs (DIST/CHORUS/DELAY/...) — no card fill, the continuous
+    // surface painted by ContentComponent shows through.
+    void paint (juce::Graphics&) override {}
 
     void resized() override
     {

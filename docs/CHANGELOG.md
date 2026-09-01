@@ -1,5 +1,45 @@
 # SPASynth changelog
 
+## 1.0.11
+
+A visual redesign of the faceplate, plus a tester-requested feature and two
+polish fixes.
+
+- SPASynth has a new look: one continuous dark faceplate instead of separate
+  bordered modules, with recessed selector and title bands and softly
+  layered shadows between rows. This is a visual pass only, nothing about
+  how SPASynth sounds or behaves has changed.
+- Sample oscillators now show their loop points right on the waveform
+  display. When LOOP is on, the loop region is shaded and its start/end
+  points are marked with crisp lines, so you can see exactly where a long
+  sample repeats instead of guessing from the knobs. The playback start
+  point gets its own subtle marker. Turn LOOP off and the shading/markers
+  clear, leaving just the start marker; this doesn't apply to granular mode,
+  which already has its own live grain view.
+- Fixed a layout bug where a module's tab row (ENV, LFO, FILTER, the FX
+  tabs) would condense and re-space itself the first time you clicked a
+  tab. Tab rows now lay out the same way from the moment SPASynth opens.
+- Fixed a bug where an effect panel's bottom row of knob labels could get
+  squashed or clipped on control-heavy tabs like TREM/VIB. Labels now
+  always get the room they need; the panel's live display shrinks to make
+  room for them if needed.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.10
 
 Fixes and polish from the latest round of tester feedback.

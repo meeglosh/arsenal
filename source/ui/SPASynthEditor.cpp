@@ -338,9 +338,10 @@ public:
     {
         const auto& t = currentTheme();
         auto area = getLocalBounds().toFloat().reduced (1.0f);
-        g.setColour (t.display);
-        g.fillRoundedRectangle (area, 4.0f);
-        g.setColour (t.outline.withAlpha (0.5f));
+        // Faceplate restyle: no display-well fill/border — the shaped-IR
+        // envelope draws straight on the faceplate surface. Keep a faint
+        // centre reference line (matches draw::displayWell's judgment call).
+        g.setColour (t.outline.withAlpha (0.18f));
         g.drawHorizontalLine ((int) area.getCentreY(), area.getX(), area.getRight());
 
         if (! processor.hasConvolutionIR())
@@ -348,8 +349,6 @@ public:
             g.setColour (t.textSecondary.withAlpha (0.5f));
             g.setFont (metrics::smallFont());
             g.drawText ("No impulse loaded - pick one above", area, juce::Justification::centred);
-            g.setColour (t.outline);
-            g.drawRoundedRectangle (area, 4.0f, 1.0f);
             return;
         }
 
@@ -390,9 +389,6 @@ public:
             g.setColour (t.textSecondary.withAlpha (0.5f));
             g.drawVerticalLine ((int) x0, area.getY(), area.getBottom());
         }
-
-        g.setColour (t.outline);
-        g.drawRoundedRectangle (area, 4.0f, 1.0f);
     }
 
     void timerCallback() override { repaint(); }
@@ -437,7 +433,9 @@ public:
 
     ~ConvolvePanel() override { processor.removeChangeListener (this); }
 
-    void paint (juce::Graphics& g) override { g.fillAll (currentTheme().panel); }
+    // Faceplate restyle: FX-chain tab content, same as FXPanel's other tabs
+    // (DIST/CHORUS/DELAY/...) — no card fill, continuous surface shows through.
+    void paint (juce::Graphics&) override {}
 
     void resized() override
     {
@@ -586,7 +584,14 @@ public:
 
     void paint (juce::Graphics& g) override
     {
-        g.fillAll (currentTheme().panel);
+        // Popup call-out, not a module — it sits over other modules and
+        // must occlude, so (unlike the module cards) it keeps a flat fill.
+        // A subtle darker edge (rather than the old drop-shadow card) reads
+        // as "detached from the surface" without introducing a new card look.
+        const auto& t = currentTheme();
+        g.fillAll (t.panel);
+        g.setColour (t.seam);
+        g.drawRect (getLocalBounds(), 1);
     }
 
     void resized() override
@@ -612,6 +617,27 @@ private:
     Knob voices, detune, width;
     juce::Label modeLabel, priorityLabel;
 };
+
+// Faceplate restyle: a small, seeded (not time-seeded) per-pixel noise tile,
+// generated once and tiled across the whole surface at very low opacity for
+// the "very subtle fine-grain texture" the brief asks for. A fixed-size tile
+// drawn via Graphics::setTiledImageFill needs no regeneration on resize (it
+// simply repeats), keeps this fully deterministic run-to-run for snapshot
+// tests, and never allocates in paint().
+static juce::Image makeFaceplateNoiseTexture()
+{
+    constexpr int size = 96;
+    juce::Image img (juce::Image::ARGB, size, size, false);
+    juce::Random rng (0x5b0a5adeu);   // fixed seed -- never getSystemRandom()
+    juce::Image::BitmapData bd (img, juce::Image::BitmapData::writeOnly);
+    for (int y = 0; y < size; ++y)
+        for (int x = 0; x < size; ++x)
+        {
+            const auto v = (juce::uint8) rng.nextInt (256);
+            bd.setPixelColour (x, y, juce::Colour (v, v, v));   // opaque grey; opacity applied at draw time
+        }
+    return img;
+}
 } // namespace
 
 ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> themeChanged)
@@ -626,6 +652,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
                                                     SPAAssets::SPAudio_logo_white_svgSize);
     logoLight = juce::Drawable::createFromImageData (SPAAssets::SPAudio_logo_white_svg,
                                                      SPAAssets::SPAudio_logo_white_svgSize);
+    noiseTexture = makeFaceplateNoiseTexture();   // faceplate grain: generated once, message thread
 
     // Logo (top-left) opens the SPASynth settings menu. Works in the plugin too,
     // unlike the standalone wrapper's audio-device "Options" menu.
@@ -794,6 +821,14 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         addAndMakeVisible (*oscStrips[(size_t) s]);
     }
 
+    // Faceplate restyle: tab-strip depth reconciled with the title bands
+    // (draw::sectionHeader / metrics::sectionHeaderHeight) rather than
+    // JUCE's own default (30px) so a tab strip and a title band sitting in
+    // the same grid row land their bottom rule at the same y -- the channel
+    // has to read continuously across the row, seams aside.
+    for (auto* tabs : { &filterTabs, &envTabs, &lfoTabs, static_cast<juce::TabbedComponent*> (&fxTabs) })
+        tabs->setTabBarDepth (metrics::sectionHeaderHeight);
+
     const auto tabBg = juce::Colours::transparentBlack;
     envTabs.addTab ("AMP", tabBg, new EnvPanel (processor, "ampEnv", 0), true);
     envTabs.addTab ("ENV 2", tabBg, new EnvPanel (processor, "env2", 1), true);
@@ -857,7 +892,14 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     // Right-clicks anywhere inside get routed here for MIDI Learn.
     addMouseListener (this, true);
 
-    setSize (metrics::baseWidth, getContentBaseHeight());
+    // Deliberately NOT setSize()'d here -- see SPASynthEditor's constructor,
+    // which gives this its first real layout AFTER addAndMakeVisible()
+    // parents it. A setSize() call in THIS constructor would run while `this`
+    // has no parent yet, and every descendant's getLookAndFeel() falls back
+    // to JUCE's global default LookAndFeel whenever it can't find one by
+    // walking up an (as yet nonexistent) parent chain -- silently wrong for
+    // one-off layout decisions like TabbedButtonBar's tab widths (see
+    // SPASynthLookAndFeel::getTabButtonBestWidth's comment).
 }
 
 int ContentComponent::getContentBaseHeight() const
@@ -960,6 +1002,15 @@ void ContentComponent::paint (juce::Graphics& g)
     const auto& t = currentTheme();
     g.fillAll (t.background);
 
+    // Faceplate grain: a tiled, low-opacity noise texture over the whole
+    // surface. Kept restrained (must be invisible at a glance) -- see
+    // makeFaceplateNoiseTexture() for the determinism/caching notes.
+    if (noiseTexture.isValid())
+    {
+        g.setTiledImageFill (noiseTexture, 0, 0, 0.03f);
+        g.fillRect (getLocalBounds());
+    }
+
     // Brand band: the big tracked wordmark, centred (per the redesign mock).
     auto band = getLocalBounds().removeFromTop (metrics::brandBandHeight);
     g.setColour (t.header.darker (0.25f));
@@ -1030,6 +1081,93 @@ void ContentComponent::paint (juce::Graphics& g)
     g.setColour (t.textSecondary);
     g.setFont (metrics::smallFont());
     g.drawText ("LOCKS", lockCaption, juce::Justification::centredLeft);
+
+    // --- Faceplate seams + row shadows -----------------------------------
+    // Painted here (parent, before children) so they sit UNDER every module's
+    // (now transparent) content -- reads as the surface itself being milled,
+    // not an overlay on top of the controls. Geometry comes from resized(),
+    // never hardcoded.
+    //
+    // Iteration 2 (2026-08-30): rebuilt as a real "overhang" -- a crisp dark
+    // edge on the underside of the upper plate, then a long soft cast shadow
+    // eased across ~26px (Thorus XT reference: crisp bottom edge on the
+    // overhanging band, long soft falloff onto the band below).
+    // Lightened 2026-08-31 (Mike: both shadow families "a little dark") --
+    // edge line 0.55f -> 0.44f, cast shadow now shares draw::shadowStartAlpha
+    // (Theme.h, 0.42f -> 0.30f) with the tab-strip recess.
+    constexpr float edgeLineAlpha    = 0.44f;   // crisp 1px edge, underside of the upper plate
+    constexpr float shadowStartAlpha = draw::shadowStartAlpha; // cast shadow, darkest under the edge line
+    constexpr float shadowSoftLength = 27.0f;   // falloff distance (px)
+
+    // --- Top nav row (lock strip) boundary ---------------------------------
+    // The OSC/FILTER/ENV/LFO/CHAOS/ARP/FX/MATRIX lock row's bottom edge gets
+    // the exact same falling-shadow treatment as every row boundary below it
+    // (the loop just after this): a crisp dark edge line, then the eased cast
+    // shadow falling DOWN onto row 1's header bands, so OSCILLATOR A/B/C reads
+    // recessed the same way ORGANIC CHAOS/ARPEGGIATOR do under row 2's
+    // boundary. Drawn as its own block (not folded into the loop) because
+    // this seam sits at topNavRuleY -- the lock strip's own true bottom edge,
+    // captured in resized() -- a few px above rowShadowYs[0] (main.getY(),
+    // once the module grid's own top margin is applied), so the loop below
+    // still skips index 0 to avoid a second, offset shadow a few pixels away.
+    {
+        const float w = (float) getWidth();
+        const float edgeY = (float) topNavRuleY;
+
+        g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, edgeY, w, 1.0f));
+
+        const float gradTop = edgeY + 1.0f;
+        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
+                                                       { 0.0f, gradTop + shadowSoftLength },
+                                                       shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+    }
+
+    for (size_t i = 0; i < rowShadowYs.size(); ++i)
+    {
+        // Index 0 (row 1's top boundary) is the lock-strip seam, already
+        // painted above at topNavRuleY -- skip it here so it doesn't get a
+        // second, offset falling shadow a few pixels away.
+        if (i == 0)
+            continue;
+        const auto rowY = rowShadowYs[i];
+        if (rowY <= 0) continue;
+        const auto w = (float) getWidth();
+
+        g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, (float) rowY, w, 1.0f));
+
+        const float gradTop = (float) rowY + 1.0f;
+        // Eased falloff (concave -- steep near the edge, long soft tail) rather
+        // than a flat linear ramp, so the band doesn't read as a visible strip.
+        // Same recipe as the tab-strip recess (SPASynthLookAndFeel::
+        // drawTabAreaBehindFrontButton) via draw::easedShadowGradient, so the
+        // two shadow languages can't drift apart.
+        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
+                                                       { 0.0f, gradTop + shadowSoftLength },
+                                                       shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+        // (A faint top-light on the plate below was tried here and dropped --
+        // at a restrained alpha it was imperceptible even under 4x contrast
+        // boost, so it was decoration rather than a real 3D cue.)
+    }
+
+    // Vertical seams: recessed grooves between modules, running the FULL
+    // height of their row band (top boundary to bottom boundary -- the same
+    // rowShadowYs geometry the horizontal shadows use), not just the
+    // clamped bounds of the module components either side. Thorus XT's
+    // bottom-row dividers run edge to edge of the band; this matches that.
+    g.setColour (t.seam);
+    for (size_t i = 0; i < moduleGutters.size(); ++i)
+    {
+        const auto& gutter = moduleGutters[i];
+        const auto row = (size_t) moduleGutterRows[i];
+        const auto x = gutter.getCentreX();
+        const auto top = (float) rowShadowYs[row];
+        const auto bottom = (float) rowShadowYs[row + 1];
+        g.drawVerticalLine (x, top, bottom);
+    }
 }
 
 void ContentComponent::resized()
@@ -1083,6 +1221,11 @@ void ContentComponent::resized()
         if (button.isVisible())
             button.setBounds (lockRow.removeFromLeft (lockWidth).reduced (2, 1));
 
+    // Faceplate restyle: the lock strip's own true bottom edge, captured
+    // right here (before the module grid's separate top margin below) so
+    // the top-nav recessed-band rule paint() draws sits flush against it.
+    topNavRuleY = bounds.getY();
+
     bounds.removeFromBottom (metrics::footerHeight);
 
     // Keyboard toggle button: bottom-right of the footer (Kontakt-style), kept
@@ -1102,6 +1245,14 @@ void ContentComponent::resized()
     // --- Module grid ----------------------------------------------------------
     auto main = bounds.reduced (metrics::unit, 4);
     constexpr int gap = 6;
+    moduleGutters.clear();
+    moduleGutterRows.clear();
+    // Row 1's own top boundary -- used below only as the top of row 1's
+    // vertical gutter seams (moduleGutterRows/rowShadowYs). The horizontal
+    // recessed band for this seam is now painted at the lock strip's own
+    // bottom edge (topNavRuleY, captured above, ~4px higher) instead of
+    // here, so it doesn't double up with that treatment -- see paint().
+    rowShadowYs[0] = main.getY();
 
     // Row 1: three oscillators + filter.
     auto row1 = main.removeFromTop (juce::roundToInt ((float) main.getHeight() * 0.40f));
@@ -1109,27 +1260,40 @@ void ContentComponent::resized()
     for (int s = 0; s < params::numOscSlots; ++s)
     {
         oscStrips[(size_t) s]->setBounds (row1.removeFromLeft (oscW));
-        row1.removeFromLeft (gap);
+        moduleGutters.push_back (row1.removeFromLeft (gap));
+        moduleGutterRows.push_back (0);
     }
     filterTabs.setBounds (row1);
     main.removeFromTop (gap);
 
     // Row 2: envelopes, LFOs, chaos, macros.
+    rowShadowYs[1] = main.getY();
     auto row2 = main.removeFromTop (juce::roundToInt ((float) main.getHeight() * 0.48f));
     envTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 22 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     lfoTabs.setBounds (row2.removeFromLeft (row2.getWidth() * 28 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     chaosPanel.setBounds (row2.removeFromLeft (row2.getWidth() * 52 / 100));
-    row2.removeFromLeft (gap);
+    moduleGutters.push_back (row2.removeFromLeft (gap));
+    moduleGutterRows.push_back (1);
     arpPanel.setBounds (row2);
     main.removeFromTop (gap);
 
     // Row 3: FX + matrix.
+    rowShadowYs[2] = main.getY();
     auto row3 = main;
     fxTabs.setBounds (row3.removeFromLeft (row3.getWidth() * 44 / 100));
-    row3.removeFromLeft (gap);
+    moduleGutters.push_back (row3.removeFromLeft (gap));
+    moduleGutterRows.push_back (2);
     matrixPanel.setBounds (row3);
+
+    // Shadow band "above the footer": the footer strip is always pinned to
+    // the very bottom of the component (sliced off `bounds` above, ahead of
+    // the keyboard strip), so its top edge is a fixed offset from the height
+    // regardless of keyboard-strip visibility.
+    rowShadowYs[3] = getHeight() - metrics::footerHeight;
 
     // --- Preset drawer (overlay, left) ----------------------------------------
     const auto drawerArea = getLocalBounds()
@@ -1395,6 +1559,17 @@ SPASynthEditor::SPASynthEditor (SPASynthProcessor& p)
     constexpr auto baseW = ui::metrics::baseWidth;
     // Base height includes the keyboard strip if it was left open last session.
     const auto baseH = content->getContentBaseHeight();
+
+    // content's real (base/untransformed) size is set HERE, after it's been
+    // parented above -- not inside ContentComponent's own constructor. This
+    // editor's resized() only ever applies an AffineTransform to `content`
+    // for the fixed-aspect scaling shell (see below); it never calls
+    // content->setSize()/setBounds() again. So this is content's ONE AND
+    // ONLY real layout pass, and every descendant (including the ENV/LFO/
+    // Filter tab bars) needs a fully-resolvable LookAndFeel parent chain
+    // when it runs, or JUCE's global default LookAndFeel silently stands in
+    // for `lookAndFeel` above for that first (and otherwise only) pass.
+    content->setSize (baseW, baseH);
 
     setResizable (true, true);
     configureConstrainer();

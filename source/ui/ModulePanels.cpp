@@ -226,9 +226,17 @@ void OscStrip::paint (juce::Graphics& g)
 
 juce::Rectangle<int> OscStrip::headerNameRect() const
 {
-    auto header = getLocalBounds().removeFromTop (20).reduced (8, 0);
-    const int w = juce::jlimit (80, 240, juce::roundToInt (header.getWidth() * 0.62f));
-    return header.removeFromRight (w);
+    // Must reconstruct the exact same rect draw::sectionHeader() computes for
+    // its readout text -- this is the click/popup-anchor hit-test for the
+    // quick-swap widget painted in that same spot (paintSampleSwapper()), so
+    // it shares the metrics constants rather than its own copy (iteration 3
+    // restyle: iteration 2's fix here just relocated the duplication when the
+    // header height changed, it didn't remove it).
+    auto header = getLocalBounds().removeFromTop (metrics::sectionHeaderHeight);
+    header.removeFromTop (metrics::sectionHeaderTopInset);
+    auto text = header.reduced (metrics::sectionHeaderLeftInset, 0);
+    const int w = juce::jlimit (80, 240, juce::roundToInt (text.getWidth() * 0.62f));
+    return text.removeFromRight (w);
 }
 
 bool OscStrip::sampleSwapAvailable() const
@@ -315,7 +323,7 @@ void OscStrip::openSampleMenu()
 
 void OscStrip::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     display.setBounds (area.removeFromTop (86));
     area.removeFromTop (4);
@@ -410,14 +418,18 @@ FilterPanel::FilterPanel (SPASynthProcessor& p, int filterIndex)
 void FilterPanel::paint (juce::Graphics& g)
 {
     draw::panel (g, getLocalBounds().toFloat());
+    // recess=false: FilterPanel is always embedded inside filterTabs, whose
+    // FILTER 1/FILTER 2 tab strip already casts the recessed-channel shadow
+    // (and rule) above this header -- a second rule/shadow here would stack
+    // two recessed tiers, so the FILTER 1/2 band is title-only.
     draw::sectionHeader (g, getLocalBounds(),
                          index == 1 ? "Filter 1" : "Filter 2", {},
-                         currentTheme().accent);
+                         currentTheme().accent, false);
 }
 
 void FilterPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
     display.setBounds (area.removeFromTop (index == 2 ? 64 : 86));
     area.removeFromTop (4);
 
@@ -565,7 +577,7 @@ void ChaosPanel::paint (juce::Graphics& g)
 
 void ChaosPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     auto top = area.removeFromTop (juce::jmax (78, area.getHeight() - 84));
     auto scope = top.removeFromLeft (juce::jmin (200, top.getWidth() / 2));
@@ -630,7 +642,7 @@ void ArpPanel::paint (juce::Graphics& g)
 
 void ArpPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
     auto row1 = area.removeFromTop (24);
     enable.setBounds (row1.removeFromLeft (48));
@@ -691,21 +703,39 @@ FXPanel::FXPanel (juce::AudioProcessorValueTreeState& apvts, FXDisplay::Kind kin
 void FXPanel::paint (juce::Graphics& g)
 {
     draw::panel (g, getLocalBounds().toFloat());
-    draw::sectionHeader (g, getLocalBounds(), panelTitle, {}, currentTheme().accent);
+    // recess=false: every FXPanel is embedded inside fxTabs (DIST/CHORUS/...
+    // strip), which already casts the recessed-channel shadow (and rule)
+    // above this header -- a second rule/shadow here would stack two
+    // recessed tiers, so the DISTORTION/etc. band is title-only. The
+    // embedded `controls` (SectionPanel, drawFrame=false) draws no header of
+    // its own, so this stays the only header painted per FX tab.
+    draw::sectionHeader (g, getLocalBounds(), panelTitle, {}, currentTheme().accent, false);
 }
 
 void FXPanel::resized()
 {
-    auto area = getLocalBounds().withTrimmedTop (20).reduced (7, 3);
+    auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (7, 3);
 
-    // Controls take exactly the height their grid needs (they wrap by
-    // width); the scope gets whatever remains, with a survivable minimum.
+    // Layout priority: caption labels must never clip, so the control grid
+    // always gets the FULL height its rows need (heightForWidth) -- never
+    // capped down. The scope/display shrinks into whatever remains, down to
+    // nothing if the panel is that short (Mike's call: visualizers may
+    // shrink, captions never do). This used to cap controlsH at
+    // area.getHeight()-44 to guarantee the display a minimum, which at base
+    // size squeezed TREM/VIB's two-row grid short enough that its bottom
+    // row's labels rendered partially off the bottom of the panel.
     const auto controlsNeeded = controls.heightForWidth (area.getWidth());
-    const auto controlsH = juce::jmin (controlsNeeded,
-                                       juce::jmax (60, area.getHeight() - 44));
+    const auto controlsH = juce::jmin (controlsNeeded, area.getHeight());
     controls.setBounds (area.removeFromBottom (controlsH));
-    area.removeFromBottom (4);
-    display.setBounds (area);
+    if (area.getHeight() > 4)
+    {
+        area.removeFromBottom (4);
+        display.setBounds (area);
+    }
+    else
+    {
+        display.setBounds ({});
+    }
 }
 
 } // namespace spa::ui

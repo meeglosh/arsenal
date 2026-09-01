@@ -79,6 +79,9 @@ WaveDisplay::WaveDisplay (SPASynthProcessor& p, int slotIndex)
                           params::id::oscSlot (slotIndex, params::id::osc::position),
                           params::id::oscSlot (slotIndex, params::id::osc::grainPos),
                           params::id::oscSlot (slotIndex, params::id::osc::sampleStart),
+                          params::id::oscSlot (slotIndex, params::id::osc::loop),
+                          params::id::oscSlot (slotIndex, params::id::osc::loopStart),
+                          params::id::oscSlot (slotIndex, params::id::osc::loopEnd),
                           params::id::oscSlot (slotIndex, params::id::osc::analogShape),
                           params::id::oscSlot (slotIndex, params::id::osc::pulseWidth),
                           params::id::oscSlot (slotIndex, params::id::osc::fmRatio),
@@ -273,6 +276,35 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
         return area.getX() + area.getWidth() * juce::jlimit (0.0f, 1.0f, norm);
     };
 
+    // Sample mode: shade the loop region (while LOOP is on) and mark its
+    // edges, so a long SFX's loop points read directly on the waveform
+    // (tester request from Paul). sampleStart/loopStart/loopEnd are all
+    // normalized 0..1 fractions of the file -- SamplePlayer::getNextSample
+    // multiplies loopStartNorm/loopEndNorm by lengthSamples() the same way
+    // noteOn() scales startNorm (source/dsp/SamplePlayer.h) -- the same
+    // domain markerX already uses for the waveform columns, so no extra
+    // mapping is needed. Granular has its own grain-viz below and is left
+    // untouched. Drawn under the tick/playhead lines below so those stay
+    // crisp on top.
+    if (mode == params::OscMode::sample)
+    {
+        const auto loopOn = value (params::id::oscSlot (slot, params::id::osc::loop)) >= 0.5f;
+        if (loopOn)
+        {
+            const auto lx0 = markerX (value (params::id::oscSlot (slot, params::id::osc::loopStart)));
+            const auto lx1 = markerX (value (params::id::oscSlot (slot, params::id::osc::loopEnd)));
+            const auto bandX = juce::jmin (lx0, lx1);
+            const auto bandW = std::abs (lx1 - lx0);
+
+            g.setColour (t.accentMod.withAlpha (0.14f));
+            g.fillRect (juce::Rectangle<float> (bandX, area.getY(), bandW, area.getHeight()));
+
+            g.setColour (t.accentMod.withAlpha (0.85f));
+            g.drawLine (lx0, area.getY(), lx0, area.getBottom(), 1.0f);
+            g.drawLine (lx1, area.getY(), lx1, area.getBottom(), 1.0f);
+        }
+    }
+
     // Granular while sounding: animate the live grain cloud (each grain is a
     // faint playhead scanning the buffer, brightness following its window) so
     // playback reads the way it does in other granular synths, plus a soft
@@ -300,11 +332,27 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
         // Sample playhead (live) or, when idle / granular-idle, the knob.
         const auto markerParam = mode == params::OscMode::granular
                                ? params::id::osc::grainPos : params::id::osc::sampleStart;
-        const auto marker = isLive()
+        const auto live = isLive();
+        const auto marker = live
             ? telemetry->slotPosition[(size_t) slot].load (std::memory_order_relaxed)
             : value (params::id::oscSlot (slot, markerParam));
-        g.setColour (t.textPrimary);
-        g.drawLine (markerX (marker), area.getY(), markerX (marker), area.getBottom(), 1.2f);
+
+        if (mode == params::OscMode::sample && ! live)
+        {
+            // Idle sample mode: this is the START point, not a moving
+            // playhead -- draw it as a short, subtle top tick (textSecondary)
+            // rather than a bright full-height line so it doesn't compete
+            // with the crisper loop start/end markers above.
+            const auto sx = markerX (marker);
+            g.setColour (t.textSecondary.withAlpha (0.9f));
+            g.drawLine (sx, area.getY(), sx,
+                       area.getY() + juce::jmin (10.0f, area.getHeight() * 0.3f), 1.0f);
+        }
+        else
+        {
+            g.setColour (t.textPrimary);
+            g.drawLine (markerX (marker), area.getY(), markerX (marker), area.getBottom(), 1.2f);
+        }
     }
 
     // A replacement is still loading: dim the stale waveform so it reads as
@@ -832,7 +880,11 @@ void OutputMeter::paint (juce::Graphics& g)
 
     const auto drawBar = [&] (juce::Rectangle<float> bar, float level)
     {
-        g.setColour (t.display);
+        // A meter still needs a visible lane, but not the old display-well
+        // black -- use meterLane (iteration 3: seam itself darkened enough
+        // that it started reading as display-well black again, so the meter
+        // now has its own, lighter, token instead of following seam down).
+        g.setColour (t.meterLane);
         g.fillRoundedRectangle (bar, 1.5f);
 
         const auto dB = juce::Decibels::gainToDecibels (level, -60.0f);

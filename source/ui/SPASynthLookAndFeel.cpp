@@ -43,41 +43,25 @@ void resetAccentColors()
 namespace draw
 {
 
-void panel (juce::Graphics& g, juce::Rectangle<float> bounds)
+void panel (juce::Graphics&, juce::Rectangle<float>)
 {
-    const auto& t = currentTheme();
-
-    // Soft elevation shadow (two feathered passes — cheap and convincing).
-    g.setColour (juce::Colours::black.withAlpha (0.35f));
-    g.fillRoundedRectangle (bounds.translated (0.0f, 2.5f).expanded (1.0f),
-                            metrics::cornerRadius + 2.0f);
-    g.setColour (juce::Colours::black.withAlpha (0.20f));
-    g.fillRoundedRectangle (bounds.translated (0.0f, 4.5f).expanded (2.5f),
-                            metrics::cornerRadius + 4.0f);
-
-    // Panel face with a whisper of vertical gradient.
-    g.setGradientFill (juce::ColourGradient (t.panel.brighter (0.05f),
-                                             bounds.getX(), bounds.getY(),
-                                             t.panel.darker (0.06f),
-                                             bounds.getX(), bounds.getBottom(), false));
-    g.fillRoundedRectangle (bounds, metrics::cornerRadius);
-
-    g.setColour (t.outline);
-    g.drawRoundedRectangle (bounds.reduced (0.5f), metrics::cornerRadius, 1.0f);
-
-    // Hairline top highlight — the "edge catch" the mock's panels have.
-    g.setColour (juce::Colours::white.withAlpha (0.045f));
-    g.drawLine (bounds.getX() + metrics::cornerRadius, bounds.getY() + 1.0f,
-                bounds.getRight() - metrics::cornerRadius, bounds.getY() + 1.0f, 1.0f);
+    // Faceplate restyle: modules no longer paint their own card. The
+    // continuous surface (fill + texture + seams + row shadows) is painted
+    // once behind everything by ContentComponent::paint, so it shows
+    // through unbroken. Kept as a no-op (rather than deleting every call
+    // site) so draw::panel(...) stays the single place to reintroduce a
+    // module fill if that's ever needed again.
 }
 
 juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> bounds,
                                     const juce::String& title, const juce::String& readout,
-                                    juce::Colour titleColour)
+                                    juce::Colour titleColour, bool recess)
 {
     const auto& t = currentTheme();
-    auto header = bounds.removeFromTop (20);
-    auto text = header.reduced (8, 0);
+    const auto full = bounds.removeFromTop (metrics::sectionHeaderHeight);
+    auto header = full;
+    header.removeFromTop (metrics::sectionHeaderTopInset);
+    auto text = header.reduced (metrics::sectionHeaderLeftInset, 0);
 
     if (titleColour == juce::Colour())
         titleColour = t.textPrimary;
@@ -92,7 +76,6 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
     g.setColour (titleColour);
     g.drawText (titleText, text, juce::Justification::centredLeft);
 
-    int readoutWidth = 0;
     if (readout.isNotEmpty())
     {
         const auto stringWidth = [] (const juce::String& s)
@@ -103,7 +86,10 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
         };
 
         // Never run under the title: fit into the space after title + a
-        // minimum rule, ellipsizing the tail of long content names.
+        // minimum gap, ellipsizing the tail of long content names. (Used to
+        // measure against a rule drawn between title and readout; the rule
+        // has since moved to the band's bottom edge, but the same margin
+        // still keeps the readout from crowding the title.)
         const auto available = text.getWidth() - titleWidth - 8 - 14;
         auto fitted = readout;
         if (stringWidth (fitted) > available)
@@ -118,34 +104,56 @@ juce::Rectangle<int> sectionHeader (juce::Graphics& g, juce::Rectangle<int> boun
             g.setColour (t.textSecondary);
             g.setFont (metrics::labelFont());
             g.drawText (fitted, text, juce::Justification::centredRight);
-            readoutWidth = 8 + stringWidth (fitted);
         }
     }
 
-    // Thin rule between title and readout.
-    const auto ruleY = (float) header.getCentreY();
-    g.setColour (t.outline);
-    g.drawLine ((float) (text.getX() + titleWidth + 8), ruleY,
-                (float) (text.getRight() - readoutWidth), ruleY, 1.0f);
+    // Faceplate restyle: the rule moves from beside the title (old: a thin
+    // line between title and readout, at title mid-height) to beneath it --
+    // full header width, at the band's own bottom edge -- with the same
+    // eased inner shadow rising from it that SPASynthLookAndFeel::
+    // drawTabAreaBehindFrontButton casts over a tab strip. Identical recipe
+    // (same helper, same draw::shadowStartAlpha, same 13px cap) so every
+    // title band and every tab strip read as one shadow language; the two
+    // rule colours were unified onto t.outline the same session (see
+    // SPASynthLookAndFeel::refreshPalette's tabOutlineColourId comment).
+    //
+    // recess=false (iteration: double-recess fix, then no-rule-under-a-tab-
+    // strip fix) skips both the shadow AND the rule -- used by headers that
+    // sit directly under a tab strip already casting that same recessed
+    // channel + rule (FilterPanel/FXPanel), so the module doesn't stack two
+    // rule/shadow tiers. Title (and readout) still paint either way.
+    if (recess)
+    {
+        const float lineY = (float) full.getBottom() - 1.0f;
+        const float shadowLength = juce::jmin (13.0f, (float) full.getHeight());
+
+        g.setGradientFill (easedShadowGradient ({ (float) full.getX(), lineY },
+                                                { (float) full.getX(), lineY - shadowLength },
+                                                shadowStartAlpha));
+        g.fillRect (juce::Rectangle<float> ((float) full.getX(), lineY - shadowLength,
+                                            (float) full.getWidth(), shadowLength));
+
+        g.setColour (t.outline);
+        g.fillRect (juce::Rectangle<int> (full.getX(), full.getBottom() - 1, full.getWidth(), 1));
+    }
 
     return bounds;
 }
 
-void displayWell (juce::Graphics& g, juce::Rectangle<float> bounds)
+void displayWell (juce::Graphics& g, juce::Rectangle<float> bounds, bool centreLine)
 {
     const auto& t = currentTheme();
 
-    // Recessed well: vertical gradient, slightly darker at the top.
-    g.setGradientFill (juce::ColourGradient (t.display.darker (0.25f),
-                                             bounds.getX(), bounds.getY(),
-                                             t.display.brighter (0.08f),
-                                             bounds.getX(), bounds.getBottom(), false));
-    g.fillRoundedRectangle (bounds, 3.0f);
-    g.setColour (t.outline);
-    g.drawRoundedRectangle (bounds.reduced (0.5f), 3.0f, 1.0f);
+    // Faceplate restyle: no LED-screen well any more — curves render
+    // straight on the faceplate surface (glowStroke). Keep only an
+    // extremely faint zero/centre reference line; several scopes (LFO,
+    // bipolar wave, filter) are otherwise hard to read with no baseline.
+    // Non-scope callers (e.g. a plain list container) can opt out — a
+    // reference line has no meaning there and just bisects the content.
+    if (! centreLine)
+        return;
 
-    // Faint centre line, like the reference scopes.
-    g.setColour (t.outline.withAlpha (0.45f));
+    g.setColour (t.outline.withAlpha (0.18f));
     g.drawHorizontalLine ((int) bounds.getCentreY(), bounds.getX() + 2.0f,
                           bounds.getRight() - 2.0f);
 }
@@ -165,6 +173,17 @@ void glowStroke (juce::Graphics& g, const juce::Path& path, juce::Colour colour,
     g.strokePath (path, juce::PathStrokeType (thickness,
                                               juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
+}
+
+juce::ColourGradient easedShadowGradient (juce::Point<float> from, juce::Point<float> to,
+                                          float startAlpha)
+{
+    juce::ColourGradient shadow (juce::Colours::black.withAlpha (startAlpha), from,
+                                 juce::Colours::transparentBlack, to, false);
+    shadow.addColour (0.30, juce::Colours::black.withAlpha (startAlpha * 0.50f));
+    shadow.addColour (0.62, juce::Colours::black.withAlpha (startAlpha * 0.20f));
+    shadow.addColour (0.85, juce::Colours::black.withAlpha (startAlpha * 0.07f));
+    return shadow;
 }
 
 } // namespace draw
@@ -204,6 +223,21 @@ void SPASynthLookAndFeel::refreshPalette()
     setColour (juce::BubbleComponent::backgroundColourId, t.panel);
     setColour (juce::TabbedButtonBar::tabTextColourId, t.textSecondary);
     setColour (juce::TabbedButtonBar::frontTextColourId, t.textPrimary);
+    // Tab-strip recess rule (drawTabAreaBehindFrontButton's bottom-edge
+    // line). Never tokenized before -- it painted with LookAndFeel_V4's
+    // built-in dark-scheme default (a light, ~50%-alpha grey, nothing to do
+    // with this theme), while draw::sectionHeader's rule used t.outline
+    // directly. Restyle unifies both header-band families onto one rule
+    // colour so a tab strip and a title band read as the same milled
+    // channel where they sit in the same row.
+    setColour (juce::TabbedButtonBar::tabOutlineColourId, t.outline);
+    // JUCE's TabbedComponent fills a 1px outline around its content area in
+    // this colour whenever outlineThickness > 0 (the default); it was never
+    // tokenized, so it painted with the stock LookAndFeel_V4 default rather
+    // than any theme colour. Faceplate restyle has no card/frame around the
+    // filter/env/lfo/fx tab content any more, so make it fully transparent
+    // instead of chasing setOutline(0) on every TabbedComponent instance.
+    setColour (juce::TabbedComponent::outlineColourId, juce::Colours::transparentBlack);
     setColour (juce::AlertWindow::backgroundColourId, t.panel);
     setColour (juce::AlertWindow::textColourId, t.textPrimary);
 }
@@ -540,12 +574,21 @@ juce::Label* SPASynthLookAndFeel::createComboBoxTextBox (juce::ComboBox&)
 // a re-laid-out (tight) bar never slides the centred text onto the grip.
 static constexpr int tabGripReserve = 16;
 
-int SPASynthLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& button, int)
+int SPASynthLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& button, int tabDepth)
 {
     juce::GlyphArrangement glyphs;
     glyphs.addLineOfText (metrics::smallFont(), button.getButtonText(), 0.0f, 0.0f);
     const int grip = dynamic_cast<DraggableTabButton*> (&button) != nullptr ? tabGripReserve : 0;
-    return juce::jmax (36, (int) std::ceil (glyphs.getBoundingBox (0, -1, true).getWidth())
+    // Floor of 2x the tab-bar depth deliberately matches JUCE's own
+    // LookAndFeel_V2 default (see its getTabButtonBestWidth) -- short tab
+    // names (AMP, ENV 2, LFO 1...) need a floor at all, and this is the one
+    // that was already baked into the generous/evenly-spaced look every FX
+    // and ENV/LFO/Filter tab bar shipped with, since every one of those bars
+    // gets its real width computed only once (see SPASynthEditor's
+    // constructor) and, before that constructor fix, briefly fell back to
+    // LookAndFeel_V2's formula for that one pass. Longer names (FILTER 1,
+    // CHORUS...) are unaffected -- their text width already clears this.
+    return juce::jmax (tabDepth * 2, (int) std::ceil (glyphs.getBoundingBox (0, -1, true).getWidth())
                               + 16 + grip);
 }
 
@@ -558,15 +601,16 @@ void SPASynthLookAndFeel::drawTabButton (juce::TabBarButton& button, juce::Graph
 
     if (front)
     {
-        g.setColour (t.display);
-        g.fillRoundedRectangle (bounds, 2.0f);
+        // Faceplate restyle: no display-black pill behind the front tab —
+        // just the accent underline against the continuous surface, with
+        // brighter text (below) carrying the "selected" read.
         auto underline = bounds;
         g.setColour (t.accent);
         g.fillRect (underline.removeFromBottom (2.0f).reduced (4.0f, 0.0f));
     }
     else if (isMouseOver)
     {
-        g.setColour (t.display.withAlpha (0.5f));
+        g.setColour (t.seam.withAlpha (0.6f));
         g.fillRoundedRectangle (bounds, 2.0f);
     }
 
@@ -580,6 +624,65 @@ void SPASynthLookAndFeel::drawTabButton (juce::TabBarButton& button, juce::Graph
 
 void SPASynthLookAndFeel::drawTabbedButtonBarBackground (juce::TabbedButtonBar&, juce::Graphics&)
 {
+}
+
+void SPASynthLookAndFeel::drawTabAreaBehindFrontButton (juce::TabbedButtonBar& bar, juce::Graphics& g,
+                                                        int w, int h)
+{
+    // This is where the light rule under every tab strip actually comes
+    // from: it's JUCE's stock LookAndFeel_V3::drawTabAreaBehindFrontButton
+    // (never overridden before now -- drawTabbedButtonBarBackground above is
+    // a no-op, and drawTabButton only paints each button itself), which
+    // draws a 1px TabbedButtonBar::tabOutlineColourId line along the bar's
+    // own bottom edge (the bar component's height IS the tab-strip depth --
+    // just the tab-label row itself, not the panel below). It also paints
+    // its own very faint
+    // built-in shadow -- replaced here with a real one matched to the
+    // faceplate's shadow language.
+    //
+    // Faceplate restyle: recess the whole strip -- an inner shadow cast
+    // UPWARDS from that line, darkest right above it and fading out as it
+    // rises through the tab-strip area, so the selector reads as milled
+    // into the plate rather than floating on it. Same family as
+    // ContentComponent::paint's row-overhang shadows (crisp edge + eased
+    // falloff), same alphas -- only the geometry is mirrored (shadow rises
+    // from the strip's own bottom edge instead of falling from a row
+    // boundary) and the falloff length is capped to the strip's actual
+    // depth so it never bleeds into the tab labels' own row above.
+    if (bar.getOrientation() != juce::TabbedButtonBar::TabsAtTop)
+    {
+        // Not used anywhere in this codebase (every tab bar runs TabsAtTop),
+        // but keep other orientations correct via the stock JUCE look.
+        juce::LookAndFeel_V3::drawTabAreaBehindFrontButton (bar, g, w, h);
+        return;
+    }
+
+    // Literally the same recipe as the row-overhang shadow (same startAlpha,
+    // same eased stop shape -- via draw::easedShadowGradient) so the two
+    // read as one shadow language. An earlier iteration boosted this strip's
+    // alpha to 0.62, reasoning that its near-black surface (no lighter card
+    // underneath, unlike the module rows) would wash the recipe out --
+    // pixel-sampling proved that reasoning wrong, and Mike decided he
+    // prefers the subtler read anyway. Both call sites share
+    // draw::shadowStartAlpha (Theme.h) so they can't drift apart; lightened
+    // from 0.42f to 0.30f (2026-08-31, Mike: "a little dark"). Geometry
+    // stays mirrored (the shadow rises from the strip's own bottom rule
+    // rather than falling from a row boundary) and the falloff stays capped
+    // to the strip's actual depth so it never bleeds into the tab labels'
+    // own row above.
+    const float shadowLength = juce::jmin (13.0f, (float) h);
+    const float lineY = (float) h - 1.0f;
+
+    g.setGradientFill (draw::easedShadowGradient ({ 0.0f, lineY }, { 0.0f, lineY - shadowLength },
+                                                  draw::shadowStartAlpha));
+    g.fillRect (juce::Rectangle<float> (0.0f, lineY - shadowLength, (float) w, shadowLength));
+
+    // The rule itself -- kept exactly as stock JUCE draws it (same colour,
+    // same 1px bottom edge) so the tab bar's contract with the rest of the
+    // look and feel (tabOutlineColourId) is unchanged; it's now the lip the
+    // recess reads against instead of a bare divider.
+    g.setColour (bar.findColour (juce::TabbedButtonBar::tabOutlineColourId));
+    g.fillRect (juce::Rectangle<int> (0, h - 1, w, 1));
 }
 
 } // namespace spa::ui

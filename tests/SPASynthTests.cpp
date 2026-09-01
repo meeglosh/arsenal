@@ -2313,6 +2313,14 @@ namespace
             waitForSample (proc, 0, 15000);
             setParam (proc, id::oscSlot (0, id::osc::mode),
                       (float) (int) spa::params::OscMode::sample);
+
+            // Non-default start/loop points so every render below actually
+            // shows the loop-point overlay (defaults are start=0, loop 0..1,
+            // which would just band the whole waveform edge-to-edge). loop
+            // itself defaults on already.
+            setParam (proc, id::oscSlot (0, id::osc::sampleStart), 0.05f);
+            setParam (proc, id::oscSlot (0, id::osc::loopStart), 0.2f);
+            setParam (proc, id::oscSlot (0, id::osc::loopEnd), 0.8f);
         }
 
         // Remember the user's accents so the custom-accent render below
@@ -3861,6 +3869,229 @@ namespace
         }
     }
 
+    // Regression for a bug Mike hit in Logic: the ENV/LFO tab bars rendered
+    // with generous, evenly-spaced default widths, then snapped to a
+    // condensed/bunched-left layout the instant another tab was clicked.
+    // Root cause: ContentComponent used to give itself its one-and-only real
+    // (untransformed) layout pass INSIDE ITS OWN CONSTRUCTOR, before
+    // SPASynthEditor ever parented it -- so every TabbedButtonBar's
+    // getLookAndFeel() fell through to JUCE's global default LookAndFeel
+    // (Component::getLookAndFeel() walks the live parent chain and falls
+    // back when it finds no ancestor with one set) for that first paint,
+    // instead of SPASynthLookAndFeel. SPASynthEditor::resized() only ever
+    // applies an AffineTransform to `content` for the fixed-aspect scaling
+    // shell -- it never calls content->setSize()/setBounds() again -- so
+    // that wrong-LookAndFeel layout silently stuck until something forced a
+    // fresh TabbedButtonBar::resized(), e.g. TabbedButtonBar::setCurrentTabIndex()
+    // (unconditional resized() regardless of whether bounds changed), which
+    // by then correctly resolved SPASynthLookAndFeel and condensed the tabs
+    // to its (narrower, text-fit-only) widths. Fixed two ways: (1)
+    // ContentComponent's constructor no longer calls setSize() on itself --
+    // SPASynthEditor's constructor does, AFTER addAndMakeVisible(*content),
+    // so the one real layout pass always resolves the correct LookAndFeel;
+    // (2) SPASynthLookAndFeel::getTabButtonBestWidth now floors at
+    // tabDepth*2 (matching JUCE's own LookAndFeel_V2 default convention)
+    // instead of a bare 36px, so short tab names keep the generous look
+    // deterministically rather than by accident.
+    static void tabLayoutInvarianceTest()
+    {
+        std::cout << "tabLayoutInvarianceTest\n";
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+
+        juce::TabbedComponent* envTabs = nullptr;
+        juce::TabbedComponent* lfoTabs = nullptr;
+        juce::TabbedComponent* filterTabs = nullptr;
+        juce::TabbedComponent* fxTabs = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (auto* t = dynamic_cast<juce::TabbedComponent*> (&c))
+            {
+                if (t->getTabNames().contains ("ENV 2"))
+                    envTabs = t;
+                if (t->getTabNames().contains ("LFO 2"))
+                    lfoTabs = t;
+                if (t->getTabNames().contains ("FILTER 2"))
+                    filterTabs = t;
+                if (t->getTabNames().contains ("TREM/VIB"))
+                    fxTabs = t;
+            }
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (envTabs != nullptr && lfoTabs != nullptr && filterTabs != nullptr && fxTabs != nullptr,
+                "all four tab bars found (envTabs/lfoTabs/filterTabs/fxTabs)");
+        if (envTabs == nullptr || lfoTabs == nullptr || filterTabs == nullptr || fxTabs == nullptr)
+            return;
+
+        auto snapshotBounds = [] (juce::TabbedComponent& tabs)
+        {
+            std::vector<juce::Rectangle<int>> bounds;
+            auto& bar = tabs.getTabbedButtonBar();
+            for (int i = 0; i < bar.getNumTabs(); ++i)
+                bounds.push_back (bar.getTabButton (i) != nullptr
+                                       ? bar.getTabButton (i)->getBounds() : juce::Rectangle<int>());
+            return bounds;
+        };
+
+        const auto envBefore = snapshotBounds (*envTabs);
+        const auto lfoBefore = snapshotBounds (*lfoTabs);
+        const auto filterBefore = snapshotBounds (*filterTabs);
+        const auto fxBefore = snapshotBounds (*fxTabs);
+
+        // Every tab in every bar must have a real (non-empty) width right
+        // from the first show -- the whole point is that the default IS the
+        // final layout, not a placeholder that later "settles".
+        for (const auto& b : envBefore)
+            expect (b.getWidth() > 0, "envTabs tab has a real width before any selection change");
+
+        envTabs->setCurrentTabIndex (1);
+        lfoTabs->setCurrentTabIndex (2);
+        filterTabs->setCurrentTabIndex (1);
+        fxTabs->setCurrentTabIndex (fxTabs->getTabNames().indexOf ("TREM/VIB"));
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        auto expectUnchanged = [&] (const char* name, juce::TabbedComponent& tabs,
+                                    const std::vector<juce::Rectangle<int>>& before)
+        {
+            const auto after = snapshotBounds (tabs);
+            bool same = after.size() == before.size();
+            for (size_t i = 0; same && i < before.size(); ++i)
+                same = after[i] == before[i];
+            if (! same)
+            {
+                std::cout << "  " << name << " bounds changed after selection:\n";
+                for (size_t i = 0; i < before.size(); ++i)
+                    std::cout << "    tab " << i << " before=" << before[i].toString()
+                              << " after=" << (i < after.size() ? after[i].toString() : "?") << "\n";
+            }
+            expect (same, juce::String (name) + " tab bounds unchanged after switching the selected tab");
+        };
+
+        expectUnchanged ("envTabs", *envTabs, envBefore);
+        expectUnchanged ("lfoTabs", *lfoTabs, lfoBefore);
+        expectUnchanged ("filterTabs", *filterTabs, filterBefore);
+        expectUnchanged ("fxTabs", *fxTabs, fxBefore);
+
+        // Switch back to the original tabs too -- bounds must be identical
+        // both ways, not just stable after the first click.
+        envTabs->setCurrentTabIndex (0);
+        lfoTabs->setCurrentTabIndex (0);
+        filterTabs->setCurrentTabIndex (0);
+        fxTabs->setCurrentTabIndex (0);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        expectUnchanged ("envTabs (back to original)", *envTabs, envBefore);
+        expectUnchanged ("lfoTabs (back to original)", *lfoTabs, lfoBefore);
+        expectUnchanged ("filterTabs (back to original)", *filterTabs, filterBefore);
+        expectUnchanged ("fxTabs (back to original)", *fxTabs, fxBefore);
+
+        editor->removeFromDesktop();
+    }
+
+    // Regression for a second restyle bug: TREM/VIB's bottom control row
+    // (TREM SHAPE / TREM STEREO / TREM MIX / VIB RATE) had its caption
+    // labels rendered half-clipped at the base window size. Root cause:
+    // FXPanel::resized() capped the SectionPanel grid's height at
+    // area.getHeight()-44 to always leave the FXDisplay scope a minimum, so
+    // when a section needed two full control rows the grid got LESS height
+    // than SectionPanel::heightForWidth() said it needed -- SectionPanel
+    // itself lays out fixed-cellHeight rows from the top with no awareness
+    // of whether it actually got enough room, so the second row (and its
+    // bottom-anchored caption labels) rendered past the panel's own bottom
+    // edge and got clipped there. Fix: FXPanel::resized() now always gives
+    // the control grid its full needed height; the scope/display shrinks
+    // into whatever remains instead (Mike's call: visualizers may shrink,
+    // caption labels never clip).
+    static void fxPanelLabelClippingTest()
+    {
+        std::cout << "fxPanelLabelClippingTest\n";
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        juce::TabbedComponent* fxTabs = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (auto* t = dynamic_cast<juce::TabbedComponent*> (&c))
+                if (t->getTabNames().contains ("TREM/VIB"))
+                    fxTabs = t;
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (fxTabs != nullptr, "fxTabs found");
+        if (fxTabs == nullptr)
+            return;
+
+        // Every FXPanel-backed tab (the ones with an auto-built SectionPanel
+        // grid, per the FXPanel::resized() contract above) -- the bespoke
+        // panels (EQ, LIMIT, CONV) have no SectionPanel and are skipped.
+        const auto minLabelHeight = spa::ui::metrics::smallFont().getHeight() - 1.0f;
+
+        for (const auto& tabName : { "DIST", "CHORUS", "DELAY", "REVERB", "MOD", "TREM/VIB" })
+        {
+            const auto index = fxTabs->getTabNames().indexOf (tabName);
+            expect (index >= 0, juce::String (tabName) + " tab found");
+            if (index < 0)
+                continue;
+
+            auto* panel = fxTabs->getTabContentComponent (index);
+            expect (panel != nullptr, juce::String (tabName) + " panel content found");
+            if (panel == nullptr)
+                continue;
+
+            spa::ui::SectionPanel* controls = nullptr;
+            std::function<void (juce::Component&)> findSection = [&] (juce::Component& c)
+            {
+                if (controls == nullptr)
+                    controls = dynamic_cast<spa::ui::SectionPanel*> (&c);
+                for (auto* child : c.getChildren())
+                    if (controls == nullptr)
+                        findSection (*child);
+            };
+            findSection (*panel);
+
+            expect (controls != nullptr, juce::String (tabName) + " SectionPanel found");
+            if (controls == nullptr)
+                continue;
+
+            int labelsChecked = 0;
+            for (auto* child : controls->getChildren())
+            {
+                auto* label = dynamic_cast<juce::Label*> (child);
+                if (label == nullptr || ! label->isVisible())
+                    continue;
+
+                ++labelsChecked;
+                const auto bottomOk = label->getBottom() <= controls->getHeight();
+                const auto heightOk = (float) label->getHeight() >= minLabelHeight;
+                if (! bottomOk || ! heightOk)
+                    std::cout << "  " << tabName << " label '" << label->getText()
+                              << "' bounds=" << label->getBounds().toString()
+                              << " panelHeight=" << controls->getHeight() << "\n";
+                expect (bottomOk, juce::String (tabName) + " label '" + label->getText()
+                                       + "' bottom is within the panel's bounds");
+                expect (heightOk, juce::String (tabName) + " label '" + label->getText()
+                                       + "' has its full font height (not squashed)");
+            }
+            expect (labelsChecked > 0, juce::String (tabName) + " had caption labels to check");
+        }
+    }
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -3928,6 +4159,8 @@ int main (int argc, char* argv[])
     dependentEnableTest();
     presetBrowserFocusGrabTest();
     presetBrowserKeyboardFocusTest();
+    tabLayoutInvarianceTest();
+    fxPanelLabelClippingTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

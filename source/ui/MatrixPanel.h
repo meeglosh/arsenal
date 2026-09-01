@@ -68,7 +68,17 @@ public:
     void resized() override
     {
         constexpr int rowHeight = 25;
-        auto area = getLocalBounds().withTrimmedTop (20).reduced (6, 4);
+        auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (6, 4);
+
+        // The panel is never tall enough to show all 16 rows at once (this
+        // is a scrolling list by design -- see the class comment), but the
+        // viewport's own bottom edge rarely lands on a row boundary, so
+        // whatever row straddles it gets rendered half-cut against the
+        // panel's bottom. Clamp the viewport to a whole number of rows so
+        // the last VISIBLE row is always fully shown; the leftover pixels
+        // become a small bottom margin instead of a sliced row.
+        const auto visibleRows = juce::jmax (1, area.getHeight() / rowHeight);
+        area = area.withHeight (juce::jmin (area.getHeight(), visibleRows * rowHeight));
         viewport.setBounds (area);
 
         const auto contentWidth = area.getWidth() - viewport.getScrollBarThickness();

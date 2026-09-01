@@ -9,17 +9,27 @@ namespace spa::ui
 // through here so the whole look can be restyled without touching component
 // code.
 //
-// Direction (per reference set: Serum 2 / Massive X / Pigments / MiniFreak):
-// flat graphite surfaces, hairline rules, display-first modules, thin-ring
-// knobs. Both accents default to the Silverplatter teal (#51D0BF — the old
-// orange/cyan pair read too close to MiniFreak) and are user-tintable via
-// the header colour picker, where the two roles can diverge.
+// Direction (faceplate restyle): one continuous charcoal-graphite surface —
+// no per-module cards, no LED-screen display wells. Modules are separated by
+// dark recessed seams and soft horizontal shadow bands painted directly on
+// the surface (see ContentComponent::paint), not by their own panel fills.
+// `panel` intentionally equals `background` so anything that still fills
+// with it (transient overlays: popups, the preset drawer, call-outs) reads
+// as the same surface rather than a card. Flat knobs, hairline rules and
+// both teal accents (#51D0BF, user-tintable) are unchanged from the prior
+// direction.
 struct Theme
 {
-    juce::Colour background;      // window
-    juce::Colour panel;           // module panels
-    juce::Colour display;         // scope/curve display wells
-    juce::Colour header;          // top bar
+    juce::Colour background;      // window / continuous faceplate surface
+    juce::Colour panel;           // transient overlay fills (popups, drawer) — == background
+    juce::Colour display;         // recessed fields (combo/chip backgrounds); NOT used by scopes/wells
+    juce::Colour header;          // top bar / footer rail
+    juce::Colour seam;            // recessed vertical grooves between modules, tab hover fill,
+                                   // call-out edges -- NOT the OutputMeter lane, see meterLane
+    juce::Colour meterLane;       // OutputMeter's unlit bar lane -- deliberately lighter than
+                                   // seam (iteration 3: seam darkened into near-display-well
+                                   // territory, which read as a dead/black meter; split off so
+                                   // the groove could go darker without dragging the meter down)
     juce::Colour textPrimary;
     juce::Colour textSecondary;
     juce::Colour accent;          // audio signal, primary actions
@@ -30,19 +40,24 @@ struct Theme
 
     static Theme dark()
     {
-        // Deep blue-teal register per the redesign mock.
+        // Flat charcoal-graphite faceplate register. (Iteration 2, 2026-08-30:
+        // darkened toward Mike's design spec — background sampled directly off
+        // the spec mock, the rest offset-preserved from the old background so
+        // every control keeps its original relative contrast.)
         Theme t;
-        t.background    = juce::Colour (0xff0c1114);
-        t.panel         = juce::Colour (0xff151c21);
-        t.display       = juce::Colour (0xff0a0f13);
-        t.header        = juce::Colour (0xff090d10);
+        t.background    = juce::Colour (0xff181d20);
+        t.panel         = t.background;
+        t.display       = juce::Colour (0xff0d1318);
+        t.header        = juce::Colour (0xff13171a);
+        t.seam          = t.background.darker (1.3f);
+        t.meterLane     = t.background.darker (0.45f);   // the old seam tone, kept for the meter
         t.textPrimary   = juce::Colour (0xffe7ecef);
-        t.textSecondary = juce::Colour (0xff7f8d97);
+        t.textSecondary = juce::Colour (0xff8b989f);
         t.accent        = juce::Colour (0xff51d0bf);
         t.accentMod     = juce::Colour (0xff51d0bf);
-        t.outline       = juce::Colour (0xff222d35);
-        t.knobFace      = juce::Colour (0xff1e262d);
-        t.knobTrack     = juce::Colour (0xff2c3841);
+        t.outline       = juce::Colour (0xff2a3337);
+        t.knobFace      = juce::Colour (0xff232b31);
+        t.knobTrack     = juce::Colour (0xff2f393e);
         return t;
     }
 
@@ -69,6 +84,18 @@ namespace metrics
     inline constexpr int keyboardStripHeight = 96;   // on-screen keyboard when shown
     inline constexpr int unit = 8;
     inline constexpr float cornerRadius = 7.0f;  // softer, elevated panels
+
+    // Section-title row (draw::sectionHeader) reserved from the top of every
+    // module panel's bounds. Shared so any site that needs to know where the
+    // header ends and content begins -- OscStrip's headerNameRect click/popup
+    // hit-test chief among them (iteration 3 restyle bug: it used to hardcode
+    // its own copy of this, and every resized() below independently re-trimmed
+    // it too) -- can't drift out of sync with what sectionHeader() actually
+    // paints. Grew from 20 (iteration 2) for more air around the title, per
+    // Mike's spec mock.
+    inline constexpr int sectionHeaderHeight = 32;
+    inline constexpr int sectionHeaderTopInset = 6;    // air above the title text
+    inline constexpr int sectionHeaderLeftInset = 12;  // air to the left of the title text
 
     inline juce::Font titleFont()   { return juce::Font (juce::FontOptions (17.0f, juce::Font::bold)); }
     inline juce::Font sectionFont()
@@ -101,16 +128,44 @@ namespace draw
 
     // MiniFreak-style section header: SMALL CAPS title, thin rule to the
     // right, optional right-aligned readout. Returns the content area below.
+    // recess: draw the rule plus the eased inner shadow rising from it (the
+    // same recessed-channel look a tab strip casts). false omits both --
+    // title (and readout) only -- for headers that sit directly beneath a
+    // tab strip already carrying that same rule + recess (FilterPanel inside
+    // filterTabs, FXPanel inside fxTabs), so the module doesn't show two
+    // stacked rule/recessed tiers.
     juce::Rectangle<int> sectionHeader (juce::Graphics&, juce::Rectangle<int> bounds,
                                         const juce::String& title,
                                         const juce::String& readout = {},
-                                        juce::Colour titleColour = {});
+                                        juce::Colour titleColour = {},
+                                        bool recess = true);
 
-    // Display well behind scopes/curves.
-    void displayWell (juce::Graphics&, juce::Rectangle<float>);
+    // Display well behind scopes/curves. centreLine draws a faint
+    // zero/centre reference line (useful for bipolar scopes, pointless for
+    // plain list/text containers that happen to reuse this helper).
+    void displayWell (juce::Graphics&, juce::Rectangle<float>, bool centreLine = true);
 
     // Curve stroke with a soft under-glow, the reference look for scopes.
     void glowStroke (juce::Graphics&, const juce::Path&, juce::Colour, float thickness = 1.8f);
+
+    // Eased cast-shadow gradient shared by every recessed edge on the
+    // faceplate (ContentComponent::paint's row-overhang shadows,
+    // SPASynthLookAndFeel::drawTabAreaBehindFrontButton's tab-strip recess):
+    // darkest (alpha = startAlpha) at `from`, fading through three eased
+    // stops -- steep near the edge, long soft tail -- to fully transparent
+    // at `to`, rather than a flat linear ramp, so the band never reads as a
+    // visible strip. Pass `from`/`to` flipped to fade the shadow in the
+    // other direction (e.g. upward into a recess instead of downward off an
+    // overhang). Both call sites must use the same startAlpha so the two
+    // shadow languages can never drift apart again.
+    juce::ColourGradient easedShadowGradient (juce::Point<float> from, juce::Point<float> to,
+                                              float startAlpha);
+
+    // Single tunable for both shadow-language call sites (ContentComponent::
+    // paint's row-overhang shadows, SPASynthLookAndFeel::
+    // drawTabAreaBehindFrontButton's tab-strip recess). Was 0.42f; Mike
+    // called both a little dark, lightened to 0.30f (2026-08-31).
+    constexpr float shadowStartAlpha = 0.30f;
 }
 
 } // namespace spa::ui
