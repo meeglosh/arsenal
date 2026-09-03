@@ -10,6 +10,37 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-02): v1.0.12 built + staged (pending Mike's sign-off); this is the redesign build
+
+**1.0.11 was never sent.** Mike found one more bug in it — the VOICE
+call-out's MODE/PRIORITY dropdowns barely stayed open and selections never
+registered (`8cce7f1`: the call-out launched with a null parent and, after
+the QWERTY focus fixes, contained nothing focusable, so CallOutBox's modal
+grab no-opped and PopupMenu's doesAnyJuceCompHaveFocus dismiss check fell
+into a racy native key-window fallback; fixed by parenting to the top-level
+component, leaving VoicePanel focusable as the ONE documented exception,
+sweeping its on-demand children, and handing focus back to the keyboard on
+dismissal; `voicePanelCallOutFocusTest`, suite 385). Mike confirmed the fix
+in Logic, then called the next build **1.0.12** (`3714477`).
+
+**1.0.12 = the 2026-09-01 redesign section below plus that fix.** Built +
+signed + notarized + staged 2026-09-02: macOS md5
+`b3db6f9304ac701294e0e7318eb34ab8`, Windows md5
+`92aff81aada650ed56039f265bc12c99` (draft release `ci-windows-3714477`),
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.12/`. Dev copies cleared. All
+1.0.10/1.0.11 artifacts in dist/ are obsolete and were never sent.
+**Release-build sequencing rule: never push ANY commit between a release
+sha's push and fetching its CI exe — the workflow cancels in-progress runs
+(bit us on 1.0.11; docs commits go after the fetch).**
+
+**Remaining:** Mike installs 1.0.12 and signs off in Logic (the full
+gauntlet: QWERTY everywhere incl. the VOICE call-out, library folder of
+loose WAVs, dimming, silent preset clicks, banks, loop-point markers, the
+redesign, soft bypass) → send to Paul and Phil → launch checklist
+(Shopify build-out, announce) unchanged below. Bump to 1.0.13 for any
+change after it goes out.
+
 ## Current state (2026-09-01): v1.0.11 — faceplate redesign merged to main, release build in progress
 
 **1.0.10 was never sent; Mike chose a fresh number for the redesign.**
