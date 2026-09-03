@@ -1,5 +1,30 @@
 # SPASynth changelog
 
+## 1.0.12
+
+A small fix on top of the 1.0.11 redesign.
+
+- Fixed the VOICE panel's MODE and PRIORITY dropdowns. They could refuse to
+  stay open unless you held the mouse down, and selections would not
+  register. Both now open and select normally, and closing the panel hands
+  control straight back to QWERTY note play.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+- Runs on macOS 11 or later (Apple silicon and Intel) as AU, VST3, and
+  Standalone, and on Windows 10 or later as VST3 and Standalone.
+- The Limiter's optional lookahead mode adds a small amount of latency and
+  reports it to your host automatically so playback stays in sync. It's off
+  by default, so live play stays at zero added latency until you turn it on.
+- Known limitation: on a Mac with a Retina laptop screen plus an external
+  monitor, the standalone window may not drag across onto the external display
+  (a fixed-aspect window plus mixed-resolution quirk in the window system). It
+  works normally as a plugin in your DAW. Workaround: set the external display
+  as your main display in System Settings, or use SPASynth as a plugin.
+
 ## 1.0.11
 
 A visual redesign of the faceplate, plus a tester-requested feature and two
