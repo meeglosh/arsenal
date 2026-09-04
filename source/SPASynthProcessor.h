@@ -48,7 +48,17 @@ public:
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
-    double getTailLengthSeconds() const override { return fxChain.tailSeconds (fxParams); }
+    // Hosts may call getTailLengthSeconds() from any thread at any time (not
+    // necessarily the message thread), while the audio thread rewrites
+    // `fxParams` every block in updateFXParams() -- reading fxChain.tailSeconds
+    // (fxParams) directly here would race a non-atomic struct. Instead
+    // updateFXParams() computes the tail seconds itself (it already has every
+    // input) and publishes the RESULT into publishedTailSeconds; this just
+    // reads that atomic. See publishedTailSeconds's declaration below.
+    double getTailLengthSeconds() const override
+    {
+        return publishedTailSeconds.load (std::memory_order_relaxed);
+    }
 
     int getNumPrograms() override { return 1; }
     int getCurrentProgram() override { return 0; }
@@ -74,6 +84,7 @@ public:
     juce::String getSampleError (int slot) const;
     juce::File getSampleFile (int slot) const
     {
+        const juce::ScopedLock sl (stateStringsLock);
         return juce::File (slotSamples[(size_t) slot].path);
     }
 
@@ -181,9 +192,10 @@ private:
     void timerCallback() override;
 
     // AudioProcessorValueTreeState::Listener. Registered ONLY for the osc-slot
-    // mode parameters (see the ctor), to lazily allocate Pluck buffers -- see
-    // ensurePluckAllocatedForSlot() and the comment on its definition for why
-    // this callback is safely message-thread-only.
+    // mode parameters (see the ctor). Deliberately does NOT allocate Pluck
+    // buffers synchronously any more -- see the comment on its definition:
+    // this callback CAN fire from the real-time audio thread under host
+    // automation. timerCallback()'s fallback sweep is the sole allocator.
     void parameterChanged (const juce::String& parameterID, float newValue) override;
     void ensurePluckAllocatedForSlot (int slot);
 
@@ -195,7 +207,14 @@ private:
     dsp::SharedState::GlideState glideState;   // updated by the synth's note hooks
     dsp::GlideSynthesiser synth { shared };
     dsp::FXChain fxChain;
-    dsp::FXChain::Params fxParams;
+    dsp::FXChain::Params fxParams;   // audio thread only -- see getTailLengthSeconds() above
+
+    // Published snapshot of fxChain.tailSeconds(fxParams), written by
+    // updateFXParams() (audio thread, every block) and read by
+    // getTailLengthSeconds() (host thread, unspecified). Relaxed is enough --
+    // a stray call getting last block's tail estimate instead of this block's
+    // is harmless, we just need to never tear a partially-written value.
+    std::atomic<double> publishedTailSeconds { 0.0 };
 
     // Message-thread flags: once a slot's Pluck (Karplus-Strong) buffers
     // have been lazily allocated across all voices (see parameterChanged()/
@@ -238,6 +257,18 @@ private:
     float lastModWheel = 0.0f;
     float lastAftertouch = 0.0f;
     std::array<double, params::numLFOs> lfoPhaseAccum {};  // free-running LFO phases
+
+    // Guards every read AND write of the small per-slot bookkeeping strings
+    // below (SlotTable::path/error, SlotSample::path/error) -- NOT `current`/
+    // `live`, which have their own scheme (see below). juce::String is
+    // refcounted copy-on-write, so an unsynchronized read racing a
+    // message-thread write (installSample/installTable) can corrupt the
+    // refcount and crash; a host that calls getStateInformation() off the
+    // message thread during a save is exactly that race. Never held during
+    // audio processing (nothing here is touched by processBlock), and never
+    // held across I/O or allocation-heavy work -- just the string copies
+    // themselves. `mutable` so const getters (getSampleError() etc.) can lock.
+    mutable juce::CriticalSection stateStringsLock;
 
     // --- Wavetable storage -------------------------------------------------
     // Audio thread reads `live` each block; message thread owns `current` and

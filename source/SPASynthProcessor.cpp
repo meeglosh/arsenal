@@ -261,22 +261,33 @@ SPASynthProcessor::~SPASynthProcessor()
         apvts.removeParameterListener (params::id::oscSlot (s, params::id::osc::mode), this);
 }
 
-void SPASynthProcessor::parameterChanged (const juce::String& parameterID, float)
+void SPASynthProcessor::parameterChanged (const juce::String&, float)
 {
-    // Only the osc-slot mode parameters are registered (see the ctor).
-    // AudioProcessorParameter::setValueNotifyingHost() -- the sole path that
-    // reaches an AudioProcessorValueTreeState::Listener -- is, by JUCE
-    // convention, only ever called from the UI/message thread (a user
-    // twiddling a control) or from a message-thread preset restore
-    // (restoreStateTree()'s apvts.replaceState()). Host automation instead
-    // writes parameters via the plain setValue() path, which does NOT notify
-    // listeners, so this callback can never arrive from the audio thread --
-    // safe to allocate here. (getCallbackLock() is JUCE's CriticalSection,
-    // which is recursive, so this is also safe to call reentrantly from
-    // inside restoreStateTree()'s own ScopedLock on the same thread.)
-    for (int s = 0; s < params::numOscSlots; ++s)
-        if (parameterID == params::id::oscSlot (s, params::id::osc::mode))
-            ensurePluckAllocatedForSlot (s);
+    // Intentionally does nothing. This used to call ensurePluckAllocatedForSlot()
+    // synchronously here, on the theory that AudioProcessorParameter::
+    // setValueNotifyingHost() -- the sole path that reaches an
+    // AudioProcessorValueTreeState::Listener -- is only ever called from the
+    // message thread. That theory is WRONG for at least VST3: the wrapper's
+    // process() (the real-time audio callback, IAudioProcessor::process) reads
+    // host automation via processParameterChanges() and applies each point with
+    // setValueAndNotifyIfChanged(), which calls setValueNotifyingHost()
+    // directly -- see
+    // libs/JUCE/modules/juce_audio_plugin_client/juce_audio_plugin_client_VST3.cpp
+    // (processParameterChanges ~3492, called from process() ~3587;
+    // setValueAndNotifyIfChanged ~827-833). That flows straight into
+    // AudioProcessorParameter::sendValueChangedMessageToListeners()
+    // (juce_AudioProcessorParameter.cpp:111) -> APVTS's ParameterAdapter::
+    // parameterValueChanged (juce_AudioProcessorValueTreeState.cpp:148) -> this
+    // callback, all on the audio thread, mid-block, under automation playback.
+    // So this must never allocate, lock a non-realtime-safe lock, or otherwise
+    // do non-RT-safe work. ensurePluckAllocatedForSlot() (message-thread only:
+    // it takes getCallbackLock() and touches std::vector) moved to be called
+    // ONLY from timerCallback()'s unconditional per-slot sweep, which already
+    // runs every tick and is a cheap no-op once a slot is allocated. Worst case
+    // this adds up to one timer period (~150ms) of latency between an
+    // automated mode flip into Pluck and the buffers existing; PluckString::
+    // noteOn()/getNextSample() (ExtraOscillators.h) both guard on buffer.empty()
+    // and are silent rather than crashing in that window.
 }
 
 void SPASynthProcessor::ensurePluckAllocatedForSlot (int s)
@@ -331,25 +342,52 @@ void SPASynthProcessor::timerCallback()
     if (raw.fx.convDecay != nullptr)
         fxChain.setConvolutionShaping (raw.fx.convDecay->load(), raw.fx.convDamping->load());
 
-    // Fallback safety net for the lazy Pluck-buffer allocation normally done
-    // synchronously in parameterChanged(): catches a slot that was already in
-    // Pluck mode before a listener was registered (e.g. a state restore path
-    // that bypasses parameterChanged) or any other edge case. Cheap no-op
-    // once a slot is allocated (pluckAllocated guards it).
+    // Lazy Pluck-buffer allocation: the SOLE allocator (parameterChanged() is
+    // deliberately a no-op now -- see its definition, it can fire on the audio
+    // thread under host automation and must not allocate). Sweeps every slot
+    // unconditionally each tick; cheap no-op once a slot is allocated
+    // (pluckAllocated guards it) so this is fine to run at timer rate.
     for (int s = 0; s < params::numOscSlots; ++s)
         ensurePluckAllocatedForSlot (s);
 
-    // Anything retired more than one timer period ago can no longer be in
-    // use by the audio thread (it re-reads `live` every block).
-    retiredTables.clear();
-    retiredSamples.clear();
+    // Anything retired more than one timer period ago is normally long past
+    // any in-flight processBlock (voices/processBlock re-read the `live`
+    // atomic pointer every block rather than caching it -- see SPASynthVoice's
+    // per-block slot-state refresh and renderEngine() below). But "normally"
+    // isn't airtight: a single processBlock call stalling more than one timer
+    // period (150ms) across a content swap would still be mid-flight when this
+    // runs. Close that hole for real rather than relying on the timing gap:
+    // take the SAME lock processBlock holds for its entire duration
+    // (getCallbackLock()) around the clears, so a clear can never overlap an
+    // in-flight block regardless of how long that block takes. Freeing under
+    // the lock (releasing the shared_ptrs, which drops audio-buffer memory) is
+    // acceptable here -- these are plain deallocations, not I/O, so they're
+    // fast and bounded, unlike the stall they prevent. Everything above this
+    // point (oversampling rebuild, FX reset, latency, IR reshape, Pluck sweep)
+    // deliberately stays OUTSIDE this lock or takes it only for its own brief
+    // scope, since none of it needs to be atomic with this clear.
+    {
+        const juce::ScopedLock sl (getCallbackLock());
+        retiredTables.clear();
+        retiredSamples.clear();
+    }
 }
 
 void SPASynthProcessor::installSample (int slot, std::shared_ptr<const dsp::SampleData> sample,
                                       juce::String path, juce::String error)
 {
     auto& ss = slotSamples[(size_t) slot];
-    ss.error = std::move (error);
+
+    // path/error are read by buildStateTree()/getStateInformation(), which a
+    // host may call off the message thread during a save -- see
+    // stateStringsLock's declaration. Keep the locked span tight (just the
+    // string writes); `current`/`live`/retiredSamples have their own scheme.
+    {
+        const juce::ScopedLock sl (stateStringsLock);
+        ss.error = std::move (error);
+        if (sample != nullptr)
+            ss.path = std::move (path);
+    }
 
     if (sample != nullptr)
     {
@@ -357,7 +395,6 @@ void SPASynthProcessor::installSample (int slot, std::shared_ptr<const dsp::Samp
             retiredSamples.push_back (std::move (ss.current));
         ss.current = std::move (sample);
         ss.live.store (ss.current.get());
-        ss.path = std::move (path);
     }
 
     sendChangeMessage();
@@ -427,6 +464,7 @@ juce::String SPASynthProcessor::getSampleName (int slot) const
 
 juce::String SPASynthProcessor::getSampleError (int slot) const
 {
+    const juce::ScopedLock sl (stateStringsLock);
     return slotSamples[(size_t) slot].error;
 }
 
@@ -618,14 +656,21 @@ void SPASynthProcessor::installTable (int slot, std::shared_ptr<const dsp::Wavet
                                      juce::String path, juce::String error)
 {
     auto& st = slotTables[(size_t) slot];
-    st.error = std::move (error);
+
+    // See the matching comment in installSample() -- same stateStringsLock
+    // rationale, kept to just the string writes.
+    {
+        const juce::ScopedLock sl (stateStringsLock);
+        st.error = std::move (error);
+        if (table != nullptr)
+            st.path = std::move (path);
+    }
 
     if (table != nullptr)
     {
         retiredTables.push_back (std::move (st.current));
         st.current = std::move (table);
         st.live.store (st.current.get());
-        st.path = std::move (path);
     }
 
     sendChangeMessage();
@@ -673,6 +718,7 @@ juce::String SPASynthProcessor::getWavetableName (int slot) const
 
 juce::String SPASynthProcessor::getWavetableError (int slot) const
 {
+    const juce::ScopedLock sl (stateStringsLock);
     return slotTables[(size_t) slot].error;
 }
 
@@ -940,6 +986,13 @@ void SPASynthProcessor::updateFXParams()
 
     desiredLatency.store (fxChain.limiterLatencySamples (p), std::memory_order_relaxed);
     p.bpm            = shared.bpm;
+
+    // Publish the tail estimate for getTailLengthSeconds() (host thread,
+    // unspecified) to read -- see the atomic's declaration in the header.
+    // fxParams itself is audio-thread-only and non-atomic, so it can't be
+    // read directly from an arbitrary host thread without racing this
+    // function's writes; storing just the double RESULT here sidesteps that.
+    publishedTailSeconds.store (fxChain.tailSeconds (p), std::memory_order_relaxed);
 }
 
 bool SPASynthProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -1312,10 +1365,26 @@ juce::ValueTree SPASynthProcessor::buildStateTree (bool includeMidiMap)
 
     auto wavetables = state.getOrCreateChildWithName (wavetableStateType, nullptr);
     auto samples = state.getOrCreateChildWithName (sampleStateType, nullptr);
+
+    // Snapshot the path strings under stateStringsLock first (a host may call
+    // getStateInformation()/buildStateTree() off the message thread during a
+    // save, racing installSample()/installTable() -- see stateStringsLock's
+    // declaration), THEN do the (allocation-heavy, but not I/O) toPortable()
+    // work outside the lock, same as everywhere else it's used.
+    std::array<juce::String, params::numOscSlots> wtPaths, smpPaths;
+    {
+        const juce::ScopedLock sl (stateStringsLock);
+        for (int s = 0; s < params::numOscSlots; ++s)
+        {
+            wtPaths[(size_t) s]  = slotTables[(size_t) s].path;
+            smpPaths[(size_t) s] = slotSamples[(size_t) s].path;
+        }
+    }
+
     for (int s = 0; s < params::numOscSlots; ++s)
     {
-        const auto& wtPath = slotTables[(size_t) s].path;
-        const auto& smpPath = slotSamples[(size_t) s].path;
+        const auto& wtPath = wtPaths[(size_t) s];
+        const auto& smpPath = smpPaths[(size_t) s];
         wavetables.setProperty (slotPathProperty (s),
                                 wtPath.isEmpty() ? juce::String()
                                     : library::toPortable (juce::File (wtPath), libraryRoot),

@@ -59,8 +59,17 @@ if [[ "$LIBRARY" != "-" ]]; then
 fi
 
 # --- 4. Shopify download folders ------------------------------------------------
+# Blow away only THIS version's staging dirs before recreating them (never
+# touch other version folders — e.g. the 1.0.2/1.0.3 folders intentionally
+# keep their old library zips per docs/shopify-setup-guide.md) so a rerun of
+# this script can't leave stale files (an old .pkg, docs from a previous
+# pass, a partial Library/) mixed in with the fresh ones. mkdir -p right
+# after recreates the empty Library/ subdir by design (installer-iteration
+# folders — library zips get cloned in separately at actual upload time, or
+# copied below when a real $LIBRARY was given).
 for sku in Standard Pro; do
     folder="$DIST/shopify/SPASynth-$sku-$VERSION"
+    rm -rf "$folder"
     mkdir -p "$folder/Library"
     cp "$DIST/installers/SPASynth-$VERSION-macOS.pkg" "$folder/"
     cp packaging/docs/README.txt packaging/docs/QUICKSTART.txt \
@@ -100,6 +109,44 @@ echo "  Add-on pack products (later): library/packs/<Pack>.zip, one per product"
 echo ""
 echo "Remaining manual steps:"
 echo "  1. Download the spasynth-installer-Windows CI artifact into both shopify folders"
-[[ -z "${SPASYNTH_INSTALLER_IDENTITY:-}" ]] \
-    && echo "  2. (pkg is UNSIGNED - set SPASYNTH_*_IDENTITY env vars and re-run)"
+
+# --- Loud unsigned-build warning ------------------------------------------------
+# Signing is opt-in via env vars in installers/macos/build_installer.sh
+# (SPASYNTH_CODESIGN_IDENTITY for the bundles, SPASYNTH_INSTALLER_IDENTITY
+# for the pkg, SPASYNTH_NOTARIZE_PROFILE for notarization). That script
+# already fails closed on a real signing/notarization error: it runs under
+# `set -e -u` and every codesign/productsign/notarytool/stapler call is a
+# plain foreground command with no `|| true` escape hatch, so a failure
+# there aborts build_installer.sh non-zero, which (this script also being
+# `set -e -u`) aborts this script too — a broken signing step can never
+# silently fall through to an unsigned pkg. This banner instead covers the
+# OTHER case: identities correctly left unset on purpose (local/dev
+# testing), where build_installer.sh's own behavior is to quietly `cp` an
+# unsigned pkg and print one "note:" line. That's easy to miss when this
+# script's output scrolls by, and an unsigned pkg is never something that
+# should reach a Shopify folder unnoticed — so make it impossible to miss.
+if [[ -z "${SPASYNTH_CODESIGN_IDENTITY:-}" || -z "${SPASYNTH_INSTALLER_IDENTITY:-}" ]]; then
+    echo ""
+    echo "############################################################"
+    echo "##                                                        ##"
+    echo "##   WARNING: THIS IS AN UNSIGNED BUILD                   ##"
+    echo "##                                                        ##"
+    echo "##   The staged .pkg in dist/installers/ and both         ##"
+    echo "##   dist/shopify/SPASynth-*-$VERSION/ folders is NOT     ##"
+    echo "##   signed/notarized. Do not upload it to Shopify or     ##"
+    echo "##   send it to testers.                                  ##"
+    echo "##                                                        ##"
+    echo "##   Set SPASYNTH_CODESIGN_IDENTITY, SPASYNTH_INSTALLER_IDENTITY"
+    echo "##   (and SPASYNTH_NOTARIZE_PROFILE to also notarize),    ##"
+    echo "##   then re-run this script.                             ##"
+    echo "##                                                        ##"
+    echo "############################################################"
+    echo ""
+else
+    echo ""
+    echo "Build is signed (SPASYNTH_CODESIGN_IDENTITY + SPASYNTH_INSTALLER_IDENTITY set)."
+    [[ -z "${SPASYNTH_NOTARIZE_PROFILE:-}" ]] \
+        && echo "NOTE: SPASYNTH_NOTARIZE_PROFILE is not set -- the pkg is signed but NOT notarized/stapled."
+fi
+
 exit 0

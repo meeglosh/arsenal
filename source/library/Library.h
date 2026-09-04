@@ -83,6 +83,23 @@ juce::File findLibraryRoot();
 // Factory/<Category>/ and User/ underneath.
 juce::File defaultPresetsRoot();
 
+// TEST-ONLY seam: redirects defaultPresetsRoot() to an arbitrary folder
+// (a scratch temp dir), so tests never touch the real, customer-visible
+// presets root. Pass {} to clear the override and go back to the real
+// location. Takes effect for anything that calls defaultPresetsRoot()
+// afterwards -- in particular, any SPASynthProcessor (and therefore
+// PresetManager) constructed after the override is set, since the
+// processor reads defaultPresetsRoot() fresh in its constructor. Not
+// thread-safe by design (message-thread test setup only); never call this
+// from production code.
+void setPresetsRootOverride (const juce::File& root);
+
+// TEST-ONLY: current override value ({} if none), so a scoped test guard
+// can save/restore it and compose safely with nesting (e.g. one guard for
+// the whole test run, another per-test) instead of blindly clearing back
+// to the real location.
+juce::File getPresetsRootOverride();
+
 // Optional ownership stamp ("Licensed to name@example.com — Pro Edition"),
 // shown in the editor footer when present. Purely informational — never
 // gates anything (see EULA: no activation, no phone-home). Looked for as

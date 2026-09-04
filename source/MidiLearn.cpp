@@ -9,10 +9,17 @@ MidiLearnManager::MidiLearnManager (juce::AudioProcessorValueTreeState& state)
     for (auto& cc : ccToParam)
         cc.store (-1);
 
+    for (auto& pending : pendingCcValue)
+        pending.store (-1.0f);
+
     // Stable index order for the atomics: the processor's parameter list.
     for (auto* param : apvts.processor.getParameters())
         if (auto* ranged = dynamic_cast<juce::RangedAudioParameter*> (param))
             parametersByIndex.push_back (ranged);
+
+    // Fast enough to feel like direct control (a mouse drag on a Knob is no
+    // more "sample-accurate" than this), never touches the audio thread.
+    startTimerHz (60);
 }
 
 int MidiLearnManager::indexOfParam (const juce::String& paramID) const
@@ -135,9 +142,67 @@ void MidiLearnManager::processMidi (const juce::MidiBuffer& midi)
         const auto target = ccToParam[(size_t) cc].load();
         if (target >= 0)
         {
-            auto* param = parametersByIndex[(size_t) target];
-            param->setValueNotifyingHost ((float) message.getControllerValue() / 127.0f);
+            // NOT param->setValueNotifyingHost() here — see the class-level
+            // comment in MidiLearn.h. setValueNotifyingHost() is documented
+            // (juce_AudioProcessorParameter.h) as something the HOST calls on
+            // us, on any thread including the audio thread, and our
+            // implementation of setValue() must handle that "very
+            // efficiently and avoid any kind of locking" — but the reverse
+            // direction (plugin -> host, i.e. this call) is a different
+            // story: its implementation (juce_AudioProcessorParameter.cpp)
+            // takes a CriticalSection (ScopedLock) and then calls every
+            // registered AudioProcessorParameter::Listener, including the
+            // host wrapper's listener, synchronously and unconditionally.
+            // A host is free to do anything in that callback (allocate,
+            // take its own locks, marshal to another thread) since it does
+            // not expect to be called from a realtime thread. Also, for the
+            // plain juce::AudioParameterFloat/Bool/Int/Choice types this
+            // registry uses (not the APVTS::Parameter subclass), a bare
+            // setValue() would silently NOT update the atomic that
+            // apvts.getRawParameterValue() hands the engine — only the
+            // setValueNotifyingHost() -> sendValueChangedMessageToListeners()
+            // path reaches APVTS's internal ParameterAdapter and flips that
+            // atomic. So setValue() alone is not a safe substitute here
+            // either: it would leave the engine deaf to the CC. Stash the
+            // value instead; the Timer replays it as a real
+            // setValueNotifyingHost() call, off the audio thread, coalesced
+            // to the latest value per CC (a burst of ticks between two
+            // timer fires collapses to one host notification, matching the
+            // "notify only the latest value" requirement).
+            pendingCcValue[(size_t) cc].store ((float) message.getControllerValue() / 127.0f,
+                                                std::memory_order_release);
         }
+    }
+}
+
+void MidiLearnManager::timerCallback()
+{
+    for (size_t cc = 0; cc < pendingCcValue.size(); ++cc)
+    {
+        // Sentinel-consuming exchange: any value stored after this read on
+        // the audio thread is a fresh update this Timer will catch next
+        // tick, not lost — the -1.0f sentinel can never collide with a
+        // real (0..1) CC value.
+        const auto value = pendingCcValue[cc].exchange (-1.0f, std::memory_order_acq_rel);
+        if (value < 0.0f)
+            continue;
+
+        // Re-read the mapping now rather than trust what was true when the
+        // audio thread stashed the value: the CC could have been
+        // reassigned or cleared in between (message-thread-only actions),
+        // and applying a stale value to the wrong parameter would be worse
+        // than dropping it.
+        const auto target = ccToParam[cc].load();
+        if (target < 0)
+            continue;
+
+        // The real, message-thread call: updates the parameter's own value,
+        // the APVTS raw atomic the engine reads, host automation, and any
+        // UI/APVTS listeners — exactly as if the user had dragged the
+        // control by hand. No gestures (begin/endChangeGesture): the
+        // pre-fix code never sent them either, so this matches existing
+        // host-automation-recording behavior rather than changing it.
+        parametersByIndex[(size_t) target]->setValueNotifyingHost (value);
     }
 }
 

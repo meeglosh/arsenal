@@ -10,24 +10,61 @@
 # so this lists releases via the API and downloads the asset by numeric id.
 #
 # Usage:
-#   scripts/fetch_windows_build.sh [<sha-or-'latest'>] [<outdir>]
+#   scripts/fetch_windows_build.sh <sha> [<outdir>]
+#   scripts/fetch_windows_build.sh --latest [<outdir>]
 #
-#   <sha-or-'latest'>  A commit SHA (full or short, e.g. the first 7 chars)
-#                      to fetch the matching ci-windows-<sha7> draft, or the
-#                      literal word "latest" (default) to fetch the newest
-#                      ci-windows-* draft release.
-#   <outdir>           Where to save the exe. Default: dist/installers/
+#   <sha>       A commit SHA (full or short, e.g. the first 7 chars) to fetch
+#               the matching ci-windows-<sha7> draft. REQUIRED -- there is no
+#               default, on purpose (see below).
+#   --latest    Explicitly opt in to grabbing the newest ci-windows-* draft
+#               release instead of a specific commit.
+#   <outdir>    Where to save the exe. Default: dist/installers/
+#
+# An explicit sha is required by default (no implicit "latest") so that a
+# release build can't silently grab whatever the newest CI draft happens to
+# be at the moment -- e.g. a build from a branch someone pushed after the
+# commit actually being released, or a re-run that raced with an unrelated
+# push. --latest still exists for convenience (e.g. quick local checks) but
+# has to be asked for explicitly.
 #
 # Examples:
-#   scripts/fetch_windows_build.sh
-#   scripts/fetch_windows_build.sh latest
 #   scripts/fetch_windows_build.sh a1b2c3d
 #   scripts/fetch_windows_build.sh a1b2c3d4e5f6... dist/installers
+#   scripts/fetch_windows_build.sh --latest
+#   scripts/fetch_windows_build.sh --latest dist/installers
 
 set -euo pipefail
 
-SHA_ARG="${1:-latest}"
-OUT_DIR="${2:-dist/installers}"
+usage() {
+  cat >&2 <<'EOF'
+usage: scripts/fetch_windows_build.sh <sha> [<outdir>]
+       scripts/fetch_windows_build.sh --latest [<outdir>]
+
+An explicit commit sha is required; pass --latest to opt in to fetching the
+newest ci-windows-* draft release instead.
+EOF
+}
+
+if [ "$#" -lt 1 ]; then
+  echo "error: missing required <sha> (or --latest)." >&2
+  usage
+  exit 1
+fi
+
+if [ "$1" = "--latest" ]; then
+  SHA_ARG="latest"
+  OUT_DIR="${2:-dist/installers}"
+elif [ "$1" = "latest" ]; then
+  echo "error: 'latest' must now be requested explicitly via --latest, not as a bare argument." >&2
+  usage
+  exit 1
+elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+  usage
+  exit 0
+else
+  SHA_ARG="$1"
+  OUT_DIR="${2:-dist/installers}"
+fi
 
 if ! command -v gh >/dev/null 2>&1; then
   echo "error: the GitHub CLI ('gh') is required but not found on PATH." >&2

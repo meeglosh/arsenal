@@ -12,8 +12,11 @@
 #include "params/Randomizer.h"
 #include "ui/SPASynthEditor.h"
 
+#include <atomic>
+#include <chrono>
 #include <iostream>
 #include <limits>
+#include <thread>
 #include <typeinfo>
 
 namespace
@@ -63,6 +66,48 @@ namespace
                 return found;
         return nullptr;
     }
+
+    // RAII test seam over spa::library::setPresetsRootOverride(): points
+    // defaultPresetsRoot() at a fresh scratch dir under the OS temp folder
+    // for the guard's lifetime, so nothing in this binary can ever touch
+    // the real, customer-visible presets root
+    // (~/Library/Application Support/Silverplatter Audio/SPASynth/Presets)
+    // -- not a direct write, not a rescan() directory listing, and not the
+    // async SPASynthProcessor::refreshLibrary() -> generateFactoryPresets()
+    // callback that the processor constructor posts via
+    // MessageManager::callAsync (which can land during ANY later
+    // runDispatchLoopUntil() call anywhere in the suite, not just inside
+    // the test that constructed the processor).
+    //
+    // Saves/restores the PREVIOUS override on construction/destruction
+    // (rather than unconditionally clearing to {}), so instances compose
+    // safely when nested -- one held for the whole test run (see main())
+    // plus a private one per test that wants its own isolated PresetManager
+    // temp folder.
+    struct ScopedPresetRoot
+    {
+        ScopedPresetRoot()
+            : dir (juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getNonexistentChildFile ("spasynth-test-presets", "")),
+              previous (spa::library::getPresetsRootOverride())
+        {
+            dir.createDirectory();
+            spa::library::setPresetsRootOverride (dir);
+        }
+
+        ~ScopedPresetRoot()
+        {
+            spa::library::setPresetsRootOverride (previous);
+            dir.deleteRecursively();
+        }
+
+        juce::File dir;
+
+    private:
+        juce::File previous;
+
+        JUCE_DECLARE_NON_COPYABLE (ScopedPresetRoot)
+    };
 
     void renderSmokeTest()
     {
@@ -464,6 +509,28 @@ namespace
             juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
         }
         return false;
+    }
+
+    // Polls a condition on the message thread instead of pumping a fixed
+    // duration and hoping it was long enough. Deferred-effect assertions
+    // (a Timer replaying a stashed value, an AsyncUpdater landing, etc.)
+    // must never be gated on "N ms is surely enough" -- under a loaded build
+    // machine (CI runners, a busy dev box) a timer callback can lag well
+    // past its nominal period, and a fixed pump that's fine on a quiet
+    // machine flakes intermittently on a loaded one. Returns whether the
+    // condition held before the timeout, so the caller still gets a clear
+    // assert with a real failure message rather than this silently timing
+    // out into a downstream assertion failure.
+    static bool pumpUntil (std::function<bool()> condition, int timeoutMs = 5000)
+    {
+        const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) timeoutMs;
+        while (! condition())
+        {
+            if (juce::Time::getMillisecondCounter() >= deadline)
+                return condition();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+        return true;
     }
 
     static void samplePlaybackTest()
@@ -1350,6 +1417,135 @@ namespace
                 + " vs driven " + juce::String (crestDriven) + ")");
     }
 
+    // Regression for the fixed-size-buffer-vs-oversampled-rate audit finding:
+    // ModEffect's flanger delay line and TremVib's vibrato delay line used to
+    // be compile-time-sized (2048 / 1024 samples respectively), sized for a
+    // ~48kHz host rate. The whole FX chain (these two modules included) runs
+    // at the OVERSAMPLED ENGINE rate though -- up to 8x host rate, i.e. up to
+    // 384kHz for a 48kHz host at 8x -- so those fixed buffers silently
+    // clamped the achievable modulation delay at high rates (2048 samples is
+    // only ~5.3ms at 384kHz; the flanger's registry-derived max is 29.5ms).
+    // Both classes now size their delay lines from the real sample rate in
+    // prepare() via a small testable static helper
+    // (ModEffect::requiredFlangerDelaySamples / TremVib::requiredVibDelaySamples).
+    static void fxTimeBasedBufferScalingTest()
+    {
+        std::cout << "fxTimeBasedBufferScalingTest\n";
+        using ModEffect = spa::dsp::ModEffect;
+        using TremVib = spa::dsp::TremVib;
+
+        // 1) Static-helper sanity at a range of rates spanning host-only
+        //    (44.1/48k) up through the audit finding's extreme oversampled
+        //    engine rate (384k = 48k host x8): the computed capacity must
+        //    always cover the true registry-derived max modulated delay.
+        for (const double sr : { 44100.0, 48000.0, 96000.0, 192000.0, 384000.0 })
+        {
+            // fx::modManual (Mod Delay) range is 0.1-20ms; processFlanger's
+            // sweep term tops out at 0.5 + 9.0*depth with fx::modDepth's
+            // 0-1 range -> max sweep 9.5ms. +2 samples for interpolation.
+            const auto flangerNeeded = (int) std::ceil ((20.0 + 9.5) / 1000.0 * sr) + 2;
+            const auto flangerCap = ModEffect::requiredFlangerDelaySamples (sr);
+            expect (flangerCap >= flangerNeeded,
+                    "ModEffect flanger capacity (" + juce::String (flangerCap)
+                    + ") covers the max delay (" + juce::String (flangerNeeded)
+                    + " samples) at " + juce::String (sr, 0) + "Hz");
+
+            // TremVib's own sweepSamps formula: depth(max 1) * 0.006 * sr,
+            // plus the base +1 sample offset and +2 for interpolation.
+            const auto vibNeeded = (int) std::ceil (1.0 + 0.006 * sr) + 2;
+            const auto vibCap = TremVib::requiredVibDelaySamples (sr);
+            expect (vibCap >= vibNeeded,
+                    "TremVib vibrato capacity (" + juce::String (vibCap)
+                    + ") covers the max delay (" + juce::String (vibNeeded)
+                    + " samples) at " + juce::String (sr, 0) + "Hz");
+        }
+
+        // 2) Observable check at the extreme engine rate (384kHz): sweep both
+        //    effects at max depth/manual delay with a near-zero LFO rate (so
+        //    the modulated delay is effectively constant across the test
+        //    window) and confirm an impulse's echo lands at the expected
+        //    sample offset -- not clamped short by an undersized buffer.
+        constexpr double sr = 384000.0;
+        constexpr int blockSamples = 16384;   // > any pre/post-fix delay + margin
+
+        auto findEcho = [] (const juce::AudioBuffer<float>& buf)
+        {
+            int peakIdx = -1;
+            float peakVal = 0.0f;
+            for (int i = 1; i < buf.getNumSamples(); ++i)
+            {
+                const auto v = std::abs (buf.getSample (0, i));
+                if (v > peakVal) { peakVal = v; peakIdx = i; }
+            }
+            return peakIdx;
+        };
+
+        {
+            ModEffect mod;
+            mod.prepare (sr, blockSamples);
+
+            ModEffect::Params p;
+            p.enable = true;
+            p.type = ModEffect::Type::flanger;
+            p.rateHz = 0.001f;     // near-frozen LFO across this block
+            p.depth = 1.0f;        // max sweep (registry fx::modDepth max)
+            p.feedback = 0.0f;
+            p.manualMs = 20.0f;    // max base delay (registry fx::modManual max)
+            p.mix = 1.0f;          // fully wet so the echo is directly visible
+
+            juce::AudioBuffer<float> buf (2, blockSamples);
+            buf.clear();
+            buf.setSample (0, 0, 1.0f);
+            buf.setSample (1, 0, 1.0f);
+            mod.process (buf, p);
+
+            // lfoPhase starts at 0 -> lfo = 0.5 -> delayMs = 20 + 9.5*0.5 = 24.75ms.
+            const double expectedSamples = (20.0 + 9.5 * 0.5) / 1000.0 * sr;
+            const auto peakIdx = findEcho (buf);
+
+            expect (peakIdx > 0, "flanger echo of the impulse was found at 384kHz");
+            if (peakIdx > 0)
+            {
+                const auto errSamples = std::abs ((double) peakIdx - expectedSamples);
+                std::cout << "  flanger echo at sample " << peakIdx << ", expected ~"
+                           << expectedSamples << " (err " << errSamples << " samples)\n";
+                expect (errSamples < 4.0,
+                        "flanger echo lands at the correct unclamped delay at 384kHz");
+            }
+        }
+
+        {
+            TremVib tv;
+            tv.prepare (sr, blockSamples);
+
+            TremVib::Params p;
+            p.vibOn = true;
+            p.vibRateHz = 0.001f;  // near-frozen LFO across this block
+            p.vibDepth = 1.0f;     // max sweep
+            p.vibMix = 1.0f;       // fully wet
+
+            juce::AudioBuffer<float> buf (2, blockSamples);
+            buf.clear();
+            buf.setSample (0, 0, 1.0f);
+            buf.setSample (1, 0, 1.0f);
+            tv.process (buf, p);
+
+            // vibPhase starts at 0 -> lfo = 0.5 -> delay = 1 + 0.006*sr*0.5 samples.
+            const double expectedSamples = 1.0 + 0.006 * sr * 0.5;
+            const auto peakIdx = findEcho (buf);
+
+            expect (peakIdx > 0, "vibrato echo of the impulse was found at 384kHz");
+            if (peakIdx > 0)
+            {
+                const auto errSamples = std::abs ((double) peakIdx - expectedSamples);
+                std::cout << "  vibrato echo at sample " << peakIdx << ", expected ~"
+                           << expectedSamples << " (err " << errSamples << " samples)\n";
+                expect (errSamples < 4.0,
+                        "vibrato echo lands at the correct unclamped delay at 384kHz");
+            }
+        }
+    }
+
     // Regression for the "toggle blast" bug: FX modules with internal
     // recursive state (EQ biquads, the phaser/flanger's allpass/feedback/
     // delay state) used to freeze that state when disabled and resume from it
@@ -1816,11 +2012,10 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (sr, n);
 
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-burst-presets", "");
+        ScopedPresetRoot presetRootGuard;
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
-                               presetsRoot);
+                               presetRootGuard.dir);
 
         // Two presets with hot, very different delay/reverb/mod/filter settings
         // -- the kind of jump a real preset browsing session produces.
@@ -1940,8 +2135,6 @@ namespace
         juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
         expect (peakOverSilentBlocks (50) < silentPeak,
                 "hot reload stays silent after pending async loads settle");
-
-        presetsRoot.deleteRecursively();
     }
 
     static void presetRoundTripTest()
@@ -1955,11 +2148,10 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (48000.0, 512);
 
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-presets-test", "");
+        ScopedPresetRoot presetRootGuard;
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
-                               presetsRoot);
+                               presetRootGuard.dir);
 
         setParam (proc, id::filter1Cutoff, 1234.0f);
         setParam (proc, id::oscSlot (0, id::osc::position), 0.42f);
@@ -1981,8 +2173,64 @@ namespace
         expect (std::abs (cutoff - 1234.0f) < 5.0f,
                 "params restore from preset (cutoff " + juce::String (cutoff) + ")");
         expect (pm.getCurrentName() == "RoundTrip", "current preset name tracks");
+    }
 
-        presetsRoot.deleteRecursively();
+    // Atomic preset write (audit hardening): PresetManager::writePreset()
+    // renders to a juce::TemporaryFile in the target's own directory, then
+    // calls overwriteTargetFileWithTemporary() (File::replaceFileIn under
+    // the hood -- a rename, falling back to copy+delete only cross-device)
+    // instead of writing the XmlElement straight over the target. Exercise
+    // the overwrite path specifically (save the same preset name twice) --
+    // that's the case that used to risk truncating an existing file on a
+    // crash/disk-full mid-write -- and confirm no stray "*_temp*" file
+    // (juce::TemporaryFile's naming convention) is left behind either way.
+    static void atomicPresetWriteTest()
+    {
+        std::cout << "atomicPresetWriteTest\n";
+
+        namespace id = spa::params::id;
+        namespace lib = spa::library;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        ScopedPresetRoot presetRootGuard;
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetRootGuard.dir);
+
+        setParam (proc, id::filter1Cutoff, 1000.0f);
+        expect (pm.saveUserPreset ("AtomicTest"), "first save (new file) succeeds");
+
+        juce::File presetFile;
+        for (const auto& p : pm.getPresets())
+            if (p.name == "AtomicTest")
+                presetFile = p.file;
+        expect (presetFile.existsAsFile(), "preset file exists after first save");
+
+        // Overwrite with different content -- this is the path that goes
+        // through TemporaryFile against an EXISTING target.
+        setParam (proc, id::filter1Cutoff, 5000.0f);
+        expect (pm.saveUserPreset ("AtomicTest"), "second save (overwrite) succeeds");
+
+        const auto xml = juce::XmlDocument::parse (presetFile);
+        expect (xml != nullptr && xml->hasTagName ("SPASynthPreset"),
+                "overwritten preset file is still fully valid XML, not truncated");
+        if (xml != nullptr && xml->getFirstChildElement() != nullptr)
+        {
+            const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
+            float storedCutoff = -1.0f;
+            for (auto child : state)
+                if (child.hasType ("PARAM") && child.getProperty ("id").toString() == id::filter1Cutoff)
+                    storedCutoff = (float) (double) child.getProperty ("value");
+            expect (std::abs (storedCutoff - 5000.0f) < 1.0f,
+                    "overwritten preset holds the SECOND save's value, not the first's");
+        }
+
+        const auto strayTempFiles = presetRootGuard.dir.findChildFiles (
+            juce::File::findFiles, true, "*_temp*");
+        expect (strayTempFiles.isEmpty(),
+                "no stray TemporaryFile artifacts left behind after either write");
     }
 
     // User preset banks (subfolders of User/): rescan groups them by folder
@@ -1999,11 +2247,10 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (48000.0, 512);
 
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-bank-test", "");
+        ScopedPresetRoot presetRootGuard;
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
-                               presetsRoot);
+                               presetRootGuard.dir);
 
         const auto userRoot = pm.getUserPresetFolder();
         const auto bankFolder = userRoot.getChildFile ("Leads");
@@ -2061,7 +2308,6 @@ namespace
                 "falls back to the User root instead");
 
         outsideFolder.deleteRecursively();
-        presetsRoot.deleteRecursively();
     }
 
     // A hand-edited or damaged .spasynth file must fail to load cleanly
@@ -2076,11 +2322,10 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (48000.0, 512);
 
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-malformed-test", "");
+        ScopedPresetRoot presetRootGuard;
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
-                               presetsRoot);
+                               presetRootGuard.dir);
 
         const auto emptyRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
                                    .getNonexistentChildFile ("spasynth-malformed-empty", ".spasynth");
@@ -2096,7 +2341,6 @@ namespace
 
         emptyRoot.deleteFile();
         garbage.deleteFile();
-        presetsRoot.deleteRecursively();
     }
 
     // "Reset to Default" (the menu item added post-1.0.3) must restore every
@@ -2152,8 +2396,8 @@ namespace
         proc.prepareToPlay (sampleRate, blockSize);
 
         const auto libRoot = makeFakeLibrary();
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-factory-test", "");
+        ScopedPresetRoot presetRootGuard;
+        const auto& presetsRoot = presetRootGuard.dir;
 
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
@@ -2205,7 +2449,6 @@ namespace
         expect (mode == (int) params::OscMode::sample, "Keys preset sets sample mode");
 
         libRoot.deleteRecursively();
-        presetsRoot.deleteRecursively();
     }
 
     // Same as factoryPresetGenerationTest, but for a library root with loose
@@ -2245,8 +2488,8 @@ namespace
                 writer->writeFromAudioSampleBuffer (buffer, 0, 4800);
         }
 
-        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                                     .getNonexistentChildFile ("spasynth-rootpack-presets-test", "");
+        ScopedPresetRoot presetRootGuard;
+        const auto& presetsRoot = presetRootGuard.dir;
 
         lib::PresetManager pm ([&] { return proc.buildStateTree(); },
                                [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
@@ -2292,7 +2535,6 @@ namespace
         }
 
         libRoot.deleteRecursively();
-        presetsRoot.deleteRecursively();
     }
 
     // Renders the editor offscreen for visual review: SPASynthTests --snapshot <dir>
@@ -2544,16 +2786,23 @@ namespace
         expect (learn.getAssignedCC (id::filter1Cutoff) == 74,
                 "CC 74 assigned to cutoff");
 
-        // Mapped CC moves the parameter.
+        // Mapped CC moves the parameter. processMidi() runs on the (simulated)
+        // audio thread and never calls setValueNotifyingHost() itself -- see
+        // MidiLearn.h/.cpp -- it stashes the value and a Timer replays it on
+        // the message thread, so a dispatch-loop pump is needed before the
+        // change is observable (this is the RT-safety fix under test; see
+        // midiLearnRtSafetyTest() below for the mechanism itself).
         midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 0), 0);
         proc.processBlock (buffer, midi);
         midi.clear();
-        expect (cutoff->getValue() < 0.01f, "CC value 0 slams cutoff to min");
+        expect (pumpUntil ([&] { return cutoff->getValue() < 0.01f; }),
+                "CC value 0 slams cutoff to min");
 
         midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 127), 0);
         proc.processBlock (buffer, midi);
         midi.clear();
-        expect (cutoff->getValue() > 0.99f, "CC value 127 opens cutoff fully");
+        expect (pumpUntil ([&] { return cutoff->getValue() > 0.99f; }),
+                "CC value 127 opens cutoff fully");
 
         // Mapping survives a host save/restore round-trip...
         const auto sessionState = proc.buildStateTree (true);
@@ -2571,6 +2820,99 @@ namespace
         proc.restoreStateTree (presetState);
         expect (learn.getAssignedCC (id::filter1Cutoff) == 74,
                 "loading a preset keeps hardware mappings");
+    }
+
+    // Exercises the RT-safety fix directly: processMidi() (called from
+    // processBlock(), i.e. the audio thread in real use) must never call
+    // juce::AudioProcessorParameter::setValueNotifyingHost() itself -- that
+    // method takes a lock and calls into host/listener code, neither of
+    // which is safe from a realtime thread (see MidiLearn.cpp's comment on
+    // the call site for the JUCE source citations). Instead it stashes the
+    // latest value per CC and a Timer applies it on the message thread.
+    static void midiLearnRtSafetyTest()
+    {
+        std::cout << "midiLearnRtSafetyTest\n";
+
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        auto& learn = proc.getMidiLearn();
+        auto* cutoff = proc.getAPVTS().getParameter (id::filter1Cutoff);
+        cutoff->setValueNotifyingHost (0.5f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::MidiBuffer midi;
+
+        learn.armLearn (id::filter1Cutoff);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 64), 0);
+        proc.processBlock (buffer, midi);   // captures the CC 74 binding
+        midi.clear();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+        // The capturing CC (64/127) also falls through to an immediate
+        // stash+apply, same as any other mapped tick, so the baseline for
+        // "did the next CC move anything yet" is whatever that settled to
+        // -- not the pre-arm 0.5f, which the capture tick already nudged.
+        const auto baseline = cutoff->getValue();
+
+        // A single CC tick, applied only via processMidi() (the audio-thread
+        // entry point) with NO dispatch-loop pump in between: if
+        // processMidi() were still calling setValueNotifyingHost() inline,
+        // the parameter would already reflect it right here.
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 20), 0);   // ~0.157
+        proc.processBlock (buffer, midi);
+        midi.clear();
+        expect (juce::approximatelyEqual (cutoff->getValue(), baseline),
+                "processMidi() alone does not move the parameter (no inline host-notify call)");
+        expect (! juce::approximatelyEqual (cutoff->getValue(), 20.0f / 127.0f),
+                "processMidi() alone does not pre-empt the message-thread replay either");
+
+        // Pumping the message loop lets the Timer drain the stashed value
+        // and make the real (message-thread) setValueNotifyingHost() call --
+        // this is the "host-notify path ran on the message thread" proof.
+        // Poll rather than sleep a fixed window: the 60Hz timer callback can
+        // lag its nominal ~16.7ms period under a loaded build machine, and a
+        // fixed pump long enough on a quiet machine still flakes on a busy one.
+        expect (pumpUntil ([&] { return std::abs (cutoff->getValue() - 20.0f / 127.0f) < 1.0f / 127.0f; }),
+                "message-thread Timer replays the stashed CC value onto the parameter");
+        const auto expectedDenormalised = cutoff->convertFrom0to1 (20.0f / 127.0f);
+        const auto rawDenormalised = proc.getAPVTS().getRawParameterValue (id::filter1Cutoff)->load();
+        expect (std::abs (cutoff->convertTo0to1 (rawDenormalised)
+                           - cutoff->convertTo0to1 (expectedDenormalised)) < 1.0f / 127.0f,
+                "the engine-visible raw atomic (apvts.getRawParameterValue) updates too, "
+                "not just the parameter's own getValue()");
+
+        // Rapid-fire coalescing: many CC ticks land in the same block (and
+        // could equally land across several timer-less blocks) before the
+        // Timer next drains -- only the LATEST value per CC should ever
+        // reach setValueNotifyingHost(), never an intermediate one.
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 10), 0);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 60), 10);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 90), 20);
+        midi.addEvent (juce::MidiMessage::controllerEvent (1, 74, 127), 30);
+        proc.processBlock (buffer, midi);
+        midi.clear();
+        expect (! juce::approximatelyEqual (cutoff->getValue(), 1.0f),
+                "still not applied before the next timer tick (coalescing happens pre-drain)");
+
+        expect (pumpUntil ([&] { return cutoff->getValue() > 0.99f; }),
+                "a rapid-fire CC burst coalesces to the single latest value");
+
+        // No double-apply / feedback: draining again with nothing new
+        // pending is a no-op, and re-arming a different parameter's learn
+        // doesn't perturb the value the Timer already settled. This is an
+        // inherently time-based negative check (proving NOTHING moves over
+        // the window, not waiting for something to happen), so a poll-until
+        // helper doesn't apply here -- keep the fixed pump, deliberately.
+        const auto settledValue = cutoff->getValue();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (juce::approximatelyEqual (cutoff->getValue(), settledValue),
+                "draining with no new pending CC value is a no-op (no feedback loop)");
     }
 
     static void arpeggiatorTest()
@@ -3054,6 +3396,18 @@ namespace
                       (float) (int) params::OscMode::pluck);
             setParam (proc, id::oscSlot (0, id::osc::pluckDamp), 0.3f);
 
+            // Pluck buffers are allocated lazily by SPASynthProcessor::
+            // timerCallback()'s per-slot sweep (150ms period), not
+            // synchronously from the mode-parameter listener -- see the
+            // parameterChanged() comment in SPASynthProcessor.cpp for why
+            // that listener must never allocate (it can fire on the audio
+            // thread under VST3 host automation). Pump the message loop well
+            // past one timer period so allocation has happened before the
+            // strike -- generous margin (well beyond the nominal 150ms) so
+            // this doesn't flake under a loaded build machine where the
+            // Timer callback's own scheduling can lag.
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (1000);
+
             juce::MidiBuffer midi;
             midi.addEvent (juce::MidiMessage::noteOn (1, 69, (juce::uint8) 100), 0);
             float early = 0.0f, late = 0.0f;
@@ -3075,12 +3429,22 @@ namespace
     }
 
     // Pluck engine buffers are allocated lazily (SPASynthVoice::
-    // ensurePluckAllocated, triggered from SPASynthProcessor::
-    // parameterChanged() when the osc-mode param is set to pluck). Switching
-    // a slot to Pluck and striking a note immediately afterwards -- no
-    // message-loop pumping beyond setValueNotifyingHost's own synchronous
-    // listener dispatch -- must not race the allocation and produce silence
-    // (or worse, an unallocated-buffer misbehaviour).
+    // ensurePluckAllocated, driven SOLELY by SPASynthProcessor::
+    // timerCallback()'s per-slot sweep, 150ms period). It used to also be
+    // triggered synchronously from parameterChanged() when the osc-mode
+    // param was set to pluck, on the theory that AudioProcessorValueTreeState
+    // ::Listener::parameterChanged() only ever fires from the message thread.
+    // That theory is wrong -- VST3's wrapper applies host automation via
+    // setValueNotifyingHost() directly from process(), the real-time audio
+    // callback (see the parameterChanged() comment in SPASynthProcessor.cpp
+    // for the full JUCE-source citation) -- so allocating there would violate
+    // RT-safety under automation. parameterChanged() is now a deliberate
+    // no-op and this test covers both halves of that contract: (1) striking a
+    // note in Pluck mode BEFORE the timer has had a chance to allocate must
+    // stay silent/graceful, never crash (PluckString::noteOn()/
+    // getNextSample() in ExtraOscillators.h guard on buffer.empty()); (2)
+    // after pumping the message loop past one timer period, the same slot
+    // strikes audibly.
     static void pluckLazyAllocTest()
     {
         std::cout << "pluckLazyAllocTest\n";
@@ -3094,17 +3458,33 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (sampleRate, blockSize);
         setParam (proc, id::chaos::enable, 0.0f);
-
-        // setValueNotifyingHost() dispatches to
-        // AudioProcessorValueTreeState::Listener::parameterChanged()
-        // synchronously (see the ctor/parameterChanged comment in
-        // SPASynthProcessor.cpp), so the lazy Pluck allocation has already
-        // happened by the time this call returns -- no callAsync/message-
-        // loop pump needed before striking the note.
         setParam (proc, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::pluck);
 
         juce::AudioBuffer<float> buffer (2, blockSize);
         juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 69, (juce::uint8) 100), 0);
+
+        // Immediately after the mode switch, with no message-loop pump: the
+        // Pluck buffers are (almost certainly) not allocated yet. Must not
+        // crash, and every sample must stay finite -- silence is expected and
+        // fine, this just proves the pre-allocation window is graceful.
+        bool finiteThroughout = true;
+        for (int b = 0; b < 4; ++b)
+        {
+            proc.processBlock (buffer, midi);
+            midi.clear();
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                for (int i = 0; i < buffer.getNumSamples(); ++i)
+                    finiteThroughout = finiteThroughout
+                                     && std::isfinite (buffer.getSample (ch, i));
+        }
+        expect (finiteThroughout,
+                "pluck stays finite (silent or not) in the pre-allocation window");
+
+        // Pump the message loop well past one timer period (150ms) so
+        // timerCallback()'s sweep has allocated the slot, then strike again.
+        // Generous margin so this doesn't flake on a loaded build machine.
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (1000);
         midi.addEvent (juce::MidiMessage::noteOn (1, 69, (juce::uint8) 100), 0);
 
         float early = 0.0f;
@@ -3115,8 +3495,182 @@ namespace
             early = juce::jmax (early, buffer.getMagnitude (0, blockSize));
         }
         expect (early > 0.05f,
-                "pluck strikes audibly right after the mode switch, no allocation race ("
+                "pluck strikes audibly once the timer sweep has allocated the slot ("
                 + juce::String (early) + ")");
+    }
+
+    // --- Concurrency hardening regression tests -----------------------------
+    // These three are smoke tests, not proofs of race-freedom: a clean run
+    // does not prove no interleaving could ever misbehave (that needs
+    // ThreadSanitizer), it only proves this particular ~1.5s hammering of a
+    // real processor instance didn't crash or produce a bad result. Each one
+    // targets one of the audit-hardening fixes in SPASynthProcessor.
+
+    // Fix: retiredTables/retiredSamples are now cleared under getCallbackLock()
+    // in timerCallback(), so a clear can never overlap an in-flight
+    // processBlock even if that block stalls past one timer period. Hammers
+    // installSample-style content swaps (loadSampleFromFile, on the message
+    // thread) against processBlock running continuously on a second thread.
+    static void concurrencyContentSwapStressTest()
+    {
+        std::cout << "concurrencyContentSwapStressTest\n";
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        const auto fileA = writeRampSine (0.2, sampleRate);
+        const auto fileB = writeRampSine (0.35, sampleRate);
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        std::atomic<bool> stop { false };
+        std::atomic<bool> sawNonFinite { false };
+
+        std::thread audioThread ([&]
+        {
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            int counter = 0;
+            while (! stop.load (std::memory_order_relaxed))
+            {
+                if ((counter++ % 200) == 0)
+                    midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+                proc.processBlock (buffer, midi);
+                midi.clear();
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    for (int i = 0; i < buffer.getNumSamples(); ++i)
+                        if (! std::isfinite (buffer.getSample (ch, i)))
+                            sawNonFinite.store (true, std::memory_order_relaxed);
+            }
+        });
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds (1500);
+        int swap = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            proc.loadSampleFromFile (0, (swap++ % 2) == 0 ? fileA : fileB);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+        }
+
+        stop.store (true, std::memory_order_relaxed);
+        audioThread.join();
+
+        fileA.deleteFile();
+        fileB.deleteFile();
+
+        expect (! sawNonFinite.load(),
+                "content-swap stress: processBlock output stayed finite throughout");
+    }
+
+    // Fix: getTailLengthSeconds() now reads a published std::atomic<double>
+    // (publishedTailSeconds) instead of computing fxChain.tailSeconds(fxParams)
+    // directly -- fxParams is audio-thread-only and non-atomic, and hosts may
+    // call getTailLengthSeconds() from any thread at any time.
+    static void concurrencyTailLengthStressTest()
+    {
+        std::cout << "concurrencyTailLengthStressTest\n";
+
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setParam (proc, id::fx::reverbEnable, 1.0f);
+        setParam (proc, id::fx::reverbDecay, 4.0f);
+        setParam (proc, id::fx::delayEnable, 1.0f);
+
+        std::atomic<bool> stop { false };
+        std::atomic<bool> sawBadTail { false };
+
+        std::thread audioThread ([&]
+        {
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            while (! stop.load (std::memory_order_relaxed))
+                proc.processBlock (buffer, midi);
+        });
+
+        std::thread readerThread ([&]
+        {
+            while (! stop.load (std::memory_order_relaxed))
+            {
+                const auto tail = proc.getTailLengthSeconds();
+                if (! std::isfinite (tail) || tail < 0.0 || tail > 60.0)
+                    sawBadTail.store (true, std::memory_order_relaxed);
+            }
+        });
+
+        std::this_thread::sleep_for (std::chrono::milliseconds (1000));
+        stop.store (true, std::memory_order_relaxed);
+        audioThread.join();
+        readerThread.join();
+
+        expect (! sawBadTail.load(),
+                "getTailLengthSeconds() stayed finite and in-bounds under concurrent processBlock");
+    }
+
+    // Fix: SlotTable/SlotSample path/error strings are now guarded by
+    // stateStringsLock on every read and write (installSample/installTable,
+    // buildStateTree, getSampleError/getWavetableError, getSampleFile) --
+    // juce::String is refcounted copy-on-write, so an unsynchronized read
+    // racing a message-thread write can corrupt the refcount. Hammers
+    // getStateInformation() from a second thread against rapid sample loads.
+    static void concurrencyStateInfoStressTest()
+    {
+        std::cout << "concurrencyStateInfoStressTest\n";
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        const auto fileA = writeRampSine (0.2, sampleRate);
+        const auto fileB = writeRampSine (0.35, sampleRate);
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+
+        std::atomic<bool> stop { false };
+        std::atomic<bool> sawBadState { false };
+        std::atomic<int> parsedOk { 0 };
+
+        std::thread stateThread ([&]
+        {
+            while (! stop.load (std::memory_order_relaxed))
+            {
+                juce::MemoryBlock mb;
+                proc.getStateInformation (mb);
+                if (mb.getSize() > 0)
+                {
+                    auto xml = juce::AudioProcessor::getXmlFromBinary (mb.getData(),
+                                                                       (int) mb.getSize());
+                    if (xml != nullptr)
+                        parsedOk.fetch_add (1, std::memory_order_relaxed);
+                    else
+                        sawBadState.store (true, std::memory_order_relaxed);
+                }
+            }
+        });
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds (1500);
+        int swap = 0;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            proc.loadSampleFromFile (0, (swap++ % 2) == 0 ? fileA : fileB);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+        }
+
+        stop.store (true, std::memory_order_relaxed);
+        stateThread.join();
+
+        fileA.deleteFile();
+        fileB.deleteFile();
+
+        expect (! sawBadState.load(),
+                "getStateInformation() under concurrent sample loads always parsed back to valid XML");
+        expect (parsedOk.load() > 0,
+                "getStateInformation() stress actually exercised the reader thread");
     }
 
     static void filterExtrasTest()
@@ -3428,6 +3982,59 @@ namespace
         file.replaceWithText ("   \n\n");
         expect (spa::library::licenseLineFromFile (file).isEmpty(),
                 "whitespace-only file yields empty");
+
+        file.deleteFile();
+    }
+
+    // Audit hardening: licenseLineFromFile() must never fully load an
+    // arbitrarily large license.txt into memory -- it caps the read at 4KB
+    // (Library.cpp) and still returns a sane, bounded result rather than
+    // hanging or exhausting memory on a huge/malicious file.
+    static void licenseCapTest()
+    {
+        std::cout << "licenseCapTest\n";
+
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getChildFile ("spasynth-license-cap-test.txt");
+
+        // ~1MB of leading blank lines, comfortably past the 4KB cap, so a
+        // real first line placed after them would be invisible to a capped
+        // reader -- this exercises "the whole file is bigger than the cap"
+        // as well as "returns gracefully" (empty, not a crash/hang/OOM).
+        {
+            file.deleteFile();
+            juce::MemoryBlock blanks (1024 * 1024, true);
+            blanks.fillWith ('\n');
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized license test file opens for writing");
+            out.write (blanks.getData(), blanks.getSize());
+        }
+        expect (file.getSize() >= 1024 * 1024, "oversized test file actually is oversized");
+
+        const auto line = spa::library::licenseLineFromFile (file);
+        expect (line.isEmpty(),
+                "oversized all-blank file yields empty (no first non-blank line within the cap), "
+                "not a crash or a multi-MB slurp");
+
+        // A real line sitting right at the start (within the cap) must still
+        // come through -- the cap must not break the normal case.
+        {
+            juce::MemoryBlock content;
+            const juce::String firstLine ("Licensed to test@example.com -- Pro Edition\n");
+            content.append (firstLine.toRawUTF8(), firstLine.getNumBytesAsUTF8());
+            juce::MemoryBlock padding (1024 * 1024, true);
+            padding.fillWith ('x');
+            content.append (padding.getData(), padding.getSize());
+
+            file.deleteFile();
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized-with-real-line test file opens for writing");
+            out.write (content.getData(), content.getSize());
+        }
+        expect (spa::library::licenseLineFromFile (file)
+                    == "Licensed to test@example.com -- Pro Edition",
+                "a real first line within the cap still comes through even when the "
+                "rest of a huge file is discarded");
 
         file.deleteFile();
     }
@@ -4318,6 +4925,14 @@ int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
+    // Hermetic for the entire run (both branches below): every
+    // SPASynthProcessor constructed anywhere in this binary -- including
+    // renderEditorSnapshots()'s and every individual test's -- gets its
+    // presets root redirected to a scratch temp dir for as long as this
+    // guard lives. See ScopedPresetRoot's comment for why this has to be
+    // one guard spanning the whole process rather than scoped per test.
+    ScopedPresetRoot presetRootGuard;
+
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
     {
         renderEditorSnapshots (juce::File (argv[2]));
@@ -4348,12 +4963,14 @@ int main (int argc, char* argv[])
     midiClockTest();
     fxOrderTest();
     fxEQDistortionTest();
+    fxTimeBasedBufferScalingTest();
     fxToggleBlastTest();
     randomizerTest();
     randomizerProducesSoundTest();
     randomizeLoudnessGuardTest();
     editorHitTestProbe();
     midiLearnTest();
+    midiLearnRtSafetyTest();
     arpeggiatorTest();
     arpStuckNoteTest();
     arpZeroSampleBlockTest();
@@ -4361,6 +4978,9 @@ int main (int argc, char* argv[])
     arpChanceTest();
     extraEnginesTest();
     pluckLazyAllocTest();
+    concurrencyContentSwapStressTest();
+    concurrencyTailLengthStressTest();
+    concurrencyStateInfoStressTest();
     filterExtrasTest();
     dualFilterTest();
     filter1EnableTest();
@@ -4370,6 +4990,7 @@ int main (int argc, char* argv[])
     looseWavLibraryTest();
     libraryRootPersistsWhenEmptyTest();
     presetRoundTripTest();
+    atomicPresetWriteTest();
     presetBankTest();
     malformedPresetTest();
     presetResetToDefaultTest();
@@ -4378,6 +4999,7 @@ int main (int argc, char* argv[])
     factoryPresetRootPackTest();
     presetBrowserFilterTest();
     licenseLineTest();
+    licenseCapTest();
     dependentEnableTest();
     presetBrowserFocusGrabTest();
     presetBrowserKeyboardFocusTest();
