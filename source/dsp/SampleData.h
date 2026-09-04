@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -54,8 +55,18 @@ struct LoadedSample
     juce::String error;
 };
 
+// Polled between chunks of expensive work (retry-loop attempts, analysis
+// hops) so a caller can bail a load early once the result is no longer
+// wanted. Optional -- an empty/null function means "never cancel", the
+// original unconditional behavior.
+using ShouldCancelFn = std::function<bool()>;
+
 // Reads an audio file and runs the offline follower analysis (RMS envelope +
 // YIN pitch track). Synchronous and allocating — background thread only.
-LoadedSample loadSampleFromFile (const juce::File& file);
+// If shouldCancel becomes true partway through, returns early with a null
+// sample (the caller is expected to discard the result anyway in that case
+// — see ContentLoadWorker's cancellation contract).
+LoadedSample loadSampleFromFile (const juce::File& file,
+                                 const ShouldCancelFn& shouldCancel = {});
 
 } // namespace spa::dsp

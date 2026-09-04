@@ -3673,6 +3673,152 @@ namespace
                 "getStateInformation() stress actually exercised the reader thread");
     }
 
+    // --- Wave-2 hardening: bounded content-load worker ----------------------
+    // ContentLoadWorker.h replaced "one detached juce::Thread per load
+    // request" with a single shared background thread + per-slot latest-wins
+    // mailboxes + cooperative cancellation. These three cover, respectively:
+    // (a) correctness + boundedness under rapid quick-swap auditioning,
+    // (b) the new decode-size backstop in SampleLoader.cpp, and (c) the
+    // construct/load/immediate-destroy shutdown race.
+
+    // Fires 50 alternating loads at the same slot as fast as possible (no
+    // message-pump between posts, to maximize how many land on the worker
+    // while it's still busy with an earlier one). Asserts the FINAL result
+    // installed is the LAST file requested (correctness is unchanged --
+    // still governed by requestSerial latest-wins at install time), and that
+    // the worker's own started-job counter proves most of those 50 requests
+    // never ran an analysis at all (the actual resource-bounding fix).
+    static void contentLoadSupersessionStressTest()
+    {
+        std::cout << "contentLoadSupersessionStressTest\n";
+
+        constexpr double sampleRate = 48000.0;
+
+        const auto fileA = writeRampSine (0.15, sampleRate);
+        const auto fileB = writeRampSine (0.25, sampleRate);
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, 512);
+
+        const auto startedBefore = proc.getLoadsStartedCount();
+
+        constexpr int numRequests = 50;
+        for (int i = 0; i < numRequests; ++i)
+            proc.loadSampleFromFile (0, (i % 2 == 0) ? fileA : fileB);
+
+        const bool settled = pumpUntil ([&] { return ! proc.isSampleLoading (0); });
+        expect (settled, "rapid-swap stress settles (isSampleLoading returns false)");
+
+        const auto startedDelta = proc.getLoadsStartedCount() - startedBefore;
+
+        // Request i = 49 (the last one, odd) was fileB.
+        expect (proc.getSampleName (0) == fileB.getFileNameWithoutExtension(),
+                "final installed sample is the LAST requested file, not an earlier one "
+                "(got '" + proc.getSampleName (0) + "')");
+        expect (proc.getSampleError (0).isEmpty(),
+                "no load error after the rapid-swap settles");
+        expect (startedDelta >= 1 && startedDelta < numRequests,
+                "far fewer analyses ran than were requested (" + juce::String (startedDelta)
+                + " started vs " + juce::String (numRequests) + " requested)");
+
+        fileA.deleteFile();
+        fileB.deleteFile();
+    }
+
+    // Fabricates a WAV header claiming 192kHz stereo audio ~2GB long (well
+    // over 10 minutes) -- a legitimate-looking sample rate (within the
+    // <=400kHz sanity bound SampleLoader.cpp now enforces) whose declared
+    // duration nonetheless blows well past the independent byte-level decode
+    // cap (192kHz * 600s(the existing time cap) * 2ch * 4 bytes/float32 ~=
+    // 880MB, against a ~512MB cap). The physical file is tiny -- the header
+    // lies about the data chunk's size, and rejection happens before any
+    // read is attempted, so the test never needs a real gigabyte-scale file.
+    // Byte layout is little-endian, matching the WAV spec and this test
+    // suite's macOS/x86_64/ARM64 CI hosts.
+    static void oversizedSampleRejectionTest()
+    {
+        std::cout << "oversizedSampleRejectionTest\n";
+
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getNonexistentChildFile ("spasynth-oversized-test", ".wav");
+
+        {
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized-test file opened for writing");
+            if (! out.openedOk())
+                return;
+
+            constexpr juce::uint32 sampleRate = 192000;
+            constexpr juce::uint16 numChannels = 2;
+            constexpr juce::uint16 bitsPerSample = 16;
+            constexpr juce::uint16 blockAlign = (juce::uint16) (numChannels * bitsPerSample / 8);
+            constexpr juce::uint32 byteRate = sampleRate * blockAlign;
+            constexpr juce::uint32 fakeDataSize = 2000000000u;   // ~2GB claimed, ~43 min at 192kHz
+            constexpr juce::uint32 fmtSize = 16;
+            constexpr juce::uint16 audioFormat = 1;   // PCM
+            const juce::uint32 riffSize = 36 + fakeDataSize;
+
+            out.write ("RIFF", 4);
+            out.write (&riffSize, 4);
+            out.write ("WAVE", 4);
+            out.write ("fmt ", 4);
+            out.write (&fmtSize, 4);
+            out.write (&audioFormat, 2);
+            out.write (&numChannels, 2);
+            out.write (&sampleRate, 4);
+            out.write (&byteRate, 4);
+            out.write (&blockAlign, 2);
+            out.write (&bitsPerSample, 2);
+            out.write ("data", 4);
+            out.write (&fakeDataSize, 4);
+
+            // A little real (silent) PCM data so the file isn't literally
+            // empty -- irrelevant either way, since the byte cap rejects
+            // before any read is attempted.
+            juce::int16 silence[256] = {};
+            out.write (silence, sizeof (silence));
+        }
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        proc.loadSampleFromFile (0, file);
+        const bool settled = pumpUntil ([&] { return ! proc.isSampleLoading (0); });
+        expect (settled, "oversized-file load settles instead of hanging");
+
+        expect (proc.getSampleName (0).isEmpty(), "oversized file was rejected, not installed");
+        expect (proc.getSampleError (0).isNotEmpty(),
+                "oversized file surfaces a clear error rather than crashing or silently "
+                "truncating: '" + proc.getSampleError (0) + "'");
+
+        file.deleteFile();
+    }
+
+    // Constructs a processor, immediately fires a background load, then
+    // destroys the processor with no message pump in between -- the load is
+    // very likely still mid-flight (decode + YIN analysis of a 2s file takes
+    // tens of ms) when ~SPASynthProcessor() runs. Repeated 20x: a genuine
+    // use-after-free or a hung destructor (contentLoader failing to cancel
+    // and join promptly) would crash or hang this loop, not fail gracefully.
+    static void contentLoaderShutdownRaceTest()
+    {
+        std::cout << "contentLoaderShutdownRaceTest\n";
+
+        const auto file = writeRampSine (2.0, 48000.0);
+
+        for (int i = 0; i < 20; ++i)
+        {
+            auto proc = std::make_unique<spa::SPASynthProcessor>();
+            proc->prepareToPlay (48000.0, 512);
+            proc->loadSampleFromFile (0, file);
+            proc.reset();   // destroy immediately -- no dispatch loop pump
+        }
+
+        expect (true, "20x construct / fire-load / immediate-destroy cycles completed cleanly");
+
+        file.deleteFile();
+    }
+
     static void filterExtrasTest()
     {
         std::cout << "filterExtrasTest\n";
@@ -4981,6 +5127,9 @@ int main (int argc, char* argv[])
     concurrencyContentSwapStressTest();
     concurrencyTailLengthStressTest();
     concurrencyStateInfoStressTest();
+    contentLoadSupersessionStressTest();
+    oversizedSampleRejectionTest();
+    contentLoaderShutdownRaceTest();
     filterExtrasTest();
     dualFilterTest();
     filter1EnableTest();

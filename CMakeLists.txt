@@ -106,6 +106,7 @@ set(SPASYNTH_SOURCES
     source/dsp/Wavetable.cpp
     source/dsp/WavetableLoader.cpp
     source/dsp/SampleLoader.cpp
+    source/dsp/ContentLoadWorker.cpp
     source/dsp/FXChain.cpp
     source/dsp/Arpeggiator.cpp
     source/dsp/SPASynthVoice.cpp

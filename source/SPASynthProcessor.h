@@ -7,6 +7,7 @@
 #include "dsp/SPASynthVoice.h"
 #include "dsp/FXChain.h"
 #include "dsp/Arpeggiator.h"
+#include "dsp/ContentLoadWorker.h"
 #include "dsp/MidiClockSync.h"
 #include "library/PresetManager.h"
 #include "MidiLearn.h"
@@ -182,6 +183,15 @@ public:
     // real refresh, e.g. to warn the user rather than silently doing nothing.
     int getLibraryPackCount() const { return lastLibraryPackCount; }
 
+    // Test/debug observability for the shared content-load worker (see
+    // dsp/ContentLoadWorker.h): how many background sample/wavetable load
+    // jobs actually STARTED running vs how many were merely requested. A
+    // request superseded by a newer one before the worker gets to it is
+    // never counted as started. Used by the rapid-swap stress test to prove
+    // supersession/cancellation actually bounds work done.
+    int getLoadsStartedCount() const { return contentLoader.getStartedCount(); }
+    int getLoadsCompletedCount() const { return contentLoader.getCompletedCount(); }
+
 private:
     void updateSharedState (int blockLength);
     void scanMidiControllers (const juce::MidiBuffer& midi);
@@ -299,6 +309,15 @@ private:
     };
     std::array<SlotSample, params::maxOscSlots> slotSamples;
     std::vector<std::shared_ptr<const dsp::SampleData>> retiredSamples;  // message thread
+
+    // Single shared background worker for every sample/wavetable load (see
+    // dsp/ContentLoadWorker.h) — bounds rapid quick-swap auditioning to one
+    // job in flight per slot instead of one detached thread per click.
+    // Its destructor cancels/joins before this member itself is torn down,
+    // so no worker-thread code can run past that point; the job bodies
+    // never touch `this` directly anyway (only their message-thread
+    // callAsync completion does, guarded by the existing WeakReference).
+    dsp::ContentLoadWorker contentLoader;
 
     // Constructed after the APVTS (they capture parameter/default state).
     std::unique_ptr<MidiLearnManager> midiLearn;

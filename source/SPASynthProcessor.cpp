@@ -415,30 +415,57 @@ void SPASynthProcessor::loadSampleFromFile (int slot, const juce::File& file)
 
     // Capture a weak ref, not raw `this` — the host can destroy the processor
     // while this background load is in flight (the loader retries with sleeps
-    // up to ~360ms). The Thread::launch lambda below never touches `this`
-    // after the load returns; only the callAsync completion may, and it
-    // null-checks the weak ref first. That check-then-use is race-free because
-    // JUCE::WeakReference nulls out (and the processor's destructor runs) on
-    // the message thread, the same thread callAsync runs on — so there's no
-    // concurrent check-vs-delete to race against, even though WeakReference
-    // itself isn't thread-safe in general.
+    // up to ~360ms). The job below never touches `this` while it runs; only
+    // the callAsync completion may, and it null-checks the weak ref first.
+    // That check-then-use is race-free because JUCE::WeakReference nulls out
+    // (and the processor's destructor runs) on the message thread, the same
+    // thread callAsync runs on — so there's no concurrent check-vs-delete to
+    // race against, even though WeakReference itself isn't thread-safe in
+    // general.
+    //
+    // Routed through the single shared contentLoader (see
+    // dsp/ContentLoadWorker.h) instead of a per-request detached thread: a
+    // new request for this slot supersedes whatever was queued-but-unstarted
+    // for it (no thread ever spawned for the discarded one), and cancels a
+    // currently-running one so it bails out of analysis early instead of
+    // finishing a result nobody wants. Either way this request's own
+    // pendingLoads increment above is matched by exactly one decrement: via
+    // the completion callback below if the job runs (whether to completion
+    // or an early cancel-bailout), or via onDiscarded if it's superseded
+    // before the worker ever starts it.
     juce::WeakReference<SPASynthProcessor> weak (this);
-    juce::Thread::launch ([weak, slot, file, serial]
-    {
-        auto result = dsp::loadSampleFromFile (file);
-
-        juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
-                                          path = file.getFullPathName()]() mutable
+    contentLoader.post (dsp::ContentLoadWorker::Kind::sample, slot,
         {
-            if (weak == nullptr)
-                return;   // processor was destroyed while this load was in flight
-            auto& s = weak->slotSamples[(size_t) slot];
-            s.pendingLoads.fetch_sub (1);
-            if (serial != s.requestSerial)
-                return;   // superseded by a newer request — drop this stale result
-            weak->installSample (slot, std::move (loaded.sample), path, loaded.error);
+            /* run */ [weak, slot, file, serial] (dsp::CancelToken& cancel)
+            {
+                auto result = dsp::loadSampleFromFile (file,
+                    [&cancel] { return cancel.shouldCancel(); });
+
+                juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
+                                                  path = file.getFullPathName()]() mutable
+                {
+                    if (weak == nullptr)
+                        return;   // processor was destroyed while this load was in flight
+                    auto& s = weak->slotSamples[(size_t) slot];
+                    s.pendingLoads.fetch_sub (1);
+                    if (serial != s.requestSerial)
+                        return;   // superseded by a newer request — drop this stale result
+                    weak->installSample (slot, std::move (loaded.sample), path, loaded.error);
+                });
+            },
+            /* onDiscarded */ [weak, slot]
+            {
+                // Called synchronously on THIS (message) thread by
+                // ContentLoadWorker::post() if a newer request replaced this
+                // one before the worker ever started it — the run lambda
+                // above, which owns the matching pendingLoads decrement,
+                // never executes for this request. No callAsync/weak-ref
+                // race here: post() invokes this directly, not from the
+                // worker thread.
+                if (weak != nullptr)
+                    weak->slotSamples[(size_t) slot].pendingLoads.fetch_sub (1);
+            }
         });
-    });
 }
 
 juce::Array<juce::File> SPASynthProcessor::getPackSiblings (int slot) const
@@ -686,23 +713,35 @@ void SPASynthProcessor::loadWavetableFromFile (int slot, const juce::File& file)
     sendChangeMessage();
 
     // Weak-ref treatment mirrors loadSampleFromFile — see the comment there.
+    // Routed through the shared contentLoader the same way, including the
+    // matching onDiscarded pendingLoads decrement for a request superseded
+    // before the worker ever starts it — see loadSampleFromFile's comment.
     juce::WeakReference<SPASynthProcessor> weak (this);
-    juce::Thread::launch ([weak, slot, file, serial]
-    {
-        auto result = dsp::loadWavetableFromFile (file);
-
-        juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
-                                          path = file.getFullPathName()]() mutable
+    contentLoader.post (dsp::ContentLoadWorker::Kind::wavetable, slot,
         {
-            if (weak == nullptr)
-                return;   // processor was destroyed while this load was in flight
-            auto& t = weak->slotTables[(size_t) slot];
-            t.pendingLoads.fetch_sub (1);
-            if (serial != t.requestSerial)
-                return;   // superseded by a newer request — drop this stale result
-            weak->installTable (slot, std::move (loaded.table), path, loaded.error);
+            /* run */ [weak, slot, file, serial] (dsp::CancelToken& cancel)
+            {
+                auto result = dsp::loadWavetableFromFile (file,
+                    [&cancel] { return cancel.shouldCancel(); });
+
+                juce::MessageManager::callAsync ([weak, slot, serial, loaded = std::move (result),
+                                                  path = file.getFullPathName()]() mutable
+                {
+                    if (weak == nullptr)
+                        return;   // processor was destroyed while this load was in flight
+                    auto& t = weak->slotTables[(size_t) slot];
+                    t.pendingLoads.fetch_sub (1);
+                    if (serial != t.requestSerial)
+                        return;   // superseded by a newer request — drop this stale result
+                    weak->installTable (slot, std::move (loaded.table), path, loaded.error);
+                });
+            },
+            /* onDiscarded */ [weak, slot]
+            {
+                if (weak != nullptr)
+                    weak->slotTables[(size_t) slot].pendingLoads.fetch_sub (1);
+            }
         });
-    });
 }
 
 void SPASynthProcessor::setFactoryWavetable (int slot)
