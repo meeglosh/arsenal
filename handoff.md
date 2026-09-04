@@ -1,129 +1,76 @@
-# SPASynth handoff (2026-08-25)
+# SPASynth handoff (2026-09-04)
 
-Quick "start here" for the next session. Full detail lives in `CLAUDE.md`; this
-is the short version.
+Quick "start here" for the next session. Full detail lives in `CLAUDE.md`;
+this is the short version. Check `git branch --show-current` first — active
+work is on `audit-hardening`.
 
 ## Where we are
 
-- **v1.0.8 is confirmed working and shipped to Paul and Phil.** Fixed QWERTY
-  (computer-keyboard) note input dying the instant a knob/dropdown was
-  touched. The first attempt (`setWantsKeyboardFocus(false)`) was **wrong**
-  — Mike tested it and reported it back broken. The correct flag is
-  `setMouseClickGrabsKeyboardFocus(false)` (JUCE grabs focus on every mouse
-  click unconditionally, via a flag separate from "wants focus" — traced
-  through JUCE's actual source before landing the real fix). **Remember this
-  for any future focus-stealing bug in this codebase.**
-- **v1.0.9 is built, signed, staged — NOT yet tested by Mike.** A pre-launch
-  performance/hardening batch (soft bypass, convolution efficiency, reverb
-  CPU reduction, EQ analyzer gating, mod-dest capacity guard, `$LIB$` path
-  clamp, lazy pluck buffers, CI permissions), done by Mike's request while
-  there was time before launch, not in response to a bug.
-- **A second focus-steal bug was found AFTER 1.0.9 was staged, and the fix is
-  sitting UNCOMMITTED in the working tree right now.** The 1.0.8 fix only
-  covered parameter controls (knobs/dropdowns) — it missed every plain
-  action button (RANDOMIZE ALL, SAVE, preset nav, settings, panic, etc.),
-  which have the identical defect. Fixed all ~25 of them (same
-  `setMouseClickGrabsKeyboardFocus(false)` fix) across `SPASynthEditor.cpp`,
-  `ModulePanels.cpp`, `PresetBrowser.cpp`. Build is clean, tests pass, a dev
-  build is installed on Mike's machine for him to test — **but this has not
-  been committed, and Mike has not yet confirmed it fixes RANDOMIZE ALL (or
-  that nothing else broke).** Check `git status` first thing if picking this
-  up — don't assume it's landed.
-- **GitHub Actions storage alert (2026-08-25) — resolved as a non-issue,
-  nothing to fix.** The quota is account-wide across all ~21 of Mike's
-  repos, not per-repo; live storage everywhere totals ~11MB (all in
-  spasynth, already correctly capped). The alert reflects a cycle-peak
-  measurement, not current usage — resets 2026-09-01 on its own.
+- **Nothing after 1.0.8 has ever been sent to Paul and Phil.** 1.0.9-1.0.12
+  were each built and staged but superseded before going out (Mike bumps the
+  number each time even unsent — his call, follow it).
+- **v1.0.12 (main) is the staged release candidate**: full faceplate visual
+  redesign + loop-point display + every fix batch (QWERTY focus incl. the
+  VOICE call-out, library folder, dimming, silent preset switching, banks,
+  1.0.9 hardening). Both installers staged in
+  `dist/shopify/SPASynth-{Standard,Pro}-1.0.12/`, hashes verified.
+  **CORRECTION of earlier docs: Mike has NEVER tested the 1.0.12 pkg** — the
+  1.0.12 pkg was never installed (`/Library` still holds 1.0.11) and his
+  attempts to test the latest work are blocked by the Logic issue below.
+- **Branch `audit-hardening` (at `4d4fd95`, version 1.0.13)** answers an
+  external Codex "NO-GO" audit: two hardening waves (concurrency/RT-safety,
+  MIDI-Learn notify deferral, FX buffer scaling, atomic preset writes,
+  hermetic tests, CI gates, bounded cancellable content loading). Suite
+  385→431 ALL PASS, full-suite TSan clean, auval clean. Rejected audit items
+  and the reasoning are in CLAUDE.md's 2026-09-04 section. NOT merged; Mike
+  decides whether it ships as 1.0.13 before launch or lands after.
 
-## What's actually left before launch
+## THE BLOCKER — SPASynth won't show in Logic (unresolved, mid-diagnosis)
 
-1. **Get the uncommitted focus-fix confirmed by Mike**, then commit it and
-   fold it into whatever the next build is (1.0.9 if nothing's shipped yet,
-   otherwise bump per the versioning rule below).
-2. Mike test-drives 1.0.9's own hardening changes (separate ask from #1) —
-   low risk, nothing user-facing except bypass behavior, just unverified.
-3. Decide: one more tester round, or send the announcement directly once
-   Mike's happy with his own testing.
-4. Shopify build-out per `docs/shopify-setup-guide.md`.
-5. Send `docs/launch-email.md` / `docs/social-posts.md` (now current, reflect
-   the full shipping feature set) — marketing site is already confirmed live
-   and accurate by Mike.
+Full ladder in CLAUDE.md. Short version: the user-domain dev copy (1.0.13)
+registers and validates fine from the CLI, but Logic sees only the /Library
+1.0.11 release — the AudioComponentRegistrar daemon is wedged (`auval -a`
+stalls for minutes) and Logic holds a stale registry snapshot. Root trigger
+was probably a Logic scan against a mid-rebuild dev bundle (verdict
+ValidationResult=2 got keyed to version 1.0.12 in com.apple.logic10.plist).
+**Next step when the session resumes: Mike reboots the Mac, launches Logic,
+and 1.0.13 should scan fresh.** If it still fails: build a signed+notarized
+pkg from `audit-hardening` and have Mike `sudo installer` it so /Library
+carries the build under test (the customer path; never failed).
 
-Windows real-DAW smoke test is **done** — Paul and Phil both tested Windows
-on 1.0.8, no issues. Marketing site is **done** — confirmed live/accurate by
-Mike directly.
+## New non-negotiable rules (added after this saga)
 
-## Versioning rule (Mike's call)
+1. **Dev plugin copies (`~/Library/Audio/Plug-Ins/`) get rebuilt ONLY as a
+   deliberate final step right before Mike tests** — never during agent
+   verification passes. Logic scanning a half-relinked bundle poisons its
+   per-version verdict.
+2. **Never push any commit between pushing a release sha and fetching its CI
+   Windows exe** (cancel-in-progress kills the run).
+3. Notary profile (`SPASYNTH_NOTARY`) vanishes periodically; recreate in
+   Terminal.app, NOT via the `!` prefix (instant 401 there).
 
-Bump the version the moment a build has been SENT to anyone, testers
-included. If a build never left Mike's machine, overwrite it in place at the
-same version number instead (happened once: 1.0.8's broken→corrected fix).
+## Mike's open decisions / tasks
 
-## How to rebuild after a code fix
+- Reboot + confirm Logic loads 1.0.13, then actually test: audit-branch
+  regression pass (rapid sample auditioning, MIDI Learn feel, Pluck
+  automation, 8x oversampling flanger/vibrato) + the whole 1.0.12 gauntlet
+  (QWERTY everywhere, loose-WAV folder, dimming, silent preset clicks,
+  banks, loop markers, redesign, soft bypass).
+- Merge call: audit-hardening → main as 1.0.13 tester build (recommended)
+  vs. ship 1.0.12 and merge later.
+- Business/legal (from the audit, only Mike can close): JUCE commercial
+  license tier, Steinberg VST3 distribution agreement, EULA +
+  Kenzora-vs-Silverplatter entity naming. Windows Authenticode remains his
+  standing "no".
+- Then the launch checklist: tester round vs announce, Shopify build-out,
+  launch email/social posts (all written and current).
 
-Signing + notary are set up on Mike's machine (Developer ID certs in the
-login keychain, `SPASYNTH_NOTARY` profile). Per fix:
+## Ritual reminders
 
-```
-export SPASYNTH_CODESIGN_IDENTITY="Developer ID Application: Kenzora Games (7K9WY5T49S)"
-export SPASYNTH_INSTALLER_IDENTITY="Developer ID Installer: Kenzora Games (7K9WY5T49S)"
-export SPASYNTH_NOTARIZE_PROFILE="SPASYNTH_NOTARY"
-./scripts/build_release.sh -            # "-" skips the slow library repackage (unchanged)
-```
-
-This now **automatically clears any dev-build shadow copy** from
-`~/Library/Audio/Plug-Ins/` as its first step (fixed after this bit us twice
-— 1.0.4 and 1.0.8 — a leftover dev/auval build there silently shadows the
-signed release in Logic since macOS prefers the user domain over
-`/Library`). No longer a manual habit to remember for release builds
-specifically, but still do it by hand after any ad hoc `cmake --build
-... SPASynth_AU SPASynth_VST3` dev/auval run:
-```
-rm -rf ~/Library/Audio/Plug-Ins/Components/SPASynth.component ~/Library/Audio/Plug-Ins/VST3/SPASynth.vst3
-```
-
-Then Windows: push `main` to trigger the Windows-only-on-push CI, `gh run
-download <id> -n spasynth-installer-Windows`, copy the pkg + exe into both
-`dist/shopify` folders. Verify: one distinct md5 per installer across all
-locations, `otool -l <standalone> | grep minos` -> `minos 11.0`, `spctl -a -t
-install <pkg>` -> accepted. Ask Mike before rebuilding (he batches findings).
-
-## Gotchas learned
-
-- **`setMouseClickGrabsKeyboardFocus`, not `setWantsKeyboardFocus`, for any
-  focus-stealing bug.** See the 1.0.8 section above — this cost a whole
-  extra round-trip once already.
-- **Dev-build shadow copies in `~/Library` silently override the installed
-  release in Logic** (macOS prefers user domain over system domain for AU
-  lookup). `build_release.sh` now clears this automatically; still do it by
-  hand after any dev/auval build outside that script.
-- **A push right after flipping the repo public can silently fail to
-  trigger CI** (no run appears, no error) — retry with an empty
-  `ci: trigger` commit a bit later. Happened on 1.0.7.
-- **Repo is currently PUBLIC, left that way on purpose** (Mike's call as of
-  2026-08-21, to avoid blocking agent progress) — don't prompt him to
-  re-private it unless he asks.
-- **GitHub Actions storage quota is account-wide**, not per-repo, and the
-  usage-alert email reflects cycle-peak/cumulative usage, not a live
-  snapshot — check `gh api repos/{owner}/{repo}/actions/artifacts` and
-  `.../actions/cache/usage` across *all* repos before assuming spasynth is
-  the cause.
-- Notary profile has vanished twice; recovery = Mike recreates it
-  interactively, then `xcrun notarytool submit <pkg> --keychain-profile
-  SPASYNTH_NOTARY --wait` + `xcrun stapler staple <pkg>` — the signed pkg
-  does NOT need rebuilding.
-- Test binary: `build/SPASynthTests_artefacts/SPASynthTests` (no `Debug/`
-  subdir — `build/` was reconfigured without `CMAKE_BUILD_TYPE`).
-- Verification ritual for every change: build `SPASynthTests` and run it
-  (expect ALL PASS, 185+ assertions), look at `--snapshot` renders for UI
-  changes, then `auval` (+ `pluginval` strictness-8 if available) for
-  anything touching the audio thread.
-- Load-bearing invariants (do not break): `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`;
-  append-only choice orders (FX module ids, EQ band types, voice/reverb/EQ
-  character modes); RT-safety on the audio thread; per-preset `fxOrder`
-  packed atomic. See CLAUDE.md's invariants section.
-
-## House style (customer-facing copy)
-
-First-person company voice ("we"/"our"/Silverplatter Audio), never name
-individuals, **no em dashes**, sound count 11,474.
+- Verification ritual + invariants: CLAUDE.md. Suite:
+  `build/SPASynthTests_artefacts/SPASynthTests` (431 assertions, hermetic —
+  never touches real presets).
+- Windows exe comes from CI draft releases: `scripts/fetch_windows_build.sh
+  <sha7>` (explicit sha REQUIRED).
+- Memory (`~/.claude/.../memory/`) mirrors all of this; update both when
+  state changes.

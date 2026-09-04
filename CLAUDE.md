@@ -10,6 +10,75 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-04): audit-hardening branch complete; Logic dev-copy loading BLOCKED pending reboot
+
+**CORRECTION to the 2026-09-02 section below: Mike never tested the 1.0.12
+pkg.** It was never installed (`/Library` still holds 1.0.11); his "checks
+out" referred to the pre-cut VOICE-fix dev build. 1.0.12 remains staged,
+unsent, and unverified-as-installed.
+
+**Codex audit → branch `audit-hardening`** (`e1c131e` wave 1, `eb59215`
+wave 2, `4d4fd95` bumps the branch to 1.0.13): fixed every accepted finding
+— retirement frees under getCallbackLock; pluck alloc off the APVTS
+listener (VST3 automation DOES reach parameterChanged on the audio thread,
+verified in the JUCE wrapper; the 1.0.9 comment was wrong); atomic
+tail-length; state-string lock; MIDI-Learn host notify replayed from a 60Hz
+timer (CC response ~17ms now; engine-only setValue does NOT work — APVTS
+raw atomics only update via the notify path); flanger/vibrato buffers sized
+from the oversampled rate (only mattered at 96k+); atomic preset writes;
+hermetic tests (presets-root override + ScopedPresetRoot; suite green under
+fake HOME); license read cap; CI publish gated to push + Windows test gate
++ SHA-pinned actions + explicit-sha fetch + self-cleaning staging + loud
+unsigned banner; ContentLoadWorker: one bounded worker, per-slot
+latest-wins mailbox, real cancellation (50 rapid swaps → 2 analyses ran),
+decode caps/validation. Suite 385→431 ALL PASS, full-suite ThreadSanitizer
+clean, auval clean. REJECTED (with reasons, told to Mike): Windows
+Authenticode (his standing business call), RCU/epoch machinery (lock-scope
+achieves the guarantee), the audit's 10-20s pitch-analysis cap (would
+flatten SFX-follower modulation — the curves are continuous mod sources
+and real library content runs 20-140s; cancellation used instead), signed
+manifests, sanitizer/fuzz/soak/accessibility program (post-launch).
+Business items only Mike can close: JUCE commercial license tier, Steinberg
+VST3 agreement, EULA / Kenzora-vs-Silverplatter. NOT merged — Mike decides
+1.0.13-before-launch vs merge-after.
+
+**Logic loading saga (2026-09-04, UNRESOLVED — resume here).** Mike could
+not load the latest build in Logic. Timeline of findings:
+1. Dev bundles healthy, CLI `auval` (incl. -strict) passes throughout.
+2. Logic's targeted rescans completed in 0.08s "1 not scanned" — a cached
+   verdict. Found `ValidationResult => 2` keyed to `aumu-SpSy-SpAu`
+   componentVersion 65548 (=1.0.12) in `~/Library/Preferences/
+   com.apple.logic10.plist` (healthy plugins say 3). Verdict poisoning
+   almost certainly from Logic scanning a mid-rebuild dev bundle (agents
+   rebuilt dev copies repeatedly that morning).
+3. Deleting the plist entry (Logic quit + `killall cfprefsd`) did NOT fix
+   it. Clearing `~/Library/Caches/AudioUnitCache` +
+   `com.apple.audio.AUHostingService.*` + InfoHelper caches did NOT fix it.
+4. KEY FACT: Plug-in Manager shows SPASynth **1.0.11** — Logic sees only
+   the /Library release; the user-domain dev copy is invisible to Logic
+   while the CLI registry resolves it fine (validated 1.0.13). `auval -a`
+   enumeration stalls for MINUTES → the AudioComponentRegistrar daemon is
+   wedged (aggravated by repeated `killall -9` during debugging) and Logic
+   holds a stale registry snapshot.
+5. Branch bumped to 1.0.13 so no cached verdict can ever apply to it.
+**NEXT STEP: Mike reboots the Mac → launch Logic → expect a fresh scan of
+1.0.13.** If still missing: stop fighting user-domain registration — build
+a signed+notarized pkg from `audit-hardening`, Mike `sudo installer`s it,
+/Library carries the build under test (the customer path).
+
+**New rules (learned the hard way):**
+- **Dev plugin copies get rebuilt ONLY as a deliberate final step right
+  before Mike tests.** Agents must NOT build SPASynth_AU/SPASynth_VST3
+  during verification passes (build SPASynthTests for the suite; auval only
+  when the dev copy was refreshed on purpose). A Logic scan against a
+  half-relinked bundle poisons the per-version verdict.
+- Missing-in-Logic escalation ladder: Reset & Rescan Selection + restart
+  Logic → `killall -9 AudioComponentRegistrar` → clear the AU caches →
+  delete the `aumu-SpSy-SpAu` entry from com.apple.logic10.plist (Logic
+  quit, then `killall cfprefsd`) → bump the component version → REBOOT
+  (wedged registrar). Check `auval -v aumu SpSy SpAu | grep "Component
+  Version"` to see WHICH copy the registry resolves.
+
 ## Current state (2026-09-02): v1.0.12 built + staged (pending Mike's sign-off); this is the redesign build
 
 **1.0.11 was never sent.** Mike found one more bug in it — the VOICE
