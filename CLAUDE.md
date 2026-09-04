@@ -10,7 +10,37 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
-## Current state (2026-09-04): audit-hardening branch complete; Logic dev-copy loading BLOCKED pending reboot
+## Current state (2026-09-04): audit-hardening branch complete; 1.0.13 pkg built, installed, CONFIRMED WORKING in Logic
+
+**RESOLVED (2026-09-04 afternoon).** The reboot alone did not fix Logic.
+Diagnosis from Logic's scan logs (`~/Library/Caches/AudioUnitCache/Logs/
+AUScan*.plist`), the unified log, and the per-user
+`com.apple.audio.AudioComponentCache.plist`: after the reboot the
+registrar was healthy (`auval -a` is just slow on this machine because it
+dlopens hundreds of UAD plugins — NOT a wedge), but Logic never
+re-validated anything: its launch scan and the earlier targeted rescan
+both reused a cached ValidationResult=2 for componentVersion 65549
+(1.0.13), written pre-reboot by a rescan that never loaded the binary (the
+AMFI log line that accompanies every load was absent). Two copies with the
+same aumu/SpSy/SpAu identity but DIFFERENT versions were registered at once
+(1.0.13 user-domain dev copy, 1.0.11 /Library) and every Logic scan listed
+SPASynth twice; earlier dev copies that shadowed a release harmlessly had
+the SAME version as the release. Fix = the customer path: signed 1.0.13
+pkg from `audit-hardening` (6af7243) built by `build_release.sh` (which
+cleared the dev copies), Mike `sudo installer`ed it, then Plug-in Manager →
+Reset & Rescan Selection + relaunch Logic → SPASynth 1.0.13 loads. Notary
+profile vanished a FOURTH time mid-build (it answered `notarytool history`
+15 min earlier); Mike recreated it in Terminal.app; pkg then notarized +
+stapled, spctl accepted, md5 `ce6e9c81630b8b222293fb62eb3339fa`, staged
+in `dist/installers/` + `dist/shopify/SPASynth-{Standard,Pro}-1.0.13/`
+(pkg + 3 docs, empty Library/). **No Windows 1.0.13 exe yet: CI builds
+only on pushes to `main`** (PR runs build but don't publish the draft
+release; PAT can't `workflow_dispatch`) — the exe requires merging
+`audit-hardening` → `main`, Mike's call. Rule of thumb from this saga:
+never let a user-domain dev copy carry a different version than the
+/Library release; when testing a new version, install the pkg.
+
+**Original 2026-09-04 morning notes follow (kept for the ladder).**
 
 **CORRECTION to the 2026-09-02 section below: Mike never tested the 1.0.12
 pkg.** It was never installed (`/Library` still holds 1.0.11); his "checks
@@ -61,10 +91,8 @@ not load the latest build in Logic. Timeline of findings:
    wedged (aggravated by repeated `killall -9` during debugging) and Logic
    holds a stale registry snapshot.
 5. Branch bumped to 1.0.13 so no cached verdict can ever apply to it.
-**NEXT STEP: Mike reboots the Mac → launch Logic → expect a fresh scan of
-1.0.13.** If still missing: stop fighting user-domain registration — build
-a signed+notarized pkg from `audit-hardening`, Mike `sudo installer`s it,
-/Library carries the build under test (the customer path).
+(Point 4's "wedged registrar" turned out to be wrong — see the RESOLVED
+paragraph above. The reboot happened; the pkg route fixed it.)
 
 **New rules (learned the hard way):**
 - **Dev plugin copies get rebuilt ONLY as a deliberate final step right

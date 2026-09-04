@@ -25,18 +25,18 @@ work is on `audit-hardening`.
   and the reasoning are in CLAUDE.md's 2026-09-04 section. NOT merged; Mike
   decides whether it ships as 1.0.13 before launch or lands after.
 
-## THE BLOCKER — SPASynth won't show in Logic (unresolved, mid-diagnosis)
+## Logic loading saga — RESOLVED 2026-09-04
 
-Full ladder in CLAUDE.md. Short version: the user-domain dev copy (1.0.13)
-registers and validates fine from the CLI, but Logic sees only the /Library
-1.0.11 release — the AudioComponentRegistrar daemon is wedged (`auval -a`
-stalls for minutes) and Logic holds a stale registry snapshot. Root trigger
-was probably a Logic scan against a mid-rebuild dev bundle (verdict
-ValidationResult=2 got keyed to version 1.0.12 in com.apple.logic10.plist).
-**Next step when the session resumes: Mike reboots the Mac, launches Logic,
-and 1.0.13 should scan fresh.** If it still fails: build a signed+notarized
-pkg from `audit-hardening` and have Mike `sudo installer` it so /Library
-carries the build under test (the customer path; never failed).
+Logic was reusing a cached "failed" verdict for version 1.0.13 and never
+re-validating; two same-identity copies with different versions (1.0.13
+dev copy in ~/Library, 1.0.11 in /Library) were registered at once. Fix:
+signed+notarized 1.0.13 pkg from `audit-hardening` (6af7243) installed to
+/Library (dev copies cleared), then Plug-in Manager → Reset & Rescan
+Selection + relaunch Logic. **Mike confirmed 1.0.13 loads and is "good to
+go".** pkg md5 `ce6e9c81630b8b222293fb62eb3339fa`, staged in
+`dist/installers/` and `dist/shopify/SPASynth-{Standard,Pro}-1.0.13/`.
+No Windows exe yet — CI builds only on pushes to `main`, so it needs the
+merge. Full diagnosis in CLAUDE.md's 2026-09-04 section.
 
 ## New non-negotiable rules (added after this saga)
 
@@ -51,13 +51,14 @@ carries the build under test (the customer path; never failed).
 
 ## Mike's open decisions / tasks
 
-- Reboot + confirm Logic loads 1.0.13, then actually test: audit-branch
-  regression pass (rapid sample auditioning, MIDI Learn feel, Pluck
-  automation, 8x oversampling flanger/vibrato) + the whole 1.0.12 gauntlet
-  (QWERTY everywhere, loose-WAV folder, dimming, silent preset clicks,
-  banks, loop markers, redesign, soft bypass).
-- Merge call: audit-hardening → main as 1.0.13 tester build (recommended)
-  vs. ship 1.0.12 and merge later.
+- 1.0.13 is installed and loads in Logic. Still to actually exercise:
+  audit-branch regression pass (rapid sample auditioning, MIDI Learn feel,
+  Pluck automation, 8x oversampling flanger/vibrato) + the whole 1.0.12
+  gauntlet (QWERTY everywhere, loose-WAV folder, dimming, silent preset
+  clicks, banks, loop markers, redesign, soft bypass).
+- Merge call: audit-hardening → main as 1.0.13 (recommended — it is the
+  build Mike now has installed, and the Windows exe can only come from a
+  push to main) vs. ship 1.0.12 and merge later.
 - Business/legal (from the audit, only Mike can close): JUCE commercial
   license tier, Steinberg VST3 distribution agreement, EULA +
   Kenzora-vs-Silverplatter entity naming. Windows Authenticode remains his
