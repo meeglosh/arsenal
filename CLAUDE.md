@@ -10,6 +10,53 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-05): v1.0.12 INSTALLED and CONFIRMED WORKING by Mike; audit-hardening branch ABANDONED
+
+**Decision of record (Mike, 2026-09-05): the `audit-hardening` branch
+(1.0.13, commits e1c131e/eb59215/4d4fd95/6af7243/37fa0e6) is abandoned.
+Do not merge it, do not cherry-pick from it without re-testing in Logic.**
+Reason: the signed 1.0.13 pkg built from it produced loud, sustained,
+pulsing noise bursts during playback in Mike's session (a session created
+on 1.0.11; patch = granular + sample + wavetable oscillators, delay +
+reverb, no MIDI Learn), in both Logic and the standalone, on a fresh
+instance too; switching the reverb off stopped them. Installing the staged
+1.0.12 pkg (`b3db6f9304ac701294e0e7318eb34ab8`) over it made the bursts
+vanish completely with the same session. The cause was NOT found: no
+reverb/delay/voice/FX code differs between 1.0.11 and 1.0.13, and an
+offline harness (soak probes with the real preset, all reverb modes,
+44.1/96k, block sizes 64-1024, harsh MIDI) was clean on both builds. The
+probes are in `git stash` ("soak/preset probes ...") on this machine. The
+branch stays on the remote for history. Its useful non-audio pieces (atomic
+preset writes, hermetic tests, CI gates, decode caps) could be re-landed
+individually later, each verified in Logic by Mike before shipping.
+
+**Logic loading saga (2026-09-04) — resolved, lessons kept:** Logic caches a
+per-version validation verdict; a rescan that happens while a bundle is
+mid-rebuild, or while two same-identity copies with DIFFERENT versions are
+registered (user-domain dev copy vs /Library release), poisons it and
+Logic then never re-validates. Fix that worked: install the signed pkg to
+/Library with no dev copies present, then Plug-in Manager → Reset & Rescan
+Selection → relaunch Logic. Rules: dev plugin copies get rebuilt only as a
+deliberate final step right before Mike tests, never in agent verification
+passes; never let a dev copy carry a different version than the installed
+release; when testing a new version, install the pkg. Diagnostics:
+`~/Library/Caches/AudioUnitCache/Logs/AUScan*.plist`, the per-user
+`com.apple.audio.AudioComponentCache.plist`, and `/usr/bin/log show`
+(zsh's `log` builtin shadows it) filtered on AMFI "adhoc signed" lines,
+which prove whether a binary was actually loaded. `auval -a` is just slow
+on this Mac (it dlopens hundreds of UAD plugins), not a wedged daemon.
+The notary profile vanished a fourth time on 2026-09-04; Mike recreated it.
+
+**Where that leaves the release:** 1.0.12 is installed in /Library and is
+the first build since 1.0.8 Mike has actually run installed; his session
+plays as expected. Remaining before launch: the rest of the 1.0.12
+gauntlet (QWERTY everywhere incl. the VOICE call-out, loose-WAV folder,
+dimming, silent preset clicks, banks, loop markers, redesign, soft bypass),
+then send to Paul and Phil, then the Shopify build-out and announce. The
+1.0.13 artifacts in `dist/installers/` and `dist/shopify/*-1.0.13/` are
+obsolete; delete them before any upload. Repo is currently PRIVATE (check
+`gh repo view --json visibility`; Mike flips it himself).
+
 ## Current state (2026-09-02): v1.0.12 built + staged (pending Mike's sign-off); this is the redesign build
 
 **1.0.11 was never sent.** Mike found one more bug in it — the VOICE

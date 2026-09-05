@@ -1,9 +1,18 @@
-# SPASynth handoff (2026-08-25)
+# SPASynth handoff (2026-09-05)
 
 Quick "start here" for the next session. Full detail lives in `CLAUDE.md`; this
 is the short version.
 
 ## Where we are
+
+- **2026-09-05: 1.0.12 is installed in /Library and confirmed working by
+  Mike in Logic (his own session, playback clean).** The `audit-hardening`
+  branch (1.0.13) is ABANDONED — its build produced reverb-triggered pulsing
+  noise bursts that 1.0.12 does not; cause never found. Do not merge it.
+  Full story + the Logic-loading lessons in CLAUDE.md's 2026-09-05 section.
+  Remaining: finish the 1.0.12 gauntlet, send to Paul and Phil, Shopify,
+  announce. Delete the obsolete 1.0.13 files under dist/ before uploading.
+  Everything below this bullet is older history.
 
 - **v1.0.8 is confirmed working and shipped to Paul and Phil.** Fixed QWERTY
   (computer-keyboard) note input dying the instant a knob/dropdown was
