@@ -1,9 +1,18 @@
-# SPASynth handoff (2026-09-05)
+# SPASynth handoff (2026-09-06)
 
 Quick "start here" for the next session. Full detail lives in `CLAUDE.md`; this
 is the short version.
 
 ## Where we are
+
+- **2026-09-06: 1.0.13 (main, `dee6146`) built + staged, NOT yet installed by
+  Mike.** Fixes the Logic crash on closing the window with the VOICE call-out
+  open (call-outs were parented to the AU wrapper's holder, which deletes
+  its children; see CLAUDE.md 2026-09-06). pkg md5
+  `51feed96455d8b4b7bc2943ae3093e7f`, exe md5
+  `b934ab4fdc993a27760977a8731a4c45`. Next: Mike installs, rescans in Logic,
+  verifies the crash is gone + his session plays clean, finishes the
+  gauntlet, sends to Paul and Phil.
 
 - **2026-09-05: 1.0.12 is installed in /Library and confirmed working by
   Mike in Logic (his own session, playback clean).** The `audit-hardening`

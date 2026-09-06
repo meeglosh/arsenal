@@ -10,6 +10,36 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-06): v1.0.13 (main) built + staged; fixes the Logic close-window crash
+
+**1.0.12 was never sent.** Mike found a crash on it in Logic: open the VOICE
+call-out, switch modes, close the plugin window → SIGABRT in JuceAU
+deleteEditor ("pointer being freed was not allocated"). Root cause
+(`e5fc7fa`): the 1.0.12 VOICE fix parented the call-out (and the accent
+picker) to `getTopLevelComponent()`, which under the AU wrapper is JUCE's
+`EditorCompHolder`, whose destructor `deleteAllChildren()`s — so a still-
+open CallOutBox (owned BY VALUE by JUCE's CallOutBoxCallback) got
+`delete`d. Standalone was immune (its top level is a window that doesn't
+delete children). Fix: new `ContentComponent::callOutParent()` returns our
+own editor shell (`findParentComponentOfClass<juce::AudioProcessorEditor>`),
+and both dismissal lambdas are SafePointer-guarded (they fire from the
+modal manager's deferred delete, possibly after the editor is gone).
+`voicePanelEditorCloseTest` hosts the editor in a holder that mimics
+EditorCompHolder; it aborted (exit 134) before the fix. Suite ALL PASS.
+**Rule: never parent pop-overs to getTopLevelComponent(); use
+callOutParent().**
+
+**1.0.13 = main at `dee6146`** (fix + bump). Built 2026-09-05 evening:
+macOS pkg signed + notarized + stapled, md5
+`51feed96455d8b4b7bc2943ae3093e7f`; Windows exe from draft release
+`ci-windows-dee6146`, md5 `b934ab4fdc993a27760977a8731a4c45`; both
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.13/`. (The old 1.0.13 files from
+the abandoned audit branch were deleted first.) Changelog `## 1.0.13`
+covers both fixes. **Pending: Mike installs 1.0.13, confirms the crash is
+gone (close the window with VOICE open, repeatedly) and his session still
+plays clean, then finishes the gauntlet and sends to Paul and Phil.**
+
 ## Current state (2026-09-05): v1.0.12 INSTALLED and CONFIRMED WORKING by Mike; audit-hardening branch ABANDONED
 
 **Decision of record (Mike, 2026-09-05): the `audit-hardening` branch
