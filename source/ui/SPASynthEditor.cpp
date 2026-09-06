@@ -822,8 +822,13 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     voiceButton.setTooltip ("Voice mode: Poly / Mono / Duo / Paraphonic / Unison");
     voiceButton.onClick = [this]
     {
+        // SafePointer, not a raw `this`: the call-out's owner (JUCE's
+        // CallOutBoxCallback) is deleted by the ModalComponentManager some
+        // time AFTER dismissal, and VoicePanel's destructor fires this from
+        // there -- possibly after the host has already torn this editor down.
+        juce::Component::SafePointer<ContentComponent> safe (this);
         auto panel = std::make_unique<VoicePanel> (processor.getAPVTS(),
-            [this] { if (keyboardVisible) keyboard.grabKeyboardFocus(); });
+            [safe] { if (safe != nullptr && safe->keyboardVisible) safe->keyboard.grabKeyboardFocus(); });
 
         // Parented to the editor shell, like showAccentPicker's call-out --
         // NOT launched with a null parent (as this used to be). A null
@@ -841,7 +846,14 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         // must be converted to the parent's local space (getLocalArea),
         // unlike the old screen-bounds call, which only made sense for the
         // null-parent/desktop case.
-        if (auto* top = getTopLevelComponent())
+        // Parent = OUR editor shell (callOutParent()), never
+        // getTopLevelComponent(): inside the AU wrapper the top-level
+        // component is JUCE's EditorCompHolder, whose destructor calls
+        // deleteAllChildren() -- which would `delete` a CallOutBox that is a
+        // by-value member of JUCE's CallOutBoxCallback, aborting Logic with
+        // "pointer being freed was not allocated" whenever the window is
+        // closed with the call-out still up (1.0.12 crash, 2026-09-05).
+        if (auto* top = callOutParent())
         {
             auto& callout = juce::CallOutBox::launchAsynchronously (
                 std::move (panel),
@@ -1385,16 +1397,30 @@ void ContentComponent::resized()
                                   : drawerArea.translated (-drawerArea.getWidth() - 12, 0));
 }
 
+// Parent for pop-over call-outs: the editor shell (SPASynthEditor), which
+// owns nothing by pointer and merely orphans children when destroyed. NOT
+// getTopLevelComponent(): under the AU wrapper that is JUCE's
+// EditorCompHolder, whose destructor deleteAllChildren()s -- fatal for a
+// CallOutBox, which is owned by value by JUCE's CallOutBoxCallback.
+juce::Component* ContentComponent::callOutParent()
+{
+    if (auto* shell = findParentComponentOfClass<juce::AudioProcessorEditor>())
+        return shell;
+    return getTopLevelComponent();
+}
+
 void ContentComponent::showAccentPicker()
 {
-    auto picker = std::make_unique<AccentPicker> ([this]
+    juce::Component::SafePointer<ContentComponent> safe (this);
+    auto picker = std::make_unique<AccentPicker> ([safe]
     {
-        if (onThemeChanged)
-            onThemeChanged();
+        if (safe != nullptr && safe->onThemeChanged)
+            safe->onThemeChanged();
     });
 
-    // Parent to the editor shell (outside this component's scale transform).
-    if (auto* top = getTopLevelComponent())
+    // Parent to the editor shell (outside this component's scale transform)
+    // -- see callOutParent() for why this must not be getTopLevelComponent().
+    if (auto* top = callOutParent())
         juce::CallOutBox::launchAsynchronously (
             std::move (picker),
             top->getLocalArea (&accentButton, accentButton.getLocalBounds()),

@@ -45,6 +45,7 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void togglePresetBrowser();
     void showAccentPicker();
+    juce::Component* callOutParent();
     void showSettingsMenu();
     void setKeyboardVisible (bool shouldShow);
     void chooseLibraryFolder();

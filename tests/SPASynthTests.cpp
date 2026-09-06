@@ -3893,6 +3893,96 @@ namespace
     // native peer; (2) VoicePanel itself is left focusable (unlike every
     // other widget in this UI) so CallOutBox's own focus grab has a real,
     // deterministic target the moment it opens.
+
+    // Regression (Mike, 2026-09-05, 1.0.12 in Logic): open the VOICE call-out,
+    // switch the voice mode, then close the plugin window -> crash inside
+    // JuceAU deleteEditor ("pointer being freed was not allocated"). Mirrors
+    // that sequence on a desktop-hosted editor for both the call-out-still-
+    // open and the just-dismissed cases; a crash here is the failure.
+    static void voicePanelEditorCloseTest()
+    {
+        std::cout << "voicePanelEditorCloseTest\n";
+        namespace id = spa::params::id;
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+        const auto findVoiceButton = [] (juce::Component& root) -> juce::Button*
+        {
+            juce::Button* found = nullptr;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+            {
+                if (found == nullptr)
+                    if (auto* b = dynamic_cast<juce::Button*> (&c))
+                        if (b->getTooltip().startsWith ("Voice mode"))
+                            found = b;
+                for (auto* child : c.getChildren()) walk (*child);
+            };
+            walk (root);
+            return found;
+        };
+        const auto findCallout = [] (juce::Component& root) -> juce::CallOutBox*
+        {
+            juce::CallOutBox* found = nullptr;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+            {
+                if (found == nullptr) found = dynamic_cast<juce::CallOutBox*> (&c);
+                for (auto* child : c.getChildren()) walk (*child);
+            };
+            walk (root);
+            return found;
+        };
+
+        for (int variant = 0; variant < 3; ++variant)
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (48000.0, 512);
+            // Host-style holder, modelled on the JUCE AU wrapper's
+            // EditorCompHolder: it is the top-level component and its
+            // destructor deleteAllChildren()s. Anything a plugin wrongly
+            // parents to getTopLevelComponent() gets `delete`d here.
+            struct HostHolder : juce::Component
+            {
+                ~HostHolder() override { deleteAllChildren(); }
+            };
+            auto holder = std::make_unique<HostHolder>();
+            auto* editorRaw = proc.createEditor();
+            editorRaw->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+            holder->addAndMakeVisible (editorRaw);
+            holder->setSize (editorRaw->getWidth(), editorRaw->getHeight());
+            holder->addToDesktop (0);
+            holder->setVisible (true);
+            pumpFor (150);
+            juce::Component& editor = *editorRaw;
+
+            auto* voiceButton = findVoiceButton (editor);
+            expect (voiceButton != nullptr, "VOICE button found");
+            if (voiceButton == nullptr) return;
+            voiceButton->triggerClick();
+            pumpFor (60);
+            auto* callout = findCallout (editor);
+            expect (callout != nullptr, "call-out open");
+            expect (callout != nullptr && callout->getParentComponent() == editorRaw,
+                    "call-out is parented to the editor shell, not the host's top-level holder");
+
+            // Switch the voice mode while the call-out is showing (Poly -> Mono -> Unison).
+            setParam (proc, id::voiceMode, 1.0f);
+            pumpFor (60);
+            setParam (proc, id::voiceMode, 4.0f);
+            pumpFor (60);
+
+            if (variant == 1 && callout != nullptr) { callout->dismiss(); pumpFor (20); }
+            if (variant == 2 && callout != nullptr) { callout->dismiss(); pumpFor (300); }
+
+            holder.reset();          // host closes the window (deleteAllChildren)
+            pumpFor (400);           // let deferred modal cleanup run
+            expect (true, juce::String ("editor closed after VOICE mode switch, variant ") + juce::String (variant));
+        }
+    }
+
     static void voicePanelCallOutFocusTest()
     {
         std::cout << "voicePanelCallOutFocusTest\n";
@@ -4382,6 +4472,7 @@ int main (int argc, char* argv[])
     presetBrowserFocusGrabTest();
     presetBrowserKeyboardFocusTest();
     voicePanelCallOutFocusTest();
+    voicePanelEditorCloseTest();
     tabLayoutInvarianceTest();
     fxPanelLabelClippingTest();
 

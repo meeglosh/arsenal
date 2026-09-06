@@ -8,6 +8,8 @@ A small fix on top of the 1.0.11 redesign.
   stay open unless you held the mouse down, and selections would not
   register. Both now open and select normally, and closing the panel hands
   control straight back to QWERTY note play.
+- Fixed a crash in Logic when the plugin window was closed while the VOICE
+  panel was still open. The panel now closes cleanly with the window.
 
 **Notes for this build**
 
