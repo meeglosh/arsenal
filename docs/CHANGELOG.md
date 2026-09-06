@@ -1,8 +1,8 @@
 # SPASynth changelog
 
-## 1.0.12
+## 1.0.13
 
-A small fix on top of the 1.0.11 redesign.
+Two small fixes on top of the 1.0.11 redesign.
 
 - Fixed the VOICE panel's MODE and PRIORITY dropdowns. They could refuse to
   stay open unless you held the mouse down, and selections would not
