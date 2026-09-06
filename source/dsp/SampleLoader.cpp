@@ -146,20 +146,43 @@ LoadedSample loadSampleFromFile (const juce::File& file)
     if (reader->lengthInSamples < 64)
         return { nullptr, "File too short: " + file.getFileName() };
 
+    // A corrupt (or hostile) header can claim an arbitrary sample rate,
+    // including non-finite -- casting Inf/NaN to int64 below would be UB, and
+    // even a huge-but-finite value would blow the time-based cap through the
+    // roof, attempting a runaway allocation. Reject outright.
+    if (! std::isfinite (reader->sampleRate) || reader->sampleRate <= 0.0
+        || reader->sampleRate > 400000.0)
+        return { nullptr, "Implausible sample rate: " + file.getFileName() };
+
+    if (reader->numChannels == 0)
+        return { nullptr, "No audio channels: " + file.getFileName() };
+
     auto data = std::make_shared<SampleData>();
     data->sourceSampleRate = reader->sampleRate;
     data->name = file.getFileNameWithoutExtension();
 
     const auto numChannels = (int) juce::jmin (reader->numChannels, 2u);
 
-    // A corrupt WAV header can declare a sample count that overflows the
-    // int64->int cast below (UB, possibly negative); cap at a sane 10 minutes
-    // of source-rate audio, same clamp-before-cast pattern as
-    // FXChain::loadConvolutionIR. Floor-guarded so a zero/garbage sampleRate
-    // can't produce a cap below the 64-sample minimum already checked above.
-    const juce::int64 maxSamples = juce::jmax ((juce::int64) 64,
+    // Cap at a sane 10 minutes of source-rate audio, same clamp-before-cast
+    // pattern as FXChain::loadConvolutionIR (floor-guarded against a
+    // near-zero rate, already rejected above).
+    const juce::int64 maxSamplesByTime = juce::jmax ((juce::int64) 64,
                                                (juce::int64) (reader->sampleRate * 600.0));
-    const int n = (int) juce::jmin (maxSamples, reader->lengthInSamples);
+
+    // Independent byte-level backstop that doesn't trust the reported sample
+    // rate: ~512MB covers a genuine 10-minute stereo float32 file up to 96kHz
+    // (~440MB) with headroom. Anything larger is rejected with a clear error
+    // (same getSampleError()/OscStrip "! " path as every other load failure)
+    // rather than silently truncated.
+    constexpr juce::int64 maxDecodedBytes = (juce::int64) 512 * 1024 * 1024;
+    const juce::int64 maxSamplesByBytes = maxDecodedBytes
+        / (juce::int64) (numChannels * (int) sizeof (float));
+
+    const juce::int64 requested = juce::jmin (maxSamplesByTime, reader->lengthInSamples);
+    if (requested > maxSamplesByBytes)
+        return { nullptr, "File exceeds the maximum decodable size: " + file.getFileName() };
+
+    const int n = (int) requested;
 
     data->audio.setSize (numChannels, n);
     if (! reader->read (&data->audio, 0, n, 0, true, numChannels > 1))

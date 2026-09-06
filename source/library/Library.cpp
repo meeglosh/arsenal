@@ -301,8 +301,29 @@ void setPresetFavorite (const juce::String& key, bool favorite)
     settings().saveIfNeeded();
 }
 
+namespace
+{
+    // TEST-ONLY: see setPresetsRootOverride() in Library.h. Not atomic/
+    // thread-safe -- set/cleared only from message-thread test setup, never
+    // from production code or concurrently with a processor construction.
+    juce::File presetsRootOverride;
+}
+
+void setPresetsRootOverride (const juce::File& root)
+{
+    presetsRootOverride = root;
+}
+
+juce::File getPresetsRootOverride()
+{
+    return presetsRootOverride;
+}
+
 juce::File defaultPresetsRoot()
 {
+    if (presetsRootOverride != juce::File())
+        return presetsRootOverride;
+
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Silverplatter Audio").getChildFile ("SPASynth")
         .getChildFile ("Presets");
@@ -313,8 +334,29 @@ juce::String licenseLineFromFile (const juce::File& file)
     if (! file.existsAsFile())
         return {};
 
+    // Purely informational (see getLicenseLine()'s comment) and only ever
+    // needs its first non-blank line, so cap what we're willing to pull into
+    // memory -- an arbitrarily large (or maliciously huge) license.txt must
+    // never get fully slurped by loadFileAsString(). 4KB is generous for a
+    // one-line ownership stamp.
+    constexpr juce::int64 maxBytes = 4096;
+
+    juce::FileInputStream stream (file);
+    if (! stream.openedOk())
+        return {};
+
+    char buffer[(size_t) maxBytes + 1];
+    const auto numRead = stream.read (buffer, (int) maxBytes);
+    if (numRead <= 0)
+        return {};
+    buffer[numRead] = 0;   // null-terminate so the UTF-8 decode below can
+                            // never walk off the end of a truncated multi-byte
+                            // sequence sitting right at the read boundary
+
+    const juce::String text ((juce::CharPointer_UTF8 (buffer)));
+
     juce::StringArray lines;
-    lines.addLines (file.loadFileAsString());
+    lines.addLines (text);
     for (const auto& line : lines)
         if (line.trim().isNotEmpty())
             return line.trim();

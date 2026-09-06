@@ -153,7 +153,28 @@ bool PresetManager::writePreset (const juce::File& file, const juce::String& nam
     root.addChildElement (state.createXml().release());
 
     file.getParentDirectory().createDirectory();
-    return root.writeTo (file);
+
+    // Atomic write: render to a temp file in the same directory, then
+    // rename it over the target. juce::TemporaryFile is JUCE's own idiom
+    // for this (see its header doc comment) -- the rename is a single
+    // filesystem operation, so a crash or a full disk mid-write can never
+    // leave a truncated/corrupt preset in place; the old file (if any)
+    // stays intact until the new one is fully flushed to disk.
+    juce::TemporaryFile temp (file);
+
+    {
+        juce::FileOutputStream out (temp.getFile());
+        if (! out.openedOk())
+            return false;
+
+        root.writeTo (out);
+        out.flush();
+
+        if (out.getStatus().failed())
+            return false;
+    }
+
+    return temp.overwriteTargetFileWithTemporary();
 }
 
 bool PresetManager::saveUserPreset (const juce::String& name, const juce::File& chosenFolder)

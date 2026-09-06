@@ -33,10 +33,22 @@ jobs:
     # actions/upload-artifact was hitting the account-wide Actions storage
     # quota. Scoped to this job only; the workflow-level default above stays
     # read-only, and the macOS job never opts in.
+    #
+    # GitHub does not support per-step permissions, so this write grant is
+    # job-wide even though only two steps use it -- those two steps are
+    # gated with `if: github.event_name == 'push'` below so a pull_request
+    # run (including from a fork) never actually publishes or prunes a
+    # release, regardless of what token scope it happens to hold. Belt and
+    # suspenders: a pull_request run from a fork gets a read-only
+    # GITHUB_TOKEN from GitHub itself (this job-level `write` is not honored
+    # for fork PRs), so the publish steps would fail closed even without the
+    # event-name gate; a pull_request run from a branch on this repo (not a
+    # fork) DOES get the write token, which is exactly why the gate is still
+    # needed as the real control here.
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
 
@@ -45,6 +57,45 @@ jobs:
 
       - name: Build
         run: cmake --build build --config Release --parallel
+
+      # Windows is the one platform we cannot build or run tests on locally,
+      # so this is the only place the suite gets exercised on this OS before
+      # an installer goes out. Explicit --target build is redundant with the
+      # default "all" target built above (SPASynthTests is not
+      # EXCLUDE_FROM_ALL in CMakeLists.txt) but keeps this step correct even
+      # if that ever changes. Placed before the installer/publish steps so a
+      # red suite blocks both. The suite opens UI components offscreen for
+      # rendering -- if that turns out to be a problem on a headless runner
+      # this step will fail loudly (see the error messages below) rather
+      # than silently passing; it is not marked continue-on-error on
+      # purpose, per the audit: a real gate or nothing.
+      - name: Build tests
+        run: cmake --build build --config Release --target SPASynthTests --parallel
+
+      - name: Run test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$(find build -iname 'SPASynthTests.exe' -path '*SPASynthTests_artefacts*' 2>/dev/null | head -n1)"
+          if [ -z "$BIN" ]; then
+            echo "::error::SPASynthTests.exe not found anywhere under build/SPASynthTests_artefacts/<Config>/ -- the test binary did not get built, cannot verify the suite before publishing an installer."
+            find build -iname 'SPASynthTests*' || true
+            exit 1
+          fi
+          echo "Running $BIN"
+          set +e
+          OUTPUT="$("$BIN" 2>&1)"
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::SPASynthTests exited with status $STATUS. If this is a headless-runner rendering/graphics failure rather than a real DSP/logic regression, that is itself a CI environment gap worth investigating -- it is not being papered over with continue-on-error."
+            exit 1
+          fi
+          if ! grep -q "ALL PASS" <<< "$OUTPUT"; then
+            echo "::error::SPASynthTests exited 0 but did not print ALL PASS -- treating this as a failed suite rather than trusting a clean exit code alone."
+            exit 1
+          fi
 
       - name: Read version
         id: version
@@ -74,7 +125,16 @@ jobs:
       # commit delete+recreate the draft (gh release view can't see drafts by
       # tag -- only the list endpoint can -- so existence is checked via
       # `gh api .../releases`, not `gh release view <tag>`).
+      #
+      # Gated to push events only: pull_request runs still build the exe and
+      # the installer above (real validation that the packaging step works),
+      # but must never publish a release asset -- an untrusted PR (including
+      # from a fork) has no business minting a "CI Windows build" release
+      # under this repo's name. `main`-only push is already enforced by the
+      # workflow's `on.push.branches` trigger, so this condition plus that
+      # trigger together mean "only a push that landed on main".
       - name: Publish installer to draft release
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -102,7 +162,12 @@ jobs:
       # scripts/fetch_windows_build.sh) and delete older ones so the draft
       # list doesn't grow unbounded. Only touches drafts matching the
       # ci-windows- prefix -- never a real, published release.
+      #
+      # Gated to push events only, same reasoning as the publish step above:
+      # a pull_request run has nothing to prune (it never published) and
+      # must not be trusted to delete releases regardless.
       - name: Prune old CI draft releases
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,7 +191,7 @@ jobs:
     runs-on: macos-14
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
 
@@ -145,7 +210,7 @@ jobs:
         run: ./installers/macos/build_installer.sh build dist/installers
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: spasynth-macOS
           path: |
@@ -156,7 +221,7 @@ jobs:
           retention-days: 3
 
       - name: Upload installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: spasynth-installer-macOS
           path: dist/installers/*

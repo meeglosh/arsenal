@@ -42,6 +42,48 @@ namespace
         return peak;
     }
 
+    // RAII test seam over spa::library::setPresetsRootOverride(): points
+    // defaultPresetsRoot() at a fresh scratch dir under the OS temp folder
+    // for the guard's lifetime, so nothing in this binary can ever touch
+    // the real, customer-visible presets root
+    // (~/Library/Application Support/Silverplatter Audio/SPASynth/Presets)
+    // -- not a direct write, not a rescan() directory listing, and not the
+    // async SPASynthProcessor::refreshLibrary() -> generateFactoryPresets()
+    // callback that the processor constructor posts via
+    // MessageManager::callAsync (which can land during ANY later
+    // runDispatchLoopUntil() call anywhere in the suite, not just inside
+    // the test that constructed the processor).
+    //
+    // Saves/restores the PREVIOUS override on construction/destruction
+    // (rather than unconditionally clearing to {}), so instances compose
+    // safely when nested -- one held for the whole test run (see main())
+    // plus a private one per test that wants its own isolated PresetManager
+    // temp folder.
+    struct ScopedPresetRoot
+    {
+        ScopedPresetRoot()
+            : dir (juce::File::getSpecialLocation (juce::File::tempDirectory)
+                       .getNonexistentChildFile ("spasynth-test-presets", "")),
+              previous (spa::library::getPresetsRootOverride())
+        {
+            dir.createDirectory();
+            spa::library::setPresetsRootOverride (dir);
+        }
+
+        ~ScopedPresetRoot()
+        {
+            spa::library::setPresetsRootOverride (previous);
+            dir.deleteRecursively();
+        }
+
+        juce::File dir;
+
+    private:
+        juce::File previous;
+
+        JUCE_DECLARE_NON_COPYABLE (ScopedPresetRoot)
+    };
+
     void setParam (spa::SPASynthProcessor& proc, const juce::String& id, float realValue)
     {
         auto* param = proc.getAPVTS().getParameter (id);
@@ -464,6 +506,19 @@ namespace
             juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
         }
         return false;
+    }
+
+    // Pumps the message loop until `condition` holds or the timeout passes.
+    static bool pumpUntil (std::function<bool()> condition, int timeoutMs = 5000)
+    {
+        const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) timeoutMs;
+        while (! condition())
+        {
+            if (juce::Time::getMillisecondCounter() >= deadline)
+                return condition();
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+        return true;
     }
 
     static void samplePlaybackTest()
@@ -1801,6 +1856,197 @@ namespace
     // latch, flush the FX chain's stateful buffers), synchronously inside the
     // getCallbackLock() already held for replaceState(), so the very next
     // block sees new parameters applied to already-silent state.
+    // Atomic preset write (audit hardening): PresetManager::writePreset()
+    // renders to a juce::TemporaryFile in the target's own directory, then
+    // calls overwriteTargetFileWithTemporary() (File::replaceFileIn under
+    // the hood -- a rename, falling back to copy+delete only cross-device)
+    // instead of writing the XmlElement straight over the target. Exercise
+    // the overwrite path specifically (save the same preset name twice) --
+    // that's the case that used to risk truncating an existing file on a
+    // crash/disk-full mid-write -- and confirm no stray "*_temp*" file
+    // (juce::TemporaryFile's naming convention) is left behind either way.
+    static void atomicPresetWriteTest()
+    {
+        std::cout << "atomicPresetWriteTest\n";
+
+        namespace id = spa::params::id;
+        namespace lib = spa::library;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        ScopedPresetRoot presetRootGuard;
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetRootGuard.dir);
+
+        setParam (proc, id::filter1Cutoff, 1000.0f);
+        expect (pm.saveUserPreset ("AtomicTest"), "first save (new file) succeeds");
+
+        juce::File presetFile;
+        for (const auto& p : pm.getPresets())
+            if (p.name == "AtomicTest")
+                presetFile = p.file;
+        expect (presetFile.existsAsFile(), "preset file exists after first save");
+
+        // Overwrite with different content -- this is the path that goes
+        // through TemporaryFile against an EXISTING target.
+        setParam (proc, id::filter1Cutoff, 5000.0f);
+        expect (pm.saveUserPreset ("AtomicTest"), "second save (overwrite) succeeds");
+
+        const auto xml = juce::XmlDocument::parse (presetFile);
+        expect (xml != nullptr && xml->hasTagName ("SPASynthPreset"),
+                "overwritten preset file is still fully valid XML, not truncated");
+        if (xml != nullptr && xml->getFirstChildElement() != nullptr)
+        {
+            const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
+            float storedCutoff = -1.0f;
+            for (auto child : state)
+                if (child.hasType ("PARAM") && child.getProperty ("id").toString() == id::filter1Cutoff)
+                    storedCutoff = (float) (double) child.getProperty ("value");
+            expect (std::abs (storedCutoff - 5000.0f) < 1.0f,
+                    "overwritten preset holds the SECOND save's value, not the first's");
+        }
+
+        const auto strayTempFiles = presetRootGuard.dir.findChildFiles (
+            juce::File::findFiles, true, "*_temp*");
+        expect (strayTempFiles.isEmpty(),
+                "no stray TemporaryFile artifacts left behind after either write");
+    }
+
+    // User preset banks (subfolders of User/): rescan groups them by folder
+    // name, saveUserPreset honors a chosen bank folder (or falls back to the
+    // User root if the chosen folder is outside User/ entirely), and the
+    // isUser flag -- not category == "User" -- is what marks a preset as a
+    // user preset, so a bank preset still counts as one.
+    // Audit hardening: licenseLineFromFile() must never fully load an
+    // arbitrarily large license.txt into memory -- it caps the read at 4KB
+    // (Library.cpp) and still returns a sane, bounded result rather than
+    // hanging or exhausting memory on a huge/malicious file.
+    static void licenseCapTest()
+    {
+        std::cout << "licenseCapTest\n";
+
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getChildFile ("spasynth-license-cap-test.txt");
+
+        // ~1MB of leading blank lines, comfortably past the 4KB cap, so a
+        // real first line placed after them would be invisible to a capped
+        // reader -- this exercises "the whole file is bigger than the cap"
+        // as well as "returns gracefully" (empty, not a crash/hang/OOM).
+        {
+            file.deleteFile();
+            juce::MemoryBlock blanks (1024 * 1024, true);
+            blanks.fillWith ('\n');
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized license test file opens for writing");
+            out.write (blanks.getData(), blanks.getSize());
+        }
+        expect (file.getSize() >= 1024 * 1024, "oversized test file actually is oversized");
+
+        const auto line = spa::library::licenseLineFromFile (file);
+        expect (line.isEmpty(),
+                "oversized all-blank file yields empty (no first non-blank line within the cap), "
+                "not a crash or a multi-MB slurp");
+
+        // A real line sitting right at the start (within the cap) must still
+        // come through -- the cap must not break the normal case.
+        {
+            juce::MemoryBlock content;
+            const juce::String firstLine ("Licensed to test@example.com -- Pro Edition\n");
+            content.append (firstLine.toRawUTF8(), firstLine.getNumBytesAsUTF8());
+            juce::MemoryBlock padding (1024 * 1024, true);
+            padding.fillWith ('x');
+            content.append (padding.getData(), padding.getSize());
+
+            file.deleteFile();
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized-with-real-line test file opens for writing");
+            out.write (content.getData(), content.getSize());
+        }
+        expect (spa::library::licenseLineFromFile (file)
+                    == "Licensed to test@example.com -- Pro Edition",
+                "a real first line within the cap still comes through even when the "
+                "rest of a huge file is discarded");
+
+        file.deleteFile();
+    }
+
+    // Fabricates a WAV header claiming 192kHz stereo audio ~2GB long (well
+    // over 10 minutes) -- a legitimate-looking sample rate (within the
+    // <=400kHz sanity bound SampleLoader.cpp now enforces) whose declared
+    // duration nonetheless blows well past the independent byte-level decode
+    // cap (192kHz * 600s(the existing time cap) * 2ch * 4 bytes/float32 ~=
+    // 880MB, against a ~512MB cap). The physical file is tiny -- the header
+    // lies about the data chunk's size, and rejection happens before any
+    // read is attempted, so the test never needs a real gigabyte-scale file.
+    // Byte layout is little-endian, matching the WAV spec and this test
+    // suite's macOS/x86_64/ARM64 CI hosts.
+    static void oversizedSampleRejectionTest()
+    {
+        std::cout << "oversizedSampleRejectionTest\n";
+
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getNonexistentChildFile ("spasynth-oversized-test", ".wav");
+
+        {
+            juce::FileOutputStream out (file);
+            expect (out.openedOk(), "oversized-test file opened for writing");
+            if (! out.openedOk())
+                return;
+
+            constexpr juce::uint32 sampleRate = 192000;
+            constexpr juce::uint16 numChannels = 2;
+            constexpr juce::uint16 bitsPerSample = 16;
+            constexpr juce::uint16 blockAlign = (juce::uint16) (numChannels * bitsPerSample / 8);
+            constexpr juce::uint32 byteRate = sampleRate * blockAlign;
+            constexpr juce::uint32 fakeDataSize = 2000000000u;   // ~2GB claimed, ~43 min at 192kHz
+            constexpr juce::uint32 fmtSize = 16;
+            constexpr juce::uint16 audioFormat = 1;   // PCM
+            const juce::uint32 riffSize = 36 + fakeDataSize;
+
+            out.write ("RIFF", 4);
+            out.write (&riffSize, 4);
+            out.write ("WAVE", 4);
+            out.write ("fmt ", 4);
+            out.write (&fmtSize, 4);
+            out.write (&audioFormat, 2);
+            out.write (&numChannels, 2);
+            out.write (&sampleRate, 4);
+            out.write (&byteRate, 4);
+            out.write (&blockAlign, 2);
+            out.write (&bitsPerSample, 2);
+            out.write ("data", 4);
+            out.write (&fakeDataSize, 4);
+
+            // A little real (silent) PCM data so the file isn't literally
+            // empty -- irrelevant either way, since the byte cap rejects
+            // before any read is attempted.
+            juce::int16 silence[256] = {};
+            out.write (silence, sizeof (silence));
+        }
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        proc.loadSampleFromFile (0, file);
+        const bool settled = pumpUntil ([&] { return ! proc.isSampleLoading (0); });
+        expect (settled, "oversized-file load settles instead of hanging");
+
+        expect (proc.getSampleName (0).isEmpty(), "oversized file was rejected, not installed");
+        expect (proc.getSampleError (0).isNotEmpty(),
+                "oversized file surfaces a clear error rather than crashing or silently "
+                "truncating: '" + proc.getSampleError (0) + "'");
+
+        file.deleteFile();
+    }
+
+    // Constructs a processor, immediately fires a background load, then
+    // destroys the processor with no message pump in between -- the load is
+    // very likely still mid-flight (decode + YIN analysis of a 2s file takes
+    // tens of ms) when ~SPASynthProcessor() runs. Repeated 20x: a genuine
+    // use-after-free or a hung destructor (contentLoader failing to cancel
+    // and join promptly) would crash or hang this loop, not fail gracefully.
     static void presetLoadNoiseBurstTest()
     {
         std::cout << "presetLoadNoiseBurstTest\n";
@@ -4408,6 +4654,8 @@ int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
+        ScopedPresetRoot presetRootGuard;
+
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
     {
         renderEditorSnapshots (juce::File (argv[2]));
@@ -4464,6 +4712,9 @@ int main (int argc, char* argv[])
     malformedPresetTest();
     presetResetToDefaultTest();
     presetLoadNoiseBurstTest();
+    atomicPresetWriteTest();
+    licenseCapTest();
+    oversizedSampleRejectionTest();
     factoryPresetGenerationTest();
     factoryPresetRootPackTest();
     presetBrowserFilterTest();
