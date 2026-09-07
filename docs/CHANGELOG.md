@@ -12,6 +12,8 @@ A small visibility improvement requested by our testers.
   work exactly as they do for the other distortion types.
 - The ORGANIC CHAOS display now shows the real chaos modulation scrolling
   across in real time, like a seismograph, instead of a static preview curve.
+- Switching LATCH off now stops the arpeggio immediately, unless keys are
+  still held, in which case it continues on just those.
 
 **Notes for this build**
 

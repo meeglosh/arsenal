@@ -35,6 +35,8 @@ void Arpeggiator::reset()
     beatClock = 0.0;
     lastHostPpq = -1.0e9;
     latchedChordDown = false;
+    keyDown.fill (false);
+    lastLatch = false;
 }
 
 void Arpeggiator::addHeld (juce::uint8 note, juce::uint8 velocity)
@@ -321,16 +323,19 @@ void Arpeggiator::process (juce::MidiBuffer& midi, int numSamples, const Params&
 
         if (message.isNoteOn())
         {
+            const auto note = (juce::uint8) message.getNoteNumber();
             if (p.latch && ! latchedChordDown)
                 numHeld = 0;   // new chord replaces the latched one
+            keyDown[note] = true;
             latchedChordDown = true;
-            addHeld ((juce::uint8) message.getNoteNumber(),
-                     (juce::uint8) juce::jmax (1, (int) (message.getVelocity())));
+            addHeld (note, (juce::uint8) juce::jmax (1, (int) (message.getVelocity())));
         }
         else if (message.isNoteOff())
         {
+            const auto note = (juce::uint8) message.getNoteNumber();
+            keyDown[note] = false;
             if (! p.latch)
-                removeHeld ((juce::uint8) message.getNoteNumber());
+                removeHeld (note);
             // With latch: keep the notes; just track physical key state.
         }
         else
@@ -340,17 +345,30 @@ void Arpeggiator::process (juce::MidiBuffer& midi, int numSamples, const Params&
     }
 
     // Latch bookkeeping: when no physical keys remain down, the next chord
-    // starts fresh. (Approximation: any noteOff this block may have lifted
-    // the last key; precise per-key tracking below.)
+    // starts fresh. Derived from exact per-key state, not a per-block guess.
     if (p.latch)
     {
-        bool anyOffThisBlock = false;
-        for (const auto metadata : midi)
-            if (metadata.getMessage().isNoteOff())
-                anyOffThisBlock = true;
-        if (anyOffThisBlock)
-            latchedChordDown = false;
+        latchedChordDown = false;
+        for (bool down : keyDown)
+            if (down) { latchedChordDown = true; break; }
     }
+
+    // Latch on->off edge: drop every held note that isn't still physically
+    // down, and if that empties the held set, kill anything still sounding
+    // or queued so the arp doesn't keep running on stale notes.
+    if (lastLatch && ! p.latch)
+    {
+        for (int i = numHeld - 1; i >= 0; --i)
+            if (! keyDown[held[i].note])
+                removeHeld (held[i].note);
+
+        if (numHeld == 0)
+        {
+            releaseAllActive (out, 0);
+            numPending = 0;
+        }
+    }
+    lastLatch = p.latch;
 
     if (numSamples <= 0)
     {

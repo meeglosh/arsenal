@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include "../params/ParameterRegistry.h"
+#include <array>
 
 namespace spa::dsp
 {
@@ -86,6 +87,8 @@ private:
     int numHeld = 0;
     int arrivalCounter = 0;
     bool latchedChordDown = false;   // physical keys currently down (latch)
+    std::array<bool, 128> keyDown {}; // exact physical key state, latch-independent
+    bool lastLatch = false;           // for detecting the latch on->off edge
 
     Active active[maxActive];
     int numActive = 0;

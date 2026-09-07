@@ -3008,6 +3008,134 @@ namespace
         expect (sawPassThrough, "disabled arp passes MIDI through");
     }
 
+    // Turning LATCH off must stop the arp immediately unless keys are still
+    // physically held, in which case it continues on just those.
+    static void arpLatchOffTest()
+    {
+        std::cout << "arpLatchOffTest\n";
+
+        namespace params = spa::params;
+        using Arp = spa::dsp::Arpeggiator;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        // Scenario 1: latch on, play + release C-E-G, confirm it latches, then
+        // flip latch off and confirm it stops dead (note-offs, no more note-ons).
+        {
+            Arp arp;
+            arp.prepare (sampleRate);
+
+            Arp::Params p;
+            p.enable = true;
+            p.mode = params::ArpMode::up;
+            p.division = 12;      // 1/16 @ 120bpm = 125ms = 6000 samples
+            p.gate = 0.5f;
+            p.sampleRate = sampleRate;
+            p.latch = true;
+
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 67), 0);
+
+            int latchedOns = 0;
+            // Two blocks: enough to trigger the first step but well inside its
+            // gate window (gate 0.5 of a 1/16 step lasts ~6 blocks at 512
+            // samples/block, 120bpm), so the note is still sounding when we
+            // flip latch off below.
+            for (int block = 0; block < 2; ++block)
+            {
+                arp.process (midi, blockSize, p);
+                for (const auto metadata : midi)
+                    if (metadata.getMessage().isNoteOn())
+                        ++latchedOns;
+                midi.clear();
+            }
+            expect (latchedOns >= 1, "latch keeps arping with no keys down ("
+                                     + juce::String (latchedOns) + ")");
+
+            // Flip latch off with no keys physically down; the still-sounding
+            // note must be released right away.
+            p.latch = false;
+            bool sawOff = false;
+            arp.process (midi, blockSize, p);
+            for (const auto metadata : midi)
+                if (metadata.getMessage().isNoteOff())
+                    sawOff = true;
+            expect (sawOff, "latch-off releases sounding arp notes immediately");
+
+            int furtherOns = 0;
+            for (int block = 0; block < (int) (0.5 * sampleRate / blockSize); ++block)
+            {
+                midi.clear();
+                arp.process (midi, blockSize, p);
+                for (const auto metadata : midi)
+                    if (metadata.getMessage().isNoteOn())
+                        ++furtherOns;
+            }
+            expect (furtherOns == 0, "latch-off with no keys down: arp stays silent ("
+                                     + juce::String (furtherOns) + ")");
+        }
+
+        // Scenario 2: latch on, hold C (never released) plus E-G which ARE
+        // released; latch off should leave the arp running on just C.
+        {
+            Arp arp;
+            arp.prepare (sampleRate);
+
+            Arp::Params p;
+            p.enable = true;
+            p.mode = params::ArpMode::up;
+            p.division = 12;
+            p.gate = 0.5f;
+            p.sampleRate = sampleRate;
+            p.latch = true;
+
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);  // C, held
+            midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);  // E
+            midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);  // G
+            midi.addEvent (juce::MidiMessage::noteOff (1, 64), 0);
+            midi.addEvent (juce::MidiMessage::noteOff (1, 67), 0);
+            arp.process (midi, blockSize, p);
+            midi.clear();
+
+            p.latch = false;   // C is still physically down
+            std::vector<int> onsAfter;
+            for (int block = 0; block < (int) (0.5 * sampleRate / blockSize); ++block)
+            {
+                arp.process (midi, blockSize, p);
+                for (const auto metadata : midi)
+                    if (metadata.getMessage().isNoteOn())
+                        onsAfter.push_back (metadata.getMessage().getNoteNumber());
+                midi.clear();
+            }
+            bool onlyC = ! onsAfter.empty();
+            for (auto n : onsAfter)
+                onlyC = onlyC && (n == 60);
+            expect (onlyC, "latch-off with C still held: continues arping only C");
+
+            // Now release C too: everything must stop.
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            arp.process (midi, blockSize, p);
+            midi.clear();
+            int finalOns = 0;
+            for (int block = 0; block < (int) (0.5 * sampleRate / blockSize); ++block)
+            {
+                arp.process (midi, blockSize, p);
+                for (const auto metadata : midi)
+                    if (metadata.getMessage().isNoteOn())
+                        ++finalOns;
+                midi.clear();
+            }
+            expect (finalOns == 0, "releasing the last physically-held key stops the arp");
+        }
+    }
+
     // Full chain: arp on, hold a key through several steps, release it, then let
     // it ring out. Every voice must free itself (no stuck notes).
     static void arpStuckNoteTest()
@@ -4986,6 +5114,7 @@ int main (int argc, char* argv[])
     editorHitTestProbe();
     midiLearnTest();
     arpeggiatorTest();
+    arpLatchOffTest();
     arpStuckNoteTest();
     arpZeroSampleBlockTest();
     arpNonFinitePpqTest();
