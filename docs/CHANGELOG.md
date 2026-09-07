@@ -4,9 +4,9 @@
 
 A small visibility improvement requested by our testers.
 
-- Enabled effects now show their tab name in bold in the FX section, so you
-  can see at a glance which effects are engaged without clicking through
-  each tab.
+- Enabled effects now show their tab name in bold and in the brighter text
+  colour in the FX section, so you can see at a glance which effects are
+  engaged without clicking through each tab.
 
 **Notes for this build**
 

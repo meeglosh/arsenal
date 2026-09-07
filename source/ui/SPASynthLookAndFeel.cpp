@@ -628,8 +628,9 @@ void SPASynthLookAndFeel::drawTabButton (juce::TabBarButton& button, juce::Graph
         g.fillRoundedRectangle (bounds, 2.0f);
     }
 
-    g.setColour (front ? t.textPrimary : t.textSecondary);
-    g.setFont (isTabEngaged (button) ? metrics::smallFontBold() : metrics::smallFont());
+    const bool engaged = isTabEngaged (button);
+    g.setColour (front || engaged ? t.textPrimary : t.textSecondary);
+    g.setFont (engaged ? metrics::smallFontBold() : metrics::smallFont());
     auto textArea = button.getLocalBounds();
     if (dynamic_cast<DraggableTabButton*> (&button) != nullptr)
         textArea.removeFromLeft (tabGripReserve);   // keep the text clear of the grip
