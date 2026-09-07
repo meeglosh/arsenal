@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <juce_dsp/juce_dsp.h>
 #include <juce_audio_formats/juce_audio_formats.h>
 #include "ModEffect.h"
@@ -151,6 +152,24 @@ public:
         };
     };
 
+    // Crush (bit-crusher distortion type) drive mappings, shared between the
+    // DSP (processDistortion) and the UI (Displays.cpp's transfer-curve
+    // staircase) so they can never drift apart. Both are exponential so the
+    // DRIVE knob stays useful across its whole range: linear bit reduction
+    // left most of the knob's travel inaudible (drive 0.5 -> ~9.5 bits).
+    //   drive 0    -> 16 bits / no decimation (transparent)
+    //   drive 0.5  -> ~6.9 bits / ~6.3-sample hold
+    //   drive 0.8  -> ~4.2 bits / ~19-sample hold
+    //   drive 1    -> 3 bits / a ~40-sample hold at 48 kHz
+    static float crushBitsForDrive (float drive)
+    {
+        return 16.0f * std::pow (3.0f / 16.0f, drive);
+    }
+    static float crushHoldForDrive (float drive, double sampleRate)
+    {
+        return (float) (std::pow (40.0, (double) drive) * (sampleRate / 48000.0));
+    }
+
     void prepare (double sampleRate, int maxBlockSize);
     void reset();
 
@@ -223,6 +242,12 @@ private:
 
     // Distortion tone filter (post-shaper lowpass), one per channel.
     std::array<juce::dsp::FirstOrderTPTFilter<float>, 2> toneFilters;
+
+    // Crush distortion (sample-and-hold decimation) state, one per channel:
+    // the currently-held output sample and a fractional phase accumulator
+    // counting down the hold length. Fixed-size, no allocation.
+    std::array<float, 2> crushHold {};
+    std::array<float, 2> crushPhase {};
 
     juce::dsp::Chorus<float> chorus;
 

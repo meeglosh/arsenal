@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <limits>
+#include <set>
 #include <typeinfo>
 
 namespace
@@ -994,6 +995,179 @@ namespace
             expect (peak < 3.0f,
                     "reverb mode " + juce::String (mode) + " stays bounded (peak "
                     + juce::String (peak) + ")");
+        }
+    }
+
+    // Bit-crush distortion type (Crush, appended index 3): DRIVE controls
+    // both bit-depth quantisation and sample-and-hold decimation. Verifies
+    // the quantiser collapses to few distinct values, decimation produces
+    // held runs, drive=0 stays near-transparent (no stale hold), the other
+    // three types are untouched, and the choice list is append-only correct.
+    static void distCrushTest()
+    {
+        std::cout << "distCrushTest\n";
+        using FX = spa::dsp::FXChain;
+        namespace params = spa::params;
+        namespace fx = spa::params::id::fx;
+
+        constexpr double sr = 48000.0;
+        constexpr int n = 512;
+        constexpr double freqHz = 100.0;
+
+        // Choice list: append-only, Crush must be last of exactly 4.
+        const spa::params::ParamDef* distTypeDef = nullptr;
+        for (const auto& def : params::all())
+            if (def.id == fx::distType) { distTypeDef = &def; break; }
+        expect (distTypeDef != nullptr, "fxDist.type param found");
+        if (distTypeDef != nullptr)
+        {
+            expect (distTypeDef->choices.size() == 4, "fxDist.type has 4 choices");
+            expect (distTypeDef->choices[3] == "Crush", "Crush is the 4th (appended) choice");
+        }
+
+        auto makeSine = [&] (juce::AudioBuffer<float>& buf, double amp)
+        {
+            for (int s = 0; s < n; ++s)
+            {
+                const auto v = (float) (amp * std::sin (2.0 * juce::MathConstants<double>::pi
+                                                        * freqHz * (double) s / sr));
+                buf.setSample (0, s, v);
+                buf.setSample (1, s, v);
+            }
+        };
+
+        // Runs the crush path at a given drive and returns (unique rounded
+        // value count, longest run of identical consecutive samples, peak,
+        // finite). Shared between the drive=1.0 and drive=0.5 checks below.
+        auto runCrush = [&] (float drive, float toneHz)
+        {
+            FX fx;
+            fx.prepare (sr, n);
+            FX::Params p;
+            p.distEnable = true;
+            p.distType = 3;
+            p.distDrive = drive;
+            p.distToneHz = toneHz;
+            p.distMix = 1.0f;
+
+            juce::AudioBuffer<float> buf (2, n);
+            makeSine (buf, 0.9);
+            fx.process (buf, p);
+
+            std::set<int> uniqueVals;
+            bool finite = true;
+            float peak = 0.0f;
+            int longestRun = 0, currentRun = 1;
+            float prev = buf.getSample (0, 0);
+            for (int s = 0; s < n; ++s)
+            {
+                const auto v = buf.getSample (0, s);
+                if (! std::isfinite (v)) finite = false;
+                peak = juce::jmax (peak, std::abs (v));
+                uniqueVals.insert ((int) std::round (v * 10000.0f));
+
+                if (s > 0)
+                {
+                    if (std::abs (v - prev) < 1.0e-7f) { ++currentRun; longestRun = juce::jmax (longestRun, currentRun); }
+                    else currentRun = 1;
+                }
+                prev = v;
+            }
+
+            struct Result { int uniqueCount; int longestRun; float peak; bool finite; };
+            return Result { (int) uniqueVals.size(), longestRun, peak, finite };
+        };
+
+        // sr/4 is the TPT one-pole's critical-damping point (settles in a
+        // single sample), keeping the post-crush lowpass from smearing the
+        // held/quantised steps into extra transient values.
+        const auto toneHzForUniqueness = (float) (sr * 0.25);
+
+        // (a) + (c): drive = 1.0 -- few distinct values, finite/bounded, long
+        // held runs (sample-and-hold decimation working).
+        {
+            const auto r = runCrush (1.0f, toneHzForUniqueness);
+            expect (r.finite, "crush drive=1 stays finite");
+            expect (r.peak <= 1.0f + 1.0e-3f, "crush drive=1 stays bounded (peak " + juce::String (r.peak) + ")");
+            expect (r.uniqueCount < 20, "crush drive=1 quantises to few distinct values ("
+                    + juce::String (r.uniqueCount) + ")");
+            expect (r.longestRun >= 20, "crush drive=1 holds samples (longest run "
+                    + juce::String (r.longestRun) + " at 48k)");
+        }
+
+        // Pins the exponential drive->bits/hold curve: drive=0.5 must sit
+        // well below drive=0's (near-16-bit) distinct-value count, not
+        // stranded near-transparent the way a linear mapping would leave it.
+        {
+            const auto r = runCrush (0.5f, toneHzForUniqueness);
+            expect (r.finite, "crush drive=0.5 stays finite");
+            expect (r.uniqueCount < 200, "crush drive=0.5 is well into the crushed range ("
+                    + juce::String (r.uniqueCount) + " distinct values)");
+        }
+
+        // (b): drive = 0.0 -- near-transparent quantisation, no stale hold.
+        // Compared against the same signal through an identical standalone
+        // tone filter (not the raw dry signal) so this isolates the crush
+        // quantiser/decimator's own transparency from the tone filter's own
+        // (expected, shared-with-every-dist-type) shaping.
+        {
+            constexpr float toneHz = 20000.0f;
+
+            FX fx;
+            fx.prepare (sr, n);
+            FX::Params p;
+            p.distEnable = true;
+            p.distType = 3;
+            p.distDrive = 0.0f;
+            p.distToneHz = toneHz;
+            p.distMix = 1.0f;
+
+            juce::AudioBuffer<float> dry (2, n);
+            makeSine (dry, 0.9);
+            auto wet = dry;
+            fx.process (wet, p);
+
+            juce::dsp::FirstOrderTPTFilter<float> refTone;
+            refTone.prepare ({ sr, (juce::uint32) n, 1 });
+            refTone.setType (juce::dsp::FirstOrderTPTFilterType::lowpass);
+            refTone.setCutoffFrequency (toneHz);
+
+            float maxErr = 0.0f;
+            for (int s = 0; s < n; ++s)
+            {
+                const auto ref = refTone.processSample (0, dry.getSample (0, s));
+                maxErr = juce::jmax (maxErr, std::abs (wet.getSample (0, s) - ref));
+            }
+            expect (maxErr < 1.0e-3f, "crush drive=0 near-transparent (max err "
+                    + juce::String (maxErr) + ")");
+        }
+
+        // (d): types 0/1/2 unaffected by the Crush addition.
+        for (int type = 0; type < 3; ++type)
+        {
+            FX fx;
+            fx.prepare (sr, n);
+            FX::Params p;
+            p.distEnable = true;
+            p.distType = type;
+            p.distDrive = 0.5f;
+            p.distToneHz = 20000.0f;
+            p.distMix = 1.0f;
+
+            juce::AudioBuffer<float> buf (2, n);
+            makeSine (buf, 0.9);
+            fx.process (buf, p);
+
+            bool finite = true;
+            float peak = 0.0f;
+            for (int s = 0; s < n; ++s)
+            {
+                const auto v = buf.getSample (0, s);
+                if (! std::isfinite (v)) finite = false;
+                peak = juce::jmax (peak, std::abs (v));
+            }
+            expect (finite, "dist type " + juce::String (type) + " still finite");
+            expect (peak > 0.01f, "dist type " + juce::String (type) + " still non-trivial");
         }
     }
 
@@ -4611,6 +4785,7 @@ int main (int argc, char* argv[])
     convolveTailLengthTest();
     reverbMixTest();
     reverbStabilityTest();
+    distCrushTest();
     parametricEqTest();
     voiceModeTest();
     oversamplingTest();

@@ -1,5 +1,6 @@
 #include "Displays.h"
 #include "../SPASynthProcessor.h"
+#include "../dsp/FXChain.h"
 #include "../dsp/ParametricEQ.h"
 
 namespace spa::ui
@@ -695,27 +696,60 @@ void FXDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
             g.drawLine (area.getX(), area.getBottom(), area.getRight(), area.getY(), 1.0f);
 
             juce::Path curve;
-            constexpr int steps = 96;
-            for (int i = 0; i <= steps; ++i)
-            {
-                const auto in = -1.0f + 2.0f * (float) i / steps;
-                const auto x = in * drive;
-                float wet;
-                switch (type)
-                {
-                    case 1:  wet = juce::jlimit (-1.0f, 1.0f, x); break;
-                    case 2:  wet = std::sin (x * 1.2f); break;
-                    default: wet = std::tanh (x); break;
-                }
-                wet /= std::sqrt (drive);
-                const auto out = in + (wet - in) * mix;
 
-                const auto px = area.getX() + area.getWidth() * (float) i / steps;
-                const auto py = area.getCentreY() - out * area.getHeight() * 0.46f;
-                if (i == 0)
-                    curve.startNewSubPath (px, py);
-                else
-                    curve.lineTo (px, py);
+            if (type == 3)
+            {
+                // Bit-crush staircase: fewer, wider steps as DRIVE (bit
+                // depth reduction) increases, so the display reads as a
+                // quantiser rather than a smooth shaper.
+                const auto crushDrive = value (fx::distDrive);
+                const auto crushLevels = std::pow (2.0f, dsp::FXChain::crushBitsForDrive (crushDrive));
+                const auto numSteps = (float) juce::jlimit (3, 64, (int) crushLevels);
+
+                for (int s = 0; s <= (int) numSteps; ++s)
+                {
+                    const auto in = -1.0f + 2.0f * (float) s / numSteps;
+                    const auto quantised = std::round (in * crushLevels) / crushLevels;
+                    const auto out = in + (quantised - in) * mix;
+
+                    const auto px = area.getX() + area.getWidth() * (float) s / numSteps;
+                    const auto py = area.getCentreY() - out * area.getHeight() * 0.46f;
+                    if (s == 0)
+                        curve.startNewSubPath (px, py);
+                    else
+                        curve.lineTo (px, py);
+
+                    if ((float) s < numSteps)
+                    {
+                        const auto nextPx = area.getX() + area.getWidth() * (float) (s + 1) / numSteps;
+                        curve.lineTo (nextPx, py);
+                    }
+                }
+            }
+            else
+            {
+                constexpr int steps = 96;
+                for (int i = 0; i <= steps; ++i)
+                {
+                    const auto in = -1.0f + 2.0f * (float) i / steps;
+                    const auto x = in * drive;
+                    float wet;
+                    switch (type)
+                    {
+                        case 1:  wet = juce::jlimit (-1.0f, 1.0f, x); break;
+                        case 2:  wet = std::sin (x * 1.2f); break;
+                        default: wet = std::tanh (x); break;
+                    }
+                    wet /= std::sqrt (drive);
+                    const auto out = in + (wet - in) * mix;
+
+                    const auto px = area.getX() + area.getWidth() * (float) i / steps;
+                    const auto py = area.getCentreY() - out * area.getHeight() * 0.46f;
+                    if (i == 0)
+                        curve.startNewSubPath (px, py);
+                    else
+                        curve.lineTo (px, py);
+                }
             }
             draw::glowStroke (g, curve, colour, 1.6f);
             break;

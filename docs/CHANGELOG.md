@@ -7,6 +7,9 @@ A small visibility improvement requested by our testers.
 - Enabled effects now show their tab name in bold and in the brighter text
   colour in the FX section, so you can see at a glance which effects are
   engaged without clicking through each tab.
+- The DIST effect has a new Crush type, a bit crusher. DRIVE controls both
+  the bit depth and the sample rate reduction together, and TONE and MIX
+  work exactly as they do for the other distortion types.
 
 **Notes for this build**
 

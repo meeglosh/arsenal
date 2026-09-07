@@ -570,7 +570,7 @@ static std::vector<ParamDef> buildCoreDefs()
                    false, { .enabled = true, .biasCentre = 0.3f, .biasStrength = 0.3f } });
     p.push_back ({ fx::distType, "Dist Type", Section::fxDist,
                    ParamKind::choiceParam, {}, 0.0f, "", false, { .enabled = true },
-                   { "Soft", "Hard", "Fold" } });
+                   { "Soft", "Hard", "Fold", "Crush" } });
     p.push_back ({ fx::distDrive, "Dist Drive", Section::fxDist,
                    ParamKind::floatParam, { 0.0f, 1.0f }, 0.3f, "",
                    false, { .enabled = true, .maxNorm = 0.8f, .biasCentre = 0.3f,

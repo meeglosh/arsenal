@@ -43,6 +43,8 @@ void FXChain::reset()
 {
     for (auto& f : toneFilters)
         f.reset();
+    crushHold.fill (0.0f);
+    crushPhase.fill (0.0f);
     chorus.reset();
     modEffect.reset();
     tremVibEffect.reset();
@@ -115,6 +117,13 @@ void FXChain::processDistortion (juce::AudioBuffer<float>& buffer, const Params&
     for (auto& f : toneFilters)
         f.setCutoffFrequency (p.distToneHz);
 
+    // Crush (bit-depth + sample-rate reduction) params, driven entirely by
+    // DRIVE via the exponential mappings shared with the UI curve (see
+    // crushBitsForDrive/crushHoldForDrive) so the knob stays useful across
+    // its whole range instead of spending half its travel inaudible.
+    const auto crushLevels = std::pow (2.0f, crushBitsForDrive (p.distDrive));
+    const auto crushHoldLen = crushHoldForDrive (p.distDrive, sampleRate);
+
     for (int ch = 0; ch < juce::jmin (2, buffer.getNumChannels()); ++ch)
     {
         auto* data = buffer.getWritePointer (ch);
@@ -123,17 +132,40 @@ void FXChain::processDistortion (juce::AudioBuffer<float>& buffer, const Params&
         for (int i = 0; i < buffer.getNumSamples(); ++i)
         {
             const auto dry = data[i];
-            const auto x = dry * driveGain;
 
             float wet;
-            switch (p.distType)
+            if (p.distType == 3)
             {
-                case 1:  wet = juce::jlimit (-1.0f, 1.0f, x); break;              // Hard
-                case 2:  wet = std::sin (x * 1.2f); break;                        // Fold
-                default: wet = std::tanh (x); break;                              // Soft
+                // Bit-depth quantise the unscaled input (no drive boost --
+                // that would just clip everything at high bit-crush amounts).
+                const auto quantised = std::round (dry * crushLevels) / crushLevels;
+
+                // Sample-and-hold decimation: advance the phase each sample;
+                // only latch a new held value once the accumulated hold
+                // length has been reached, else repeat the last one.
+                auto& hold = crushHold[(size_t) ch];
+                auto& phase = crushPhase[(size_t) ch];
+                if (phase <= 0.0f)
+                {
+                    hold = quantised;
+                    phase = crushHoldLen;
+                }
+                phase -= 1.0f;
+
+                wet = tone.processSample (0, hold);
+            }
+            else
+            {
+                const auto x = dry * driveGain;
+                switch (p.distType)
+                {
+                    case 1:  wet = juce::jlimit (-1.0f, 1.0f, x); break;              // Hard
+                    case 2:  wet = std::sin (x * 1.2f); break;                        // Fold
+                    default: wet = std::tanh (x); break;                              // Soft
+                }
+                wet = tone.processSample (0, wet / std::sqrt (driveGain));
             }
 
-            wet = tone.processSample (0, wet / std::sqrt (driveGain));
             data[i] = dry + (wet - dry) * p.distMix;
         }
     }
