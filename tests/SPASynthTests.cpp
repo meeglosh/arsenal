@@ -2869,6 +2869,80 @@ namespace
         proc.setPlayHead (nullptr);
     }
 
+    // Logic reports NEGATIVE ppq during a record count-in (and pre-roll before
+    // bar 1). The arp syncs stepCounter to that ppq on transport start, and a
+    // negative counter fed through C++ `%` indexed the pattern arrays with a
+    // negative subscript: an out-of-bounds stack read that segfaulted Logic's
+    // render thread the moment a second track was recorded (1.0.13, 2026-09-07).
+    // Every mode must play only the held pitches (any octave) from a count-in.
+    static void arpNegativePpqTest()
+    {
+        std::cout << "arpNegativePpqTest\n";
+        namespace params = spa::params;
+        using Arp = spa::dsp::Arpeggiator;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 256;
+        constexpr int numModes = (int) params::ArpMode::phrase + 1;
+
+        for (int modeIndex = 0; modeIndex < numModes; ++modeIndex)
+        {
+            const auto mode = (params::ArpMode) modeIndex;
+            const bool isPhrase = mode == params::ArpMode::phrase;
+
+            Arp arp;
+            arp.prepare (sampleRate);
+
+            Arp::Params p;
+            p.enable = true;
+            p.mode = mode;
+            p.division = 12;       // 1/16 @ 120bpm = 0.25 beats/step
+            p.octaves = 2;         // span > held count so wrapping matters
+            p.velocityMode = 2;    // accent mode also takes stepCounter % len
+            p.gate = 0.5f;
+            p.sampleRate = sampleRate;
+            p.bpm = 120.0;
+            p.hostPlaying = true;
+
+            const double samplesPerBeat = sampleRate * 60.0 / p.bpm;
+            const double blockBeats = blockSize / samplesPerBeat;
+            double ppq = -8.0;   // two-bar count-in at 4/4
+
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOn (1, 64, (juce::uint8) 100), 0);
+            midi.addEvent (juce::MidiMessage::noteOn (1, 67, (juce::uint8) 100), 0);
+
+            int onsBeforeBarOne = 0, onsTotal = 0;
+            bool pitchesOk = true;
+            for (; ppq < 2.0; ppq += blockBeats)
+            {
+                p.ppqAtBlockStart = ppq;
+                arp.process (midi, blockSize, p);
+                for (const auto metadata : midi)
+                {
+                    const auto m = metadata.getMessage();
+                    if (! m.isNoteOn())
+                        continue;
+                    ++onsTotal;
+                    if (ppq < 0.0)
+                        ++onsBeforeBarOne;
+                    const auto note = m.getNoteNumber();
+                    const auto pc = note % 12;
+                    const bool ok = isPhrase ? (note >= 60 && note <= 127)
+                                             : (pc == 0 || pc == 4 || pc == 7);
+                    pitchesOk = pitchesOk && ok;
+                }
+                midi.clear();
+            }
+
+            const auto tag = "mode " + juce::String (modeIndex);
+            expect (onsBeforeBarOne > 0, tag + ": arp runs during the count-in");
+            expect (onsTotal > onsBeforeBarOne, tag + ": arp keeps running past bar 1");
+            expect (pitchesOk, tag + ": only held pitches are played from a negative ppq");
+        }
+    }
+
     static void arpChanceTest()
     {
         std::cout << "arpChanceTest\n";
@@ -4448,6 +4522,7 @@ int main (int argc, char* argv[])
     arpStuckNoteTest();
     arpZeroSampleBlockTest();
     arpNonFinitePpqTest();
+    arpNegativePpqTest();
     arpChanceTest();
     extraEnginesTest();
     pluckLazyAllocTest();

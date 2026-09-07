@@ -4,6 +4,19 @@
 namespace spa::dsp
 {
 
+// Pattern position from a step count. stepCounter follows the host's ppq on
+// transport sync and is NEGATIVE before bar 1 (Logic's count-in / pre-roll),
+// and C++ `%` keeps the dividend's sign, so a plain `stepCounter % length`
+// produced a negative index into the pattern arrays -- an out-of-bounds read
+// that crashed Logic whenever the arp ran during a count-in. Always wrap into
+// [0, length).
+static int wrapStep (int step, int length) noexcept
+{
+    length = juce::jmax (1, length);
+    const auto r = step % length;
+    return r < 0 ? r + length : r;
+}
+
 void Arpeggiator::prepare (double sampleRate)
 {
     currentSampleRate = sampleRate;
@@ -79,7 +92,7 @@ int Arpeggiator::pickNoteIndex (const Params& p, int sequenceLength)
         case params::ArpMode::diverge: case params::ArpMode::asPlayed:
         case params::ArpMode::chord: case params::ArpMode::phrase:
         default:
-            return stepCounter % sequenceLength;
+            return wrapStep (stepCounter, sequenceLength);
     }
 }
 
@@ -118,7 +131,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
         if (p.velocityMode == 1)
             return 100;
         if (p.velocityMode == 2)
-            return step % juce::jmax (1, patternLen) == 0 ? 127 : 88;
+            return wrapStep (step, patternLen) == 0 ? 127 : 88;
         return played;
     };
 
@@ -162,7 +175,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
     {
         const auto& phrase = params::arpPhrases()[(size_t) juce::jlimit (
             0, (int) params::arpPhrases().size() - 1, p.phrase)];
-        const auto step = stepCounter % (phrase.length * juce::jmax (1, p.octaves));
+        const auto step = wrapStep (stepCounter, phrase.length * juce::jmax (1, p.octaves));
         const auto interval = phrase.intervals[step % phrase.length];
         const auto octave = 12 * (step / phrase.length);
         const auto base = held[sorted[0]];
@@ -179,7 +192,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
 
     const auto noteAt = [&] (int position) -> const Held&
     {
-        return held[sorted[position % n]];
+        return held[sorted[wrapStep (position, n)]];
     };
     const auto pitchAt = [&] (int position)
     {
@@ -196,7 +209,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
             break;
 
         case params::ArpMode::down:
-            sequencePosition = spanLength - 1 - (stepCounter % spanLength);
+            sequencePosition = spanLength - 1 - wrapStep (stepCounter, spanLength);
             break;
 
         case params::ArpMode::upDown:
@@ -254,7 +267,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
                     std::swap (byArrival[j], byArrival[j - 1]);
 
             const auto step = pickNoteIndex (p, spanLength);
-            const auto& h = held[byArrival[step % n]];
+            const auto& h = held[byArrival[wrapStep (step, n)]];
             emit ((int) h.note + 12 * (step / n),
                   velocityFor (h.velocity, step, spanLength));
             ++stepCounter;
@@ -269,7 +282,7 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
         case params::ArpMode::chord:
         case params::ArpMode::phrase:
         default:
-            sequencePosition = stepCounter % spanLength;
+            sequencePosition = wrapStep (stepCounter, spanLength);
             break;
     }
 

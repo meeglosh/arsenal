@@ -1,5 +1,15 @@
 # SPASynth changelog
 
+## 1.0.14
+
+One crash fix.
+
+- Fixed a crash when recording in Logic (and other hosts) with a count-in or
+  pre-roll while the arpeggiator was on. Before bar 1 the host reports a
+  negative song position, and the arpeggiator used it to look up its pattern
+  with a negative index. The pattern now wraps correctly from any position, so
+  the arp plays the same notes during a count-in that it plays after bar 1.
+
 ## 1.0.13
 
 Two small fixes on top of the 1.0.11 redesign.
