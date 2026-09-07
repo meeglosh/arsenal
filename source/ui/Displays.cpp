@@ -592,43 +592,49 @@ void ChaosDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
 {
     const auto& t = currentTheme();
     const auto enabled = value (params::id::chaos::enable) >= 0.5f;
-    const auto depth = value (params::id::chaos::depth);
-    const auto mix = value (params::id::chaos::mix);
-    const auto rateNorm = apvts.getParameter (params::id::chaos::rate)->getValue();
 
-    // A representative walker trace, deterministic per settings.
-    juce::Random rng (1234);
-    const auto stepsPerView = 4.0f + rateNorm * 60.0f;
-    float walker = 0.0f, target = 0.0f;
-    float phase = 1.0f;
+    // Snapshot the most recent chaosTraceSize samples from the telemetry ring,
+    // oldest first, newest last -> drawn newest-at-the-right. No allocation:
+    // traceSnapshot is a preallocated member.
+    constexpr int N = dsp::Telemetry::chaosTraceSize;
+    bool everWritten = false;
+    if (telemetry != nullptr)
+    {
+        const auto writeIdx = telemetry->chaosTraceWrite.load (std::memory_order_relaxed);
+        everWritten = writeIdx > 0;
+        for (int i = 0; i < N; ++i)
+        {
+            const auto idx = (writeIdx - N + i) & (N - 1);
+            traceSnapshot[(size_t) i] = telemetry->chaosTrace[(size_t) idx]
+                                            .load (std::memory_order_relaxed);
+        }
+    }
+    else
+    {
+        traceSnapshot.fill (0.0f);
+    }
 
     juce::Path curve;
-    constexpr int steps = 180;
-    for (int i = 0; i <= steps; ++i)
+    for (int i = 0; i < N; ++i)
     {
-        phase += stepsPerView / steps;
-        if (phase >= 1.0f)
-        {
-            phase -= std::floor (phase);
-            target = rng.nextFloat() * 2.0f - 1.0f;
-        }
-        walker += (target - walker) * juce::jmin (1.0f, stepsPerView / steps * 4.0f);
-
-        const auto amp = enabled ? depth * mix : 0.0f;
-        const auto x = area.getX() + area.getWidth() * (float) i / steps;
-        const auto y = area.getCentreY() - walker * amp * area.getHeight() * 0.45f;
+        const auto x = area.getX() + area.getWidth() * (float) i / (float) (N - 1);
+        const auto y = area.getCentreY() - traceSnapshot[(size_t) i] * area.getHeight() * 0.45f;
         if (i == 0)
             curve.startNewSubPath (x, y);
         else
             curve.lineTo (x, y);
     }
 
-    draw::glowStroke (g, curve, enabled ? t.accentMod : t.textSecondary.withAlpha (0.4f), 1.6f);
+    const auto live = isLive();
+    const auto colour = enabled && live
+                       ? t.accentMod
+                       : t.textSecondary.withAlpha (0.4f);
+    draw::glowStroke (g, curve, colour, 1.6f);
 
-    // Live chaos output dot on the right edge.
-    if (enabled && isLive())
+    // Live chaos output dot on the right edge, on the newest sample.
+    if (enabled && live && everWritten)
     {
-        const auto v = telemetry->chaosValue.load (std::memory_order_relaxed);
+        const auto v = traceSnapshot[(size_t) (N - 1)];
         const auto y = area.getCentreY() - v * area.getHeight() * 0.45f;
         g.setColour (t.textPrimary);
         g.fillEllipse (area.getRight() - 7.0f, y - 3.0f, 6.0f, 6.0f);

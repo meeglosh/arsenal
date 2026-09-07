@@ -429,6 +429,86 @@ namespace
                 + " vs max " + juce::String (maxPeak) + ")");
     }
 
+    // ORGANIC CHAOS scrolling trace: the Telemetry ring should fill at the
+    // expected decimated rate with real (non-constant, in-range) values when
+    // chaos is active, and read as ~silent when it is not.
+    static void chaosTraceTest()
+    {
+        std::cout << "chaosTraceTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+        using Telemetry = spa::dsp::Telemetry;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+        constexpr int numBlocks = (int) (1.0 * sampleRate / blockSize);   // ~1 second
+
+        auto runOneSecond = [&] (bool chaosEnabled) -> int
+        {
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+
+            setParam (proc, id::chaos::enable, chaosEnabled ? 1.0f : 0.0f);
+            setParam (proc, id::chaos::depth, 1.0f);
+            setParam (proc, id::chaos::rate, 8.0f);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            for (int b = 0; b < numBlocks; ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+            }
+
+            auto& tel = proc.getTelemetry();
+            const auto writeIdx = tel.chaosTraceWrite.load();
+
+            // The ring hasn't wrapped in one second at this decimation rate
+            // (writeIdx < chaosTraceSize), so the actually-written samples
+            // are simply indices [0, writeIdx) -- no wraparound arithmetic
+            // needed here (unlike the UI's always-full-window read). Reduce
+            // to aggregates rather than asserting per sample -- one bad
+            // sample among hundreds should read as one failed expectation,
+            // not silently dilute the "ok" count.
+            float minV = 1.0e9f, maxV = -1.0e9f;
+            bool allInRange = true;
+            const auto n = juce::jmin (writeIdx, Telemetry::chaosTraceSize);
+            for (int i = 0; i < n; ++i)
+            {
+                const auto v = tel.chaosTrace[(size_t) i].load();
+                if (v < -1.0f || v > 1.0f)
+                    allInRange = false;
+                minV = juce::jmin (minV, v);
+                maxV = juce::jmax (maxV, v);
+            }
+
+            expect (allInRange, "all chaos trace samples in [-1, 1]");
+
+            if (chaosEnabled)
+                expect (maxV - minV > 0.01f,
+                        "chaos trace is non-constant when enabled (min "
+                        + juce::String (minV) + " max " + juce::String (maxV) + ")");
+            else
+                expect (minV == 0.0f && maxV == 0.0f,
+                        "chaos trace reads zero when chaos is disabled");
+
+            return writeIdx;
+        };
+
+        const auto writesEnabled = runOneSecond (true);
+
+        // ~750 mod chunks/s at 48k/64, decimated by chaosTraceDecimation.
+        const auto expectedWrites =
+            (int) (numBlocks * blockSize / 64 / Telemetry::chaosTraceDecimation);
+        expect (std::abs (writesEnabled - expectedWrites) < expectedWrites / 10 + 2,
+                "trace write count near expected (" + juce::String (writesEnabled)
+                + " vs " + juce::String (expectedWrites) + ")");
+
+        runOneSecond (false);
+    }
+
     // Writes a WAV whose amplitude ramps 0 -> 1 over its length (440 Hz sine).
     static juce::File writeRampSine (double seconds, double sampleRate)
     {
@@ -2625,6 +2705,53 @@ namespace
             std::cout << "snapshot: " << file.getFullPathName() << "\n";
             proc.getAPVTS().state.setProperty ("uiKeyboardVisible", false, nullptr);
         }
+
+        // ORGANIC CHAOS live-trace pass: enable chaos, hold a note through
+        // ~1s of real processing so the telemetry trace ring actually has a
+        // seismograph to show, then snapshot with the note still held so
+        // isLive() is true and the trace draws in full accent colour instead
+        // of the dimmed idle state.
+        {
+            namespace id = spa::params::id;
+            setParam (proc, id::chaos::enable, 1.0f);
+            setParam (proc, id::chaos::depth, 1.0f);
+            // 1.2 Hz reads as a clean slow-drift demo image. (Telemetry's
+            // trace ring now writes every mod chunk, undecimated, so an 8 Hz+
+            // rate -- which testers will actually use -- also renders as a
+            // smooth slope rather than a cliff; see scratchpad renders
+            // snap-chaos-live3 (this seed) vs snap-chaos-live3-fast (8 Hz).)
+            setParam (proc, id::chaos::rate, 1.2f);
+
+            constexpr double sampleRate = 48000.0;
+            constexpr int blockSize = 512;
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            // 3 seconds so the trace ring (~2.7s wide) fills the well's full
+            // width for this demo render, rather than the first-real-second
+            // partial fill from an idle start.
+            for (int b = 0; b < (int) (3.0 * sampleRate / blockSize); ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+            }
+
+            std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+            editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+            const auto image = editor->createComponentSnapshot (editor->getLocalBounds());
+            const auto file = outDir.getChildFile ("spasynth-chaos.png");
+            file.deleteFile();
+            juce::PNGImageFormat png;
+            juce::FileOutputStream stream (file);
+            if (stream.openedOk())
+                png.writeImageToStream (image, stream);
+            std::cout << "snapshot: " << file.getFullPathName() << "\n";
+
+            juce::MidiBuffer allOff;
+            allOff.addEvent (juce::MidiMessage::allNotesOff (1), 0);
+            proc.processBlock (buffer, allOff);
+        }
     }
 
     // The preset-name button must be clickable the moment the editor opens —
@@ -4671,6 +4798,63 @@ namespace
         }
     }
 
+    // ORGANIC CHAOS display: paints without crashing and actually draws
+    // something (not a uniform image) after a chaos-active audio run feeds
+    // the telemetry trace ring.
+    static void chaosDisplayPaintTest()
+    {
+        std::cout << "chaosDisplayPaintTest\n";
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        setParam (proc, id::chaos::enable, 1.0f);
+        setParam (proc, id::chaos::depth, 1.0f);
+        setParam (proc, id::chaos::rate, 8.0f);
+
+        juce::AudioBuffer<float> buffer (2, 512);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+        for (int b = 0; b < (int) (1.0 * 48000.0 / 512); ++b)
+        {
+            proc.processBlock (buffer, midi);
+            midi.clear();
+        }
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        spa::ui::ChaosDisplay* chaos = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (chaos == nullptr)
+                chaos = dynamic_cast<spa::ui::ChaosDisplay*> (&c);
+            for (auto* child : c.getChildren())
+                if (chaos == nullptr)
+                    find (*child);
+        };
+        find (*editor);
+
+        expect (chaos != nullptr, "ChaosDisplay found");
+        if (chaos == nullptr)
+            return;
+
+        juce::Image image (juce::Image::ARGB, juce::jmax (1, chaos->getWidth()),
+                           juce::jmax (1, chaos->getHeight()), true);
+        juce::Graphics g (image);
+        chaos->paintEntireComponent (g, false);
+
+        // Sample a handful of pixels across the width; a real trace should
+        // not leave the image a single uniform colour.
+        std::set<juce::uint32> seen;
+        for (int x = 0; x < image.getWidth(); x += juce::jmax (1, image.getWidth() / 20))
+            for (int y = 0; y < image.getHeight(); y += juce::jmax (1, image.getHeight() / 6))
+                seen.insert (image.getPixelAt (x, y).getARGB());
+
+        expect (seen.size() > 1, "chaos display paints non-uniform content");
+    }
+
     // Tester request: enabled FX tabs bold their label so the user can see at
     // a glance which effects are engaged. isTabEngaged() is the generic hook
     // (ContentComponent maps tab name -> enable param id(s)); this exercises
@@ -4777,6 +4961,7 @@ int main (int argc, char* argv[])
     velocityRouteTest();
     chaosMixBypassTest();
     chaosMatrixSourceTest();
+    chaosTraceTest();
     samplePlaybackTest();
     granularTest();
     quickSwapTest();
@@ -4832,6 +5017,7 @@ int main (int argc, char* argv[])
     voicePanelEditorCloseTest();
     tabLayoutInvarianceTest();
     fxPanelLabelClippingTest();
+    chaosDisplayPaintTest();
     fxTabEngagedBoldTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";

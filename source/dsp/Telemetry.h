@@ -49,6 +49,23 @@ struct Telemetry
     std::array<std::atomic<float>, params::numLFOs> lfoPhase {};   // 0..1 base phase
     std::atomic<float> chaosValue { 0.0f };                        // scaled matrix source
 
+    // Scrolling chaos trace for the ORGANIC CHAOS display: the raw chaos
+    // matrix-source value (-1..1), written every chaosTraceDecimation-th mod
+    // chunk by the same narrating voice as chaosValue above (see the
+    // writerSerial arbitration around chaosValue's write site). At a 64-sample
+    // mod chunk and 48 kHz that's ~750 chunks/s; with decimation 1 (every
+    // chunk) that's ~750/s, so the 2048-sample ring spans roughly 2.7 seconds.
+    // Decimation is kept configurable (a fast (8 Hz+) chaos rate's target
+    // renewals otherwise slide across too few points, reading as a cliff
+    // instead of a slope) -- raise it again if the ring size ever needs to
+    // shrink. The UI reads the window ending at chaosTraceWrite and scrolls
+    // it left, newest at the right.
+    static constexpr int chaosTraceSize = 2048;       // power of two
+    static constexpr int chaosTraceDecimation = 1;
+    std::array<std::atomic<float>, chaosTraceSize> chaosTrace {};
+    std::atomic<int> chaosTraceWrite { 0 };
+    std::atomic<int> chaosTraceCounter { 0 };         // decimation counter, audio-thread only
+
     // Block peaks after the FX chain and master gain.
     std::atomic<float> peakL { 0.0f };
     std::atomic<float> peakR { 0.0f };

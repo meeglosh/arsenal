@@ -594,7 +594,21 @@ void SPASynthVoice::computeChunk (int blockOffset, int chunkLen)
                                                  std::memory_order_relaxed);
             }
 
-            tel->chaosValue.store (src[(int) params::ModSource::chaos], std::memory_order_relaxed);
+            const auto chaosSrc = src[(int) params::ModSource::chaos];
+            tel->chaosValue.store (chaosSrc, std::memory_order_relaxed);
+
+            // Decimated scrolling trace for the ORGANIC CHAOS display (see
+            // Telemetry.h). "Counter is audio-thread only" holds because this
+            // whole block is gated by the writerSerial arbitration above, so
+            // only one voice touches it per chunk.
+            if ((tel->chaosTraceCounter.fetch_add (1, std::memory_order_relaxed) + 1)
+                    % Telemetry::chaosTraceDecimation == 0)
+            {
+                const auto widx = tel->chaosTraceWrite.load (std::memory_order_relaxed);
+                tel->chaosTrace[(size_t) (widx & (Telemetry::chaosTraceSize - 1))]
+                    .store (juce::jlimit (-1.0f, 1.0f, chaosSrc), std::memory_order_relaxed);
+                tel->chaosTraceWrite.store (widx + 1, std::memory_order_relaxed);
+            }
         }
     }
 }

@@ -10,6 +10,8 @@ A small visibility improvement requested by our testers.
 - The DIST effect has a new Crush type, a bit crusher. DRIVE controls both
   the bit depth and the sample rate reduction together, and TONE and MIX
   work exactly as they do for the other distortion types.
+- The ORGANIC CHAOS display now shows the real chaos modulation scrolling
+  across in real time, like a seismograph, instead of a static preview curve.
 
 **Notes for this build**
 

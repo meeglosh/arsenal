@@ -104,6 +104,9 @@ public:
 
 private:
     void paintDisplay (juce::Graphics&, juce::Rectangle<float>) override;
+
+    // Preallocated snapshot of the telemetry trace ring, read once per paint.
+    std::array<float, dsp::Telemetry::chaosTraceSize> traceSnapshot {};
 };
 
 // FX scopes: one class, five characters.
