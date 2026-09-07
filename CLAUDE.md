@@ -10,6 +10,75 @@ AAX deliberately out for v1. Original spec: `spasynth-claude-code-brief.md`
 (the project was renamed Arsenal → SPASynth; the repo folder is still
 `arsenal`, plugin code `SpSy`, manufacturer `SpAu`).
 
+## Current state (2026-09-07): v1.0.14 (main `81236ad`) built + staged; arp count-in crash, reverb OOB read (the noise bursts), VOICE-panel lifetime
+
+**1.0.13 was confirmed by Mike (close-window crash gone, session clean)
+but never sent.** Then he hit a NEW crash: recording a second MIDI track
+in Logic segfaulted every time. Three identical crash reports
+(`~/Library/Logs/DiagnosticReports/AUHostingServiceXPC_*.ips`, JSON after
+the first line): render thread, `processBlock` +7956, a `ldrb` of
+`held[garbage].note` inside the inlined `Arpeggiator::triggerStep`.
+Symbolicated by `lipo -thin arm64` on the `build-release` AU binary +
+`objdump -d --start-address` (release has no line tables).
+
+- `2585783` **arp crash on negative host ppq.** Logic reports a NEGATIVE
+  ppqPosition before bar 1 (record count-in / pre-roll). On transport sync
+  the arp sets `stepCounter` from it, and C++ `%` keeps the sign, so
+  `stepCounter % length` indexed `sorted[]`/`byArrival[]` with a negative
+  subscript: a stack read past the array → garbage held-note index →
+  SIGSEGV. Latent since the arp landed (`573ef6d`); needs an arp preset
+  playing during a count-in. Fix: `wrapStep()` (non-negative modulo) at
+  every stepCounter `%` site. `arpNegativePpqTest` runs all 12 modes from
+  ppq -8 → +2, octaves 2, accent velocity, asserts only held pitches play.
+- `81236ad` **three more, found with AddressSanitizer** while chasing an
+  intermittent test crash (see below). (a) **`FDNReverb::process` read one
+  float PAST a delay line**: the modulated read position is a float; a
+  value a hair below zero is wrapped by `+= size` and float precision at
+  ~5768 rounds it to exactly `(float) size`, so `i0 == size`, `fr == 0`,
+  and whatever the allocator placed after the vector was injected raw into
+  the feedback network. Sporadic and purely heap-layout (= build)
+  dependent, stops when the reverb is off — this is almost certainly the
+  loud pulsing bursts that got the `audit-hardening` 1.0.13 build
+  abandoned on 2026-09-05 (1.0.12 was clean by luck). Same guard
+  (`while (i0 >= sz) i0 -= sz` after truncation) applied to the delay
+  (`FXChain.cpp`), `ModEffect` and `TremVib`, which used the same pattern.
+  (b) **VOICE call-out panel could outlive the processor**: the call-out
+  is owned by JUCE's `CallOutBoxCallback`, deleted by the
+  ModalComponentManager on a LATER message-loop turn; a host closing a
+  project deletes editor then processor with no pump between, so the
+  orphaned panel's Knob/Choice attachments unregistered from a freed APVTS
+  (heap-use-after-free). `ContentComponent::openVoicePanel` (SafePointer)
+  + synchronous `VoicePanel::detach()` (new `Knob/Choice::detach()`) in
+  `~ContentComponent`, which also exits the box's modal state; deletion
+  stays with the modal manager. `voicePanelEditorCloseTest` variant 3
+  (window closed, processor destroyed immediately, then pump).
+  (c) **`voicePanelEditorCloseTest` itself was flaky (~1 run in 3, SIGSEGV
+  through a null vtable) — a TEST bug**: it held a raw `CallOutBox*` across
+  message pumps, but `CallOutBoxCallback`'s 200ms timer dismisses any
+  call-out while the process is not in the foreground (a CLI test run
+  never is) and the modal manager frees it. Now a SafePointer. **This
+  flake aborts `build_release.sh`** (it runs the suite under `set -e`) —
+  it killed the first 1.0.14 build attempt.
+
+Suite **437 assertions ALL PASS, 3/3 normal runs + 5/5 under ASan**.
+**macOS 1.0.14 pkg from `81236ad`**: signed + notarized + stapled, `spctl`
+accepted, minos 11.0, universal, md5 `68edd892e562370c765c005627dfb376`,
+byte-identical across `dist/installers/` and
+`dist/shopify/SPASynth-{Standard,Pro}-1.0.14/`. Windows exe from draft
+release `ci-windows-81236ad` (CI run `34157223276`; repo flipped public by
+Mike for it), md5 `89003ae52f0c2905eba27f696de34df4`, same three
+locations. Changelog `## 1.0.14` covers all three fixes in customer voice.
+The earlier 1.0.14 pkg (`b52afaf4…`, arp fix only) was overwritten.
+
+**ASan is now part of the ritual** (step 1b below). The `hardening-safe`
+branch (`d7f38c3`) still sits on 1.0.13's main; rebase it onto 1.0.14 and
+have Mike verify in Logic before shipping any of it.
+
+**Pending: Mike installs 1.0.14 and tests (1) recording a second track
+with an arp preset + count-in, (2) his 1.0.11 session with reverb on for a
+while, (3) VOICE open → close window, and close project; then the rest of
+the gauntlet; then send to Paul and Phil.**
+
 ## Current state (2026-09-06): v1.0.13 (main) built + staged; fixes the Logic close-window crash
 
 **1.0.12 was never sent.** Mike found a crash on it in Logic: open the VOICE
@@ -1041,6 +1110,19 @@ uses no em dashes; sound count is 11,474.
    reconfigured without `CMAKE_BUILD_TYPE` (2026-08-04) — if you see a
    `Debug/` copy, it's stale, delete it. Fix every new compiler warning — one
    caught a real Filter-2 lock bug.
+   1b. **AddressSanitizer run, for any DSP or lifetime change and before
+   every release build.** One-time configure (gitignored, no plugin copies
+   so it can never shadow the installed release):
+   `cmake -S . -B build-asan -G Ninja -DCMAKE_BUILD_TYPE=Debug
+   -DSPASYNTH_COPY_PLUGIN=OFF -DCMAKE_OSX_ARCHITECTURES=arm64
+   -DCMAKE_CXX_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+   -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+   -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address`, then
+   `cmake --build build-asan --target SPASynthTests` and
+   `ASAN_OPTIONS=detect_leaks=0 build-asan/SPASynthTests_artefacts/Debug/SPASynthTests`
+   a few times (some findings are timing-dependent). It found the reverb
+   one-past-the-end read and the VOICE-panel use-after-free on its first
+   run (2026-09-07) — bugs the plain suite, auval and pluginval all passed.
 2. UI changes: render snapshots and **actually look at them**:
    `SPASynthTests --snapshot <dir>` writes `spasynth-dark.png` (preset
    browser open, FILTER 2 + DELAY fronted) and `spasynth-accent.png`
