@@ -2,13 +2,25 @@
 
 ## 1.0.14
 
-One crash fix.
+Three stability fixes, two of them found with a memory checker (AddressSanitizer)
+that we have now added to our release checks.
 
 - Fixed a crash when recording in Logic (and other hosts) with a count-in or
   pre-roll while the arpeggiator was on. Before bar 1 the host reports a
   negative song position, and the arpeggiator used it to look up its pattern
   with a negative index. The pattern now wraps correctly from any position, so
   the arp plays the same notes during a count-in that it plays after bar 1.
+- Fixed rare, sudden bursts of noise in the reverb tail. When the modulated
+  read position of a reverb delay line landed exactly on the buffer boundary,
+  a rounding quirk read one sample past the end of the buffer and fed whatever
+  happened to be in memory there into the reverb's feedback. Whether you ever
+  heard it depended on memory layout, which is why it came and went between
+  builds. The same boundary guard is now applied to the delay, the phaser and
+  flanger, and the vibrato, which used the same read pattern.
+- Hardened the VOICE panel against a project being closed while it is open:
+  the panel now cuts its ties to the synth the moment the plugin window goes
+  away, so the host's deferred cleanup can never touch a synth that is
+  already gone.
 
 ## 1.0.13
 

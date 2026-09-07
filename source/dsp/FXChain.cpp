@@ -174,9 +174,10 @@ void FXChain::processDelay (juce::AudioBuffer<float>& buffer, const Params& p)
         while (readPos < 0.0)
             readPos += (double) bufLen;
 
-        const auto r0 = (int) readPos;
-        const auto r1 = (r0 + 1) % bufLen;
+        auto r0 = (int) readPos;
         const auto frac = (float) (readPos - (double) r0);
+        while (r0 >= bufLen) r0 -= bufLen;   // wrap can round to exactly bufLen -- see FDNReverb.h
+        const auto r1 = (r0 + 1) % bufLen;
 
         const auto outL = bufL[r0] + frac * (bufL[r1] - bufL[r0]);
         const auto outR = bufR[r0] + frac * (bufR[r1] - bufR[r0]);

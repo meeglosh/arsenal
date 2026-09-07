@@ -110,6 +110,11 @@ private:
     juce::Slider glideSlider;
     juce::Label glideLabel;
     juce::TextButton voiceButton;   // opens the voice-mode call-out
+    // The VOICE call-out's content panel while it is open. JUCE's modal
+    // manager owns the call-out and deletes it asynchronously, so it can
+    // outlive this editor; the destructor uses this to detach the panel from
+    // the processor synchronously (see ~ContentComponent).
+    juce::Component::SafePointer<juce::Component> openVoicePanel;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> glideAttachment;
     // GLIDE knob only means anything once glideMode is off "Off".
     std::unique_ptr<DependentEnable> glideTimeEnable;

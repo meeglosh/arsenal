@@ -144,8 +144,9 @@ private:
         // Linear-interpolated read.
         float rp = (float) st.dlWrite - delaySamps;
         while (rp < 0.0f) rp += (float) delayLen;
-        const int i0 = (int) rp;
+        int i0 = (int) rp;
         const float frac = rp - (float) i0;
+        while (i0 >= delayLen) i0 -= delayLen;   // float wrap can round to exactly delayLen -- see FDNReverb.h
         const int i1 = (i0 + 1) % delayLen;
         const float out = st.dl[i0] + frac * (st.dl[i1] - st.dl[i0]);
 

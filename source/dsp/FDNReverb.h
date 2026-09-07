@@ -130,7 +130,17 @@ public:
                 float rp = (float) lineW[(size_t) i] - ((float) len[i] - m);
                 const int sz = (int) line[(size_t) i].size();
                 while (rp < 0.0f) rp += (float) sz;
-                const int i0 = (int) rp; const float fr = rp - (float) i0;
+                int i0 = (int) rp; const float fr = rp - (float) i0;
+                // Float wrap hazard: a read position a hair below zero
+                // becomes `sz - epsilon`, which at this magnitude rounds to
+                // exactly (float) sz, so i0 == sz -- one element PAST the
+                // delay line. Whatever the allocator placed next in the heap
+                // (a pointer, a malloc header) was then read as a float and,
+                // with fr == 0, injected raw into the feedback network:
+                // build-dependent, sporadic, loud tail bursts that stopped
+                // when the reverb was switched off (the abandoned 1.0.13
+                // audit build, 2026-09-05). Found by ASan, 2026-09-07.
+                while (i0 >= sz) i0 -= sz;
                 const int i1 = (i0 + 1) % sz;
                 y[i] = line[(size_t) i][(size_t) i0] + fr * (line[(size_t) i][(size_t) i1] - line[(size_t) i][(size_t) i0]);
 

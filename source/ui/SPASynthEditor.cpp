@@ -631,6 +631,21 @@ public:
             onDismissedCallback();
     }
 
+    // Cut every tie to the processor. Called from ~ContentComponent when the
+    // editor goes away with this call-out still open: the call-out itself is
+    // owned by JUCE's CallOutBoxCallback, which the ModalComponentManager
+    // deletes on a LATER message-loop turn -- and a host closing a project
+    // deletes the editor and then the processor with no pump in between, so
+    // by the time this panel's destructor ran, its Knob/Choice attachments
+    // would have unregistered from a freed APVTS (heap-use-after-free under
+    // ASan, 2026-09-07; voicePanelEditorCloseTest variant 3).
+    void detach()
+    {
+        mode.detach(); priority.detach();
+        voices.detach(); detune.detach(); width.detach();
+        onDismissedCallback = nullptr;
+    }
+
     void paint (juce::Graphics& g) override
     {
         // Popup call-out, not a module — it sits over other modules and
@@ -855,6 +870,7 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         // closed with the call-out still up (1.0.12 crash, 2026-09-05).
         if (auto* top = callOutParent())
         {
+            openVoicePanel = panel.get();   // for ~ContentComponent's detach
             auto& callout = juce::CallOutBox::launchAsynchronously (
                 std::move (panel),
                 top->getLocalArea (&voiceButton, voiceButton.getLocalBounds()),
@@ -1052,6 +1068,20 @@ void ContentComponent::mouseDown (const juce::MouseEvent& e)
 
 ContentComponent::~ContentComponent()
 {
+    // A VOICE call-out still open when the host tears the editor down: its
+    // panel must stop referencing the processor NOW (see VoicePanel::detach),
+    // and the box should leave modal state so it can't swallow input into a
+    // dead editor. Its actual deletion stays with JUCE's modal manager.
+    if (auto* panel = dynamic_cast<VoicePanel*> (openVoicePanel.getComponent()))
+    {
+        panel->detach();
+        if (auto* box = panel->findParentComponentOfClass<juce::CallOutBox>())
+        {
+            box->exitModalState (0);
+            box->setVisible (false);
+        }
+    }
+
     processor.getPresetManager().removeChangeListener (this);
     processor.removeChangeListener (this);
 }

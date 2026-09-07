@@ -83,8 +83,9 @@ public:
                     const float delay = 1.0f + sweepSamps * lfo;
                     float rp = (float) vibWrite - delay;
                     while (rp < 0.0f) rp += (float) vibMax;
-                    const int i0 = (int) rp;
+                    int i0 = (int) rp;
                     const float frac = rp - (float) i0;
+                    while (i0 >= vibMax) i0 -= vibMax;   // float wrap can round to exactly vibMax -- see FDNReverb.h
                     const int i1 = (i0 + 1) % vibMax;
                     const float wet = line[(size_t) i0] + frac * (line[(size_t) i1] - line[(size_t) i0]);
                     x = x * (1.0f - p.vibMix) + wet * p.vibMix;

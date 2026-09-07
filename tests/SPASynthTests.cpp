@@ -4010,9 +4010,19 @@ namespace
             return found;
         };
 
-        for (int variant = 0; variant < 3; ++variant)
+        // Variants: 0 = window closed with the call-out still open; 1/2 =
+        // dismissed shortly/long before the close; 3 = window closed with
+        // the call-out open AND the processor destroyed immediately after,
+        // with no message pump in between -- what a host does on project
+        // close. The orphaned call-out's VoicePanel still held parameter
+        // attachments, and the modal manager's deferred delete then ran
+        // their destructors against a dead APVTS (heap-use-after-free under
+        // ASan). ContentComponent's destructor now detaches the panel
+        // synchronously.
+        for (int variant = 0; variant < 4; ++variant)
         {
-            spa::SPASynthProcessor proc;
+            auto procPtr = std::make_unique<spa::SPASynthProcessor>();
+            auto& proc = *procPtr;
             proc.prepareToPlay (48000.0, 512);
             // Host-style holder, modelled on the JUCE AU wrapper's
             // EditorCompHolder: it is the top-level component and its
@@ -4037,7 +4047,14 @@ namespace
             if (voiceButton == nullptr) return;
             voiceButton->triggerClick();
             pumpFor (60);
-            auto* callout = findCallout (editor);
+            // SafePointer, not a raw pointer: JUCE's CallOutBoxCallback runs
+            // a 200ms timer that dismisses the call-out whenever the process
+            // is not in the foreground (a CLI test run never is), and the
+            // ModalComponentManager then deletes it asynchronously -- so
+            // across the pumps below this pointer can legitimately die.
+            // Holding it raw made this test crash ~1 run in 3 (a genuine
+            // heap-use-after-free in the TEST, found by ASan 2026-09-07).
+            juce::Component::SafePointer<juce::CallOutBox> callout (findCallout (editor));
             expect (callout != nullptr, "call-out open");
             expect (callout != nullptr && callout->getParentComponent() == editorRaw,
                     "call-out is parented to the editor shell, not the host's top-level holder");
@@ -4052,6 +4069,8 @@ namespace
             if (variant == 2 && callout != nullptr) { callout->dismiss(); pumpFor (300); }
 
             holder.reset();          // host closes the window (deleteAllChildren)
+            if (variant == 3)
+                procPtr.reset();     // ...and the processor, before any message pump
             pumpFor (400);           // let deferred modal cleanup run
             expect (true, juce::String ("editor closed after VOICE mode switch, variant ") + juce::String (variant));
         }

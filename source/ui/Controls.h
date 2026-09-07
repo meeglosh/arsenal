@@ -111,6 +111,12 @@ public:
     juce::Slider slider;
     juce::Label label;
 
+    // Drop the parameter attachment early, for controls that can outlive
+    // the editor (the VOICE call-out's panel, owned by JUCE's modal manager
+    // and deleted asynchronously) and so must not touch the processor's
+    // APVTS from a destructor that may run after the processor is gone.
+    void detach() { attachment.reset(); }
+
 private:
     juce::RangedAudioParameter* parameter = nullptr;
     juce::String restingText;
@@ -137,6 +143,8 @@ public:
     void resized() override { combo.setBounds (getLocalBounds()); }
 
     juce::ComboBox combo;
+
+    void detach() { attachment.reset(); }   // see Knob::detach
 
 private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> attachment;
