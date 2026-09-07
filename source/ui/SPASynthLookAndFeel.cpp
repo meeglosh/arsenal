@@ -574,10 +574,24 @@ juce::Label* SPASynthLookAndFeel::createComboBoxTextBox (juce::ComboBox&)
 // a re-laid-out (tight) bar never slides the centred text onto the grip.
 static constexpr int tabGripReserve = 16;
 
+// Tabs bold their label when the thing they represent is "engaged" (e.g. an
+// enabled FX). Queried generically by name via DraggableTabs::isTabEngaged so
+// the LnF stays FX-agnostic; the mapping lives in ContentComponent.
+static bool isTabEngaged (const juce::TabBarButton& button)
+{
+    if (auto* tabs = dynamic_cast<DraggableTabs*> (button.getTabbedButtonBar().getParentComponent()))
+        if (tabs->isTabEngaged)
+            return tabs->isTabEngaged (button.getButtonText());
+    return false;
+}
+
 int SPASynthLookAndFeel::getTabButtonBestWidth (juce::TabBarButton& button, int tabDepth)
 {
     juce::GlyphArrangement glyphs;
-    glyphs.addLineOfText (metrics::smallFont(), button.getButtonText(), 0.0f, 0.0f);
+    // Always measure with the bold variant so a tab's width never changes
+    // when it gains/loses the bold "engaged" weight (tabLayoutInvarianceTest
+    // asserts stable bounds; a width jump on toggle would look broken).
+    glyphs.addLineOfText (metrics::smallFontBold(), button.getButtonText(), 0.0f, 0.0f);
     const int grip = dynamic_cast<DraggableTabButton*> (&button) != nullptr ? tabGripReserve : 0;
     // Floor of 2x the tab-bar depth deliberately matches JUCE's own
     // LookAndFeel_V2 default (see its getTabButtonBestWidth) -- short tab
@@ -615,7 +629,7 @@ void SPASynthLookAndFeel::drawTabButton (juce::TabBarButton& button, juce::Graph
     }
 
     g.setColour (front ? t.textPrimary : t.textSecondary);
-    g.setFont (metrics::smallFont());
+    g.setFont (isTabEngaged (button) ? metrics::smallFontBold() : metrics::smallFont());
     auto textArea = button.getLocalBounds();
     if (dynamic_cast<DraggableTabButton*> (&button) != nullptr)
         textArea.removeFromLeft (tabGripReserve);   // keep the text clear of the grip

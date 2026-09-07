@@ -67,6 +67,12 @@ public:
 
     std::function<void()> onOrderChanged;   // fires after a drag reorder
 
+    // Generic "is this tab's underlying thing engaged" hook, queried by name
+    // (tabs are drag-reorderable, so index isn't stable). The LookAndFeel
+    // uses this to bold the tab label; the FX-specific name->enable-param
+    // mapping lives in the owner (ContentComponent), not here.
+    std::function<bool (const juce::String& tabName)> isTabEngaged;
+
     void setModuleNames (juce::StringArray namesByModuleId)
     {
         moduleNames = std::move (namesByModuleId);

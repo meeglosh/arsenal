@@ -4497,6 +4497,94 @@ namespace
         }
     }
 
+    // Tester request: enabled FX tabs bold their label so the user can see at
+    // a glance which effects are engaged. isTabEngaged() is the generic hook
+    // (ContentComponent maps tab name -> enable param id(s)); this exercises
+    // it end to end through real APVTS parameter changes, and asserts tab
+    // widths never move when the weight flips (getTabButtonBestWidth always
+    // measures with the bold font -- see SPASynthLookAndFeel.cpp).
+    static void fxTabEngagedBoldTest()
+    {
+        std::cout << "fxTabEngagedBoldTest\n";
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (200);
+
+        spa::ui::DraggableTabs* fxTabs = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (auto* t = dynamic_cast<spa::ui::DraggableTabs*> (&c))
+                fxTabs = t;
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (fxTabs != nullptr, "fxTabs (DraggableTabs) found");
+        if (fxTabs == nullptr)
+            return;
+        expect (fxTabs->isTabEngaged != nullptr, "fxTabs.isTabEngaged hook wired up");
+        if (fxTabs->isTabEngaged == nullptr)
+            return;
+
+        auto snapshotWidths = [&]
+        {
+            std::vector<int> widths;
+            auto& bar = fxTabs->getTabbedButtonBar();
+            for (int i = 0; i < bar.getNumTabs(); ++i)
+                widths.push_back (bar.getTabButton (i) != nullptr ? bar.getTabButton (i)->getWidth() : -1);
+            return widths;
+        };
+
+        // All effects start disabled by default -- no tab should read engaged.
+        expect (! fxTabs->isTabEngaged ("DIST"), "DIST starts disengaged");
+        expect (! fxTabs->isTabEngaged ("REVERB"), "REVERB starts disengaged");
+        expect (! fxTabs->isTabEngaged ("TREM/VIB"), "TREM/VIB starts disengaged");
+
+        const auto widthsBefore = snapshotWidths();
+
+        setParam (proc, id::fx::reverbEnable, 1.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+
+        expect (fxTabs->isTabEngaged ("REVERB"), "REVERB engaged after enabling fxReverb.enable");
+        expect (! fxTabs->isTabEngaged ("DIST"), "DIST still disengaged (only REVERB was toggled)");
+
+        const auto widthsAfterReverb = snapshotWidths();
+        expect (widthsAfterReverb == widthsBefore,
+                "tab widths unchanged after REVERB goes bold (getTabButtonBestWidth is weight-independent)");
+
+        // TREM/VIB is one tab for two effects -- either one enables it.
+        setParam (proc, id::fx::tremEnable, 1.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (fxTabs->isTabEngaged ("TREM/VIB"), "TREM/VIB engaged when trem alone is on");
+
+        setParam (proc, id::fx::tremEnable, 0.0f);
+        setParam (proc, id::fx::vibEnable, 1.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (fxTabs->isTabEngaged ("TREM/VIB"), "TREM/VIB engaged when vib alone is on");
+
+        setParam (proc, id::fx::vibEnable, 0.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (! fxTabs->isTabEngaged ("TREM/VIB"), "TREM/VIB disengaged once both trem and vib are off");
+
+        // Toggle REVERB back off -- engagement clears and widths still hold.
+        setParam (proc, id::fx::reverbEnable, 0.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (50);
+        expect (! fxTabs->isTabEngaged ("REVERB"), "REVERB disengaged after turning fxReverb.enable back off");
+
+        const auto widthsAfter = snapshotWidths();
+        expect (widthsAfter == widthsBefore, "tab widths unchanged after the full enable/disable round trip");
+
+        editor->removeFromDesktop();
+    }
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -4569,6 +4657,7 @@ int main (int argc, char* argv[])
     voicePanelEditorCloseTest();
     tabLayoutInvarianceTest();
     fxPanelLabelClippingTest();
+    fxTabEngagedBoldTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

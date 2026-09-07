@@ -131,6 +131,8 @@ private:
     ChaosPanel chaosPanel;
     ArpPanel arpPanel;
     DraggableTabs fxTabs;   // FX tabs are drag-reorderable -> chain order
+    // Bolds a tab's label when its FX is enabled (fxTabs.isTabEngaged).
+    std::unique_ptr<TabEngagementTracker> fxTabEngagement;
     MatrixPanel matrixPanel;
     OutputMeter outputMeter;
 

@@ -1,5 +1,19 @@
 # SPASynth changelog
 
+## 1.0.15
+
+A small visibility improvement requested by our testers.
+
+- Enabled effects now show their tab name in bold in the FX section, so you
+  can see at a glance which effects are engaged without clicking through
+  each tab.
+
+**Notes for this build**
+
+- The macOS installer is signed and notarized by Apple, so it installs cleanly.
+- The Windows installer is unsigned by design. On first launch, click More info
+  and then Run anyway to get past the SmartScreen prompt.
+
 ## 1.0.14
 
 Three stability fixes, two of them found with a memory checker (AddressSanitizer)

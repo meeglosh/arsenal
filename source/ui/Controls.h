@@ -232,4 +232,60 @@ private:
     std::atomic<float> lastValue { 0.0f };
 };
 
+// Tracks a set of "engaged" gate parameters (e.g. FX enable toggles) keyed by
+// a tab/label name, and repaints a target component whenever any of them
+// changes -- same listener+AsyncUpdater idiom as DependentEnable above, so UI
+// never gets touched off the parameter-callback thread. isEngaged() is a
+// plain synchronous read (juce::AudioProcessorValueTreeState::getRawParameterValue
+// is safe to read from any thread at any time), so it can be queried directly
+// from paint(). A tab can map to more than one param id (e.g. one tab
+// covering two effects); it reads as engaged if ANY of them is on.
+class TabEngagementTracker : private juce::AudioProcessorValueTreeState::Listener,
+                             private juce::AsyncUpdater
+{
+public:
+    TabEngagementTracker (juce::AudioProcessorValueTreeState& apvtsIn,
+                          std::vector<std::pair<juce::String, std::vector<juce::String>>> paramsByTabIn,
+                          juce::Component& repaintTargetIn)
+        : apvts (apvtsIn), paramsByTab (std::move (paramsByTabIn)), repaintTarget (repaintTargetIn)
+    {
+        for (auto& entry : paramsByTab)
+            for (auto& id : entry.second)
+            {
+                allIds.push_back (id);
+                apvts.addParameterListener (id, this);
+            }
+    }
+
+    ~TabEngagementTracker() override
+    {
+        for (auto& id : allIds)
+            apvts.removeParameterListener (id, this);
+    }
+
+    bool isEngaged (const juce::String& tabName) const
+    {
+        for (auto& entry : paramsByTab)
+        {
+            if (entry.first != tabName)
+                continue;
+            for (auto& id : entry.second)
+                if (auto* raw = apvts.getRawParameterValue (id))
+                    if (raw->load() > 0.5f)
+                        return true;
+            return false;
+        }
+        return false;
+    }
+
+private:
+    void parameterChanged (const juce::String&, float) override { triggerAsyncUpdate(); }
+    void handleAsyncUpdate() override { repaintTarget.repaint(); }
+
+    juce::AudioProcessorValueTreeState& apvts;
+    std::vector<std::pair<juce::String, std::vector<juce::String>>> paramsByTab;
+    std::vector<juce::String> allIds;
+    juce::Component& repaintTarget;
+};
+
 } // namespace spa::ui

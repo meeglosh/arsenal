@@ -108,6 +108,10 @@ namespace metrics
     {
         return juce::Font (juce::FontOptions (9.5f)).withExtraKerningFactor (0.05f);
     }
+    inline juce::Font smallFontBold()
+    {
+        return juce::Font (juce::FontOptions (9.5f, juce::Font::bold)).withExtraKerningFactor (0.05f);
+    }
     inline juce::Font wordmarkFont()
     {
         // The big tracked wordmark: A R S E N A L

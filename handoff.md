@@ -1,71 +1,80 @@
-# SPASynth handoff (2026-09-06)
+# SPASynth handoff (2026-09-07)
 
 Quick "start here" for the next session. Full detail lives in `CLAUDE.md`; this
 is the short version.
 
 ## Where we are
 
-- **2026-09-06: 1.0.13 (main, `dee6146`) built + staged, NOT yet installed by
-  Mike.** Fixes the Logic crash on closing the window with the VOICE call-out
-  open (call-outs were parented to the AU wrapper's holder, which deletes
-  its children; see CLAUDE.md 2026-09-06). pkg md5
-  `51feed96455d8b4b7bc2943ae3093e7f`, exe md5
-  `b934ab4fdc993a27760977a8731a4c45`. Next: Mike installs, rescans in Logic,
-  verifies the crash is gone + his session plays clean, finishes the
-  gauntlet, sends to Paul and Phil.
+- **2026-09-07: v1.0.14 built, staged, INSTALLED, and CONFIRMED by Mike.**
+  1.0.13 got installed and confirmed (the VOICE close-window crash was gone),
+  but before it went to testers Mike hit a NEW Logic crash recording a second
+  MIDI track: arpeggiator + count-in, negative host ppq -> negative `%` ->
+  out-of-bounds stack read. Fixed in `2585783`, version bumped to 1.0.14.
+  Then an AddressSanitizer build of the test suite (now ritual step 1b, see
+  below) turned up three more real bugs, fixed in `81236ad`: (a) FDNReverb
+  read one float past a delay line on float-wrap rounding — almost certainly
+  the cause of the reverb noise bursts that got `audit-hardening` abandoned
+  on 2026-09-05; same guard added to delay/ModEffect/TremVib; (b) the VOICE
+  call-out panel could outlive the processor on project close, now detached
+  synchronously in `~ContentComponent`; (c) the intermittent
+  `voicePanelEditorCloseTest` flake was a test bug (raw `CallOutBox*` across
+  message pumps), now a SafePointer — this flake also aborts
+  `build_release.sh` if it fires. 1.0.14 built + staged 2026-09-07: macOS pkg
+  md5 `68edd892e562370c765c005627dfb376` (signed/notarized/stapled), Windows
+  exe md5 `89003ae52f0c2905eba27f696de34df4` (draft release
+  `ci-windows-81236ad`), byte-identical across `dist/installers/` and
+  `dist/shopify/SPASynth-{Standard,Pro}-1.0.14/`. Docs commit `878bfc5`. Mike
+  installed it (first attempt failed silently because he was given a
+  relative pkg path from the wrong directory — **always give him an
+  absolute pkg path**) and confirmed the recording crash is fixed. Repo was
+  flipped PUBLIC by Mike for the Windows CI run and is still public.
+  **Next: v1.0.15 is in progress** — tester-feedback improvements from
+  Mike's own playtest sessions with Paul and Phil, starting with "enabled FX
+  tabs show their label in bold." 1.0.14 has NOT been sent to Paul and Phil
+  yet; the rest of the gauntlet + the 1.0.15 round come first. The
+  `hardening-safe` branch (`d7f38c3`) still sits on 1.0.13's main — needs a
+  rebase onto current main and Mike's Logic verification before any of it
+  ships.
+
+- **2026-09-06: 1.0.13 fixed the Logic crash on closing the window with the
+  VOICE call-out open** (call-outs were parented to the AU wrapper's holder,
+  which deletes its children; see CLAUDE.md history). Installed + confirmed
+  by Mike, but superseded by 1.0.14 above before it reached testers.
 
 - **2026-09-05: 1.0.12 is installed in /Library and confirmed working by
   Mike in Logic (his own session, playback clean).** The `audit-hardening`
-  branch (1.0.13) is ABANDONED — its build produced reverb-triggered pulsing
-  noise bursts that 1.0.12 does not; cause never found. Do not merge it.
+  branch (old 1.0.13) was ABANDONED — its build produced reverb-triggered
+  pulsing noise bursts that 1.0.12 does not. Cause was unknown at the time;
+  **now believed found** — see the FDNReverb off-by-one fix above. Do not
+  merge that branch as-is regardless; re-verify anything pulled from it.
   Full story + the Logic-loading lessons in CLAUDE.md's 2026-09-05 section.
-  Remaining: finish the 1.0.12 gauntlet, send to Paul and Phil, Shopify,
-  announce. Delete the obsolete 1.0.13 files under dist/ before uploading.
   Everything below this bullet is older history.
 
-- **v1.0.8 is confirmed working and shipped to Paul and Phil.** Fixed QWERTY
-  (computer-keyboard) note input dying the instant a knob/dropdown was
-  touched. The first attempt (`setWantsKeyboardFocus(false)`) was **wrong**
-  — Mike tested it and reported it back broken. The correct flag is
-  `setMouseClickGrabsKeyboardFocus(false)` (JUCE grabs focus on every mouse
-  click unconditionally, via a flag separate from "wants focus" — traced
-  through JUCE's actual source before landing the real fix). **Remember this
-  for any future focus-stealing bug in this codebase.**
-- **v1.0.9 is built, signed, staged — NOT yet tested by Mike.** A pre-launch
-  performance/hardening batch (soft bypass, convolution efficiency, reverb
-  CPU reduction, EQ analyzer gating, mod-dest capacity guard, `$LIB$` path
-  clamp, lazy pluck buffers, CI permissions), done by Mike's request while
-  there was time before launch, not in response to a bug.
-- **A second focus-steal bug was found AFTER 1.0.9 was staged, and the fix is
-  sitting UNCOMMITTED in the working tree right now.** The 1.0.8 fix only
-  covered parameter controls (knobs/dropdowns) — it missed every plain
-  action button (RANDOMIZE ALL, SAVE, preset nav, settings, panic, etc.),
-  which have the identical defect. Fixed all ~25 of them (same
-  `setMouseClickGrabsKeyboardFocus(false)` fix) across `SPASynthEditor.cpp`,
-  `ModulePanels.cpp`, `PresetBrowser.cpp`. Build is clean, tests pass, a dev
-  build is installed on Mike's machine for him to test — **but this has not
-  been committed, and Mike has not yet confirmed it fixes RANDOMIZE ALL (or
-  that nothing else broke).** Check `git status` first thing if picking this
-  up — don't assume it's landed.
-- **GitHub Actions storage alert (2026-08-25) — resolved as a non-issue,
-  nothing to fix.** The quota is account-wide across all ~21 of Mike's
-  repos, not per-repo; live storage everywhere totals ~11MB (all in
-  spasynth, already correctly capped). The alert reflects a cycle-peak
-  measurement, not current usage — resets 2026-09-01 on its own.
+- **v1.0.8, 1.0.9, and the RANDOMIZE-ALL focus fix are all long since
+  confirmed and shipped** (QWERTY focus-steal fixes: the right flag is
+  `setMouseClickGrabsKeyboardFocus`, not `setWantsKeyboardFocus` — see
+  Gotchas below; the 1.0.9 hardening batch; the ~25-button focus fix that
+  followed it). Full history in CLAUDE.md's 2026-08-21 through 2026-08-28
+  sections if needed.
+- GitHub Actions storage alerts are a known non-issue: the quota is
+  account-wide across all of Mike's repos, not per-repo, and the alert
+  reflects a cycle-peak measurement, not live usage.
 
 ## What's actually left before launch
 
-1. **Get the uncommitted focus-fix confirmed by Mike**, then commit it and
-   fold it into whatever the next build is (1.0.9 if nothing's shipped yet,
-   otherwise bump per the versioning rule below).
-2. Mike test-drives 1.0.9's own hardening changes (separate ask from #1) —
-   low risk, nothing user-facing except bypass behavior, just unverified.
-3. Decide: one more tester round, or send the announcement directly once
-   Mike's happy with his own testing.
+1. **v1.0.15 feature round** — tester-feedback improvements from Mike's own
+   playtests with Paul and Phil, starting with bolding enabled FX tab
+   labels. Batch these, don't ship one at a time.
+2. Finish the 1.0.14 gauntlet, then actually send a build to Paul and Phil
+   (1.0.14 has never gone out).
+3. Decide: one more tester round after that, or send the announcement
+   directly once Mike's happy.
 4. Shopify build-out per `docs/shopify-setup-guide.md`.
 5. Send `docs/launch-email.md` / `docs/social-posts.md` (now current, reflect
    the full shipping feature set) — marketing site is already confirmed live
    and accurate by Mike.
+6. Rebase `hardening-safe` (`d7f38c3`) onto current main and get Mike's Logic
+   verification before shipping any of it.
 
 Windows real-DAW smoke test is **done** — Paul and Phil both tested Windows
 on 1.0.8, no issues. Marketing site is **done** — confirmed live/accurate by
@@ -106,6 +115,10 @@ download <id> -n spasynth-installer-Windows`, copy the pkg + exe into both
 locations, `otool -l <standalone> | grep minos` -> `minos 11.0`, `spctl -a -t
 install <pkg>` -> accepted. Ask Mike before rebuilding (he batches findings).
 
+**When handing Mike a pkg to install, always give an absolute path.** A
+relative path from the wrong working directory failed silently on 1.0.14 —
+the installer command just did nothing and looked like it worked.
+
 ## Gotchas learned
 
 - **`setMouseClickGrabsKeyboardFocus`, not `setWantsKeyboardFocus`, for any
@@ -133,9 +146,17 @@ install <pkg>` -> accepted. Ask Mike before rebuilding (he batches findings).
 - Test binary: `build/SPASynthTests_artefacts/SPASynthTests` (no `Debug/`
   subdir — `build/` was reconfigured without `CMAKE_BUILD_TYPE`).
 - Verification ritual for every change: build `SPASynthTests` and run it
-  (expect ALL PASS, 185+ assertions), look at `--snapshot` renders for UI
-  changes, then `auval` (+ `pluginval` strictness-8 if available) for
-  anything touching the audio thread.
+  (expect ALL PASS), look at `--snapshot` renders for UI changes, then
+  `auval` (+ `pluginval` strictness-8 if available) for anything touching
+  the audio thread.
+- **New step 1b (2026-09-07): also build and run the AddressSanitizer test
+  suite in `build-asan/`.** This is what caught the FDNReverb off-path read
+  (likely the real cause of the 1.0.13 audit-hardening noise bursts), the
+  VOICE call-out lifetime bug, and a genuine test bug in
+  `voicePanelEditorCloseTest` (fixed to use a SafePointer instead of a raw
+  `CallOutBox*` across message pumps). That test's flake also aborts
+  `build_release.sh` if it fires during a release build — if the release
+  script dies there, it's the known flake, re-run.
 - Load-bearing invariants (do not break): `CMAKE_OSX_DEPLOYMENT_TARGET=11.0`;
   append-only choice orders (FX module ids, EQ band types, voice/reverb/EQ
   character modes); RT-safety on the audio thread; per-preset `fxOrder`

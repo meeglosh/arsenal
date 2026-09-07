@@ -980,6 +980,25 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     fxTabs.applyOrder (processor.getFxOrder());
     fxTabs.onOrderChanged = [this] { processor.setFxOrder (fxTabs.currentOrder()); };
 
+    // Bold a tab's label when its FX is enabled. TREM/VIB is one tab for two
+    // effects, so it's engaged if EITHER trem or vib is on.
+    fxTabEngagement = std::make_unique<TabEngagementTracker> (processor.getAPVTS(),
+        std::vector<std::pair<juce::String, std::vector<juce::String>>> {
+            { "DIST",     { params::id::fx::distEnable } },
+            { "CHORUS",   { params::id::fx::chorusEnable } },
+            { "DELAY",    { params::id::fx::delayEnable } },
+            { "REVERB",   { params::id::fx::reverbEnable } },
+            { "EQ",       { params::id::fx::eqEnable } },
+            { "MOD",      { params::id::fx::modEnable } },
+            { "TREM/VIB", { params::id::fx::tremEnable, params::id::fx::vibEnable } },
+            { "LIMIT",    { params::id::fx::limEnable } },
+            { "CONV",     { params::id::fx::convEnable } },
+        }, fxTabs);
+    fxTabs.isTabEngaged = [this] (const juce::String& name)
+    {
+        return fxTabEngagement != nullptr && fxTabEngagement->isEngaged (name);
+    };
+
     addAndMakeVisible (matrixPanel);
     addAndMakeVisible (outputMeter);
 
