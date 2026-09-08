@@ -83,6 +83,12 @@ juce::File findLibraryRoot();
 // Factory/<Category>/ and User/ underneath.
 juce::File defaultPresetsRoot();
 
+// Process-wide override for defaultPresetsRoot(), message-thread only. Used
+// exclusively by the test suite to redirect preset I/O away from the user's
+// real Presets folder into a temp directory. Pass an invalid/empty File to
+// clear the override. Never used by shipping product code paths.
+void setPresetsRootOverride (const juce::File& root);
+
 // Optional ownership stamp ("Licensed to name@example.com — Pro Edition"),
 // shown in the editor footer when present. Purely informational — never
 // gates anything (see EULA: no activation, no phone-home). Looked for as

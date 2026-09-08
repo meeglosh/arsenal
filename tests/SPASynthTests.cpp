@@ -2907,7 +2907,7 @@ namespace
         // SPASynthProcessor's constructor schedules a ONE-SHOT
         // MessageManager::callAsync that auto-discovers the library and
         // calls its OWN internal PresetManager::generateFactoryPresets
-        // against the REAL, machine-wide library::defaultPresetsRoot() --
+        // against the REAL, machine-wide spa::library::defaultPresetsRoot() --
         // regardless of the separate, temp-rooted `pm` this test uses below.
         // That callback reads library::findLibraryRoot() at the moment it
         // actually runs, not at construction time, so it MUST be allowed to
@@ -5560,9 +5560,47 @@ namespace
         editor->removeFromDesktop();
     }
 
+static void presetsRootIsHermeticTest()
+{
+    const auto root = spa::library::defaultPresetsRoot();
+    const auto realRoot = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("Silverplatter Audio").getChildFile ("SPASynth").getChildFile ("Presets");
+
+    expect (root != realRoot, "test presets root must not be the user's real Presets folder");
+    expect (root.getFullPathName().contains ("SPASynthTests-presets-"),
+            "test presets root must be inside the hermetic temp dir");
+}
+
 int main (int argc, char* argv[])
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
+
+    // Real-focus UI tests (call-out dismissal timers, keyboard-focus grabs)
+    // need this process to be the macOS foreground/key-window process, or
+    // JUCE's own foreground checks (CallOutBoxCallback::timerCallback,
+    // key-window-dependent focus grabs) misbehave whenever the user is doing
+    // anything else on the machine. Must run before any UI test.
+    juce::Process::setDockIconVisible (false);
+   #if JUCE_MAC
+    juce::Process::makeForegroundProcess();
+   #endif
+
+    const auto tempPresetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+        .getChildFile ("SPASynthTests-presets-" + juce::String ((juce::int64) juce::Time::getMillisecondCounterHiRes())
+                        + "-" + juce::String (juce::Random::getSystemRandom().nextInt (1000000)));
+    tempPresetsRoot.createDirectory();
+    spa::library::setPresetsRootOverride (tempPresetsRoot);
+    std::cout << "Hermetic test presets root: " << tempPresetsRoot.getFullPathName() << "\n";
+
+    struct PresetsRootCleanup
+    {
+        juce::File dir;
+        ~PresetsRootCleanup()
+        {
+            spa::library::setPresetsRootOverride ({});
+            dir.deleteRecursively();
+        }
+    } presetsRootCleanup { tempPresetsRoot };
 
     if (argc >= 3 && juce::String (argv[1]) == "--snapshot")
     {
@@ -5570,6 +5608,7 @@ int main (int argc, char* argv[])
         return 0;
     }
 
+    presetsRootIsHermeticTest();
     renderSmokeTest();
     multiSlotUnisonTest();
     wavetableLoaderTest();

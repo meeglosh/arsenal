@@ -301,8 +301,25 @@ void setPresetFavorite (const juce::String& key, bool favorite)
     settings().saveIfNeeded();
 }
 
+namespace
+{
+    juce::File& presetsRootOverride()
+    {
+        static juce::File override;
+        return override;
+    }
+}
+
+void setPresetsRootOverride (const juce::File& root)
+{
+    presetsRootOverride() = root;
+}
+
 juce::File defaultPresetsRoot()
 {
+    if (presetsRootOverride() != juce::File())
+        return presetsRootOverride();
+
     return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
         .getChildFile ("Silverplatter Audio").getChildFile ("SPASynth")
         .getChildFile ("Presets");
