@@ -100,12 +100,29 @@ juce_add_binary_data(SPAAssets
 # NativeWindowShift.cpp holds the Windows implementation (and a false-
 # returning no-op on any other non-mac platform); the macOS implementation
 # needs real Objective-C message sends (NSWindow/NSScreen), so it lives in
-# NativeWindowShift.mm and needs the OBJCXX language enabled -- only on
-# APPLE, so other platforms' toolchains are never asked to compile .mm.
+# NativeWindowShift.mm -- APPLE only, so other platforms' toolchains are
+# never asked to compile .mm.
+#
+# Deliberately NOT enable_language(OBJCXX): that makes CMake compile every
+# .mm source in the whole build (including all 26-ish of JUCE's own module
+# .mm files, e.g. juce_core.mm) as a REAL OBJCXX translation unit, which does
+# NOT inherit this project's CXX_VISIBILITY_PRESET=hidden the way its CXX
+# compiles do -- every JUCE-internal symbol in those files came back exported
+# (~19,600 of them), bloating the release AU from 14.5MB to 23.6MB. JUCE's
+# own CMake (JUCEModuleSupport.cmake's _juce_module_sources) never enables
+# OBJCXX either: it just adds .mm files as plain sources and lets CMake's
+# built-in Apple-platform default handle them -- .mm is one of
+# CMAKE_CXX_SOURCE_FILE_EXTENSIONS on Apple, so with only C/CXX enabled
+# (see project() above) CMake compiles .mm through the CXX compiler with
+# -x objective-c++, inheriting every CXX target property including the
+# hidden visibility. set_source_files_properties below makes that explicit
+# rather than relying on the implicit default.
 set(SPASYNTH_NATIVE_WINDOW_SHIFT_SOURCES source/ui/NativeWindowShift.cpp)
 if(APPLE)
-    enable_language(OBJCXX)
     list(APPEND SPASYNTH_NATIVE_WINDOW_SHIFT_SOURCES source/ui/NativeWindowShift.mm)
+    set_source_files_properties(source/ui/NativeWindowShift.mm PROPERTIES
+        LANGUAGE CXX
+        COMPILE_OPTIONS "-x;objective-c++")
 endif()
 
 set(SPASYNTH_SOURCES
