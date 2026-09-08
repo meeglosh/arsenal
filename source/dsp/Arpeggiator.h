@@ -86,6 +86,7 @@ private:
     Held held[maxHeld];
     int numHeld = 0;
     int arrivalCounter = 0;
+    bool firstStepPending = false;   // next step of a new chord always fires (chance bypassed)
     bool latchedChordDown = false;   // physical keys currently down (latch)
     std::array<bool, 128> keyDown {}; // exact physical key state, latch-independent
     bool lastLatch = false;           // for detecting the latch on->off edge

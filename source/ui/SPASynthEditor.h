@@ -158,6 +158,11 @@ private:
     std::unique_ptr<PresetBrowser> presetBrowser;
     bool presetBrowserOpen = false;
     bool browserOverlays = false;
+    // Bumped on every togglePresetBrowser() call; a deferred close-completion
+    // callback (see togglePresetBrowser) captures the value current at its
+    // own call and checks it still matches before shrinking the window, so a
+    // later toggle that supersedes it is a no-op instead of a stale clobber.
+    int browserAnimSeq = 0;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
@@ -209,6 +214,12 @@ private:
     juce::TooltipWindow tooltips { this };
     std::unique_ptr<ui::ContentComponent> content;
     bool hostViewWakeupDone = false;
+    // The x delta (logical px, positive = moved left) actually applied by
+    // the last successful native-window shift on drawer open -- see
+    // NativeWindowShift.h. May be less than the requested width if clamped
+    // at a screen edge; the close path undoes exactly this, not the nominal
+    // drawer width, so a clamped open/close cycle never creeps the window.
+    int nativeWindowShiftApplied = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SPASynthEditor)
 };

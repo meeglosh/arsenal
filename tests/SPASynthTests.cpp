@@ -1937,7 +1937,54 @@ namespace
                 const auto rmsLast = samplesLast > 0 ? std::sqrt (sumSqLast / (float) samplesLast) : 0.0f;
 
                 if (peak < silentPeakThreshold || rmsLast < silentRmsThreshold)
+                {
                     ++silent;
+
+                    // Diagnostic dump for a silent seed -- cheap, only fires
+                    // on failure. Enough to compare the rolled patch across
+                    // builds (e.g. ASan vs normal) for the same seed.
+                    const auto rv = [&] (const juce::String& id)
+                    {
+                        auto* p = proc.getAPVTS().getParameter (id);
+                        return p != nullptr ? p->convertFrom0to1 (p->getValue()) : 0.0f;
+                    };
+                    std::cout << "  [silent] seed=" << seed << " wildness=" << wildness
+                               << " peak=" << peak << " rmsLast=" << rmsLast << "\n";
+                    for (int s = 0; s < params::numOscSlots; ++s)
+                    {
+                        namespace osc = params::id::osc;
+                        std::cout << "    osc[" << s << "] enable=" << rv (params::id::oscSlot (s, osc::enable))
+                                   << " mode=" << (int) rv (params::id::oscSlot (s, osc::mode))
+                                   << " level=" << rv (params::id::oscSlot (s, osc::level)) << "\n";
+                    }
+                    std::cout << "    ampAttack=" << rv (params::id::ampAttack)
+                               << " ampDecay=" << rv (params::id::ampDecay)
+                               << " ampSustain=" << rv (params::id::ampSustain)
+                               << " ampRelease=" << rv (params::id::ampRelease) << "\n";
+                    std::cout << "    filter1Enable=" << rv (params::id::filter1Enable)
+                               << " filter1Type=" << (int) rv (params::id::filter1Type)
+                               << " filter1Cutoff=" << rv (params::id::filter1Cutoff)
+                               << " filter1Res=" << rv (params::id::filter1Resonance) << "\n";
+                    std::cout << "    filter2Enable=" << rv (params::id::filter2Enable)
+                               << " filter2Type=" << (int) rv (params::id::filter2Type)
+                               << " filter2Cutoff=" << rv (params::id::filter2Cutoff)
+                               << " filter2Res=" << rv (params::id::filter2Resonance) << "\n";
+                    std::cout << "    arpEnable=" << rv (params::id::arp::enable)
+                               << " arpChance=" << rv (params::id::arp::chance)
+                               << " arpDivision=" << (int) rv (params::id::arp::division)
+                               << " arpMode=" << (int) rv (params::id::arp::mode) << "\n";
+                    for (int r = 0; r < params::numModRoutes; ++r)
+                    {
+                        const auto destChoice = (int) rv (params::id::routeParam (r, params::id::route::dest));
+                        if (destChoice <= 0)
+                            continue;
+                        std::cout << "    route[" << r << "] src=" << (int) rv (params::id::routeParam (r, params::id::route::source))
+                                   << " dest=" << destChoice
+                                   << " depth=" << rv (params::id::routeParam (r, params::id::route::depth)) << "\n";
+                    }
+                    std::cout << "    master=" << rv (params::id::masterGain)
+                               << " voiceMode=" << (int) rv (params::id::voiceMode) << "\n";
+                }
             }
             return silent;
         };
@@ -2700,9 +2747,13 @@ namespace
         spa::SPASynthProcessor proc;
         proc.prepareToPlay (48000.0, 512);
 
+        // Zero-padded so string sort order == numeric order == the order
+        // generateFactoryPresets assigns variants in (case-insensitive
+        // alphabetical), which is what the neighbour-rule check below relies
+        // on.
         juce::StringArray packNames;
         for (int i = 0; i < 12; ++i)
-            packNames.add ("Recipe Pack " + juce::String (i));
+            packNames.add ("Recipe Pack " + juce::String (i).paddedLeft ('0', 2));
 
         const auto libRoot = makeFakeLibraryFromNames (packNames);
         const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
@@ -2718,6 +2769,19 @@ namespace
         const auto written = pm.generateFactoryPresets (packs, libRoot);
         expect (written == 36, "3 presets x 12 packs written (" + juce::String (written) + ")");
 
+        expect (lib::PresetManager::factoryRecipeVersion == 3,
+                "factoryRecipeVersion stamps at v3 ("
+                    + juce::String (lib::PresetManager::factoryRecipeVersion) + ")");
+
+        // Reads one PARAM's value out of a captured state ValueTree.
+        const auto paramValueOf = [] (const juce::ValueTree& state, const juce::String& pid) -> float
+        {
+            for (auto child : state)
+                if (child.hasType ("PARAM") && child.getProperty ("id").toString() == pid)
+                    return (float) (double) child.getProperty ("value");
+            return -999.0f;
+        };
+
         // Fingerprint (osc modes across the 3 slots + filter1 type + the
         // first two mod-route sources) of each pack's Pulse preset, used
         // below to count distinct variants actually produced.
@@ -2729,14 +2793,7 @@ namespace
             const auto xml = juce::XmlDocument::parse (file);
             if (xml == nullptr) return {};
             const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
-
-            const auto paramValue = [&] (const juce::String& pid) -> float
-            {
-                for (auto child : state)
-                    if (child.hasType ("PARAM") && child.getProperty ("id").toString() == pid)
-                        return (float) (double) child.getProperty ("value");
-                return -999.0f;
-            };
+            const auto paramValue = [&] (const juce::String& pid) { return paramValueOf (state, pid); };
 
             juce::String fp;
             for (int s = 0; s < params::numOscSlots; ++s)
@@ -2791,6 +2848,25 @@ namespace
                                 "\"" + name + "\" slot" + juce::String (slot)
                                     + " references only this pack's own files");
                     }
+
+                    // Every factory preset (Mike's audit feedback): the
+                    // pack's own WAV must be audible in OSC A -- sample or
+                    // granular mode, a $LIB$ path into this pack, level
+                    // >= -6dB. And no factory preset may enable the arp.
+                    const auto oscAMode = (int) paramValueOf (state, id::oscSlot (0, id::osc::mode));
+                    expect (oscAMode == (int) params::OscMode::sample
+                                || oscAMode == (int) params::OscMode::granular,
+                            "\"" + name + "\" OSC A is sample or granular mode (" + juce::String (oscAMode) + ")");
+                    const auto oscASample = samples.getProperty ("slot0").toString();
+                    expect (oscASample.startsWith ("$LIB$" + pack.name + "/"),
+                            "\"" + name + "\" OSC A has a $LIB$ path into its own pack (\""
+                                + oscASample + "\")");
+                    const auto oscALevel = paramValueOf (state, id::oscSlot (0, id::osc::level));
+                    expect (oscALevel >= -6.05f,
+                            "\"" + name + "\" OSC A level is audible, >= -6dB (" + juce::String (oscALevel) + ")");
+
+                    expect (paramValueOf (state, id::arp::enable) <= 0.5f,
+                            "\"" + name + "\" does not enable the arpeggiator");
                 }
             }
             expect (sawKeys && sawTexture && sawPulse,
@@ -2802,6 +2878,24 @@ namespace
         expect (pulseFingerprints.size() >= 4,
                 "at least 4 distinct Pulse recipes across 12 packs ("
                     + juce::String ((int) pulseFingerprints.size()) + " distinct)");
+
+        // Neighbour rule: variant assignment is round-robin by alphabetical
+        // (case-insensitive) position, so two alphabetically-adjacent packs
+        // must never land on the same Pulse recipe. packNames was built
+        // zero-padded so its natural order already IS the alphabetical
+        // order generateFactoryPresets uses internally.
+        {
+            juce::StringArray sortedNames = packNames;
+            sortedNames.sortNatural();
+            for (int i = 0; i + 1 < sortedNames.size(); ++i)
+            {
+                const auto fpA = fingerprintPulse (sortedNames[i]);
+                const auto fpB = fingerprintPulse (sortedNames[i + 1]);
+                expect (fpA != fpB,
+                        "alphabetically adjacent packs \"" + sortedNames[i] + "\" / \""
+                            + sortedNames[i + 1] + "\" get different Pulse recipes");
+            }
+        }
 
         // Regeneration trigger: hand-write a v1 (unstamped-equivalent)
         // preset over one pack's Keys file, then confirm generateFactoryPresets
@@ -2852,12 +2946,15 @@ namespace
 
     // Regression test for the same v1.0.15 request: every recipe variant of
     // every archetype must actually be audible and sane on a held note (no
-    // silent or ear-splitting variant slipped in). Rather than a separate
-    // test-only generation path, this picks pack names whose deterministic
-    // hash lands on each target variant (PresetManager::*VariantForPack is
-    // exposed for exactly this) and generates real factory presets from
-    // them, then loads each preset through the normal
-    // PresetManager::loadPresetFile path and renders it for real.
+    // silent or ear-splitting variant slipped in). Variant selection is now
+    // round-robin by alphabetical position (see {pulse,keys,texture}
+    // VariantForIndex in PresetManager.h): numPulseVariants (6) zero-padded,
+    // alphabetically-ordered packs cover every Keys variant (index % 6, so
+    // indices 0-5 hit all 6), every Pulse variant ((index+4) % 6, likewise
+    // all 6 over 0-5), and every Texture variant at least once
+    // ((index+2) % 5 over 0-5 covers all 5, with one repeat) -- all in one
+    // batch, generated through the real generateFactoryPresets path and
+    // loaded via the normal PresetManager::loadPresetFile path.
     static void factoryPresetsAudibleTest()
     {
         std::cout << "factoryPresetsAudibleTest\n";
@@ -2865,41 +2962,33 @@ namespace
         namespace lib = spa::library;
         namespace params = spa::params;
 
-        // Finds the first "<prefix><n>" pack name whose variant function
-        // returns `target`. Deterministic and cheap (a handful of hashes).
-        const auto findPackName = [] (int (*variantFn) (const juce::String&),
-                                      const char* prefix, int target) -> juce::String
-        {
-            for (int i = 0; i < 20000; ++i)
-            {
-                const auto name = juce::String (prefix) + juce::String (i);
-                if (variantFn (name) == target)
-                    return name;
-            }
-            jassertfalse;
-            return {};
-        };
-
         juce::StringArray packNames;
         std::map<juce::String, int> keysVariantOf, textureVariantOf, pulseVariantOf;
 
-        for (int v = 0; v < lib::PresetManager::numKeysVariants; ++v)
+        constexpr int numAudiblePacks = 6;   // == numKeysVariants == numPulseVariants
+        for (int i = 0; i < numAudiblePacks; ++i)
         {
-            const auto name = findPackName (&lib::PresetManager::keysVariantForPack, "AK", v);
+            const auto name = "Audible Pack " + juce::String (i).paddedLeft ('0', 2);
             packNames.add (name);
-            keysVariantOf[name] = v;
+            keysVariantOf[name] = lib::PresetManager::keysVariantForIndex (i);
+            textureVariantOf[name] = lib::PresetManager::textureVariantForIndex (i);
+            pulseVariantOf[name] = lib::PresetManager::pulseVariantForIndex (i);
         }
-        for (int v = 0; v < lib::PresetManager::numTextureVariants; ++v)
+
+        // Sanity: this pack count really does cover every variant of every
+        // archetype (fails loudly here rather than as a confusing silent
+        // gap in coverage below if the offsets in PresetManager.h change).
         {
-            const auto name = findPackName (&lib::PresetManager::textureVariantForPack, "AT", v);
-            packNames.add (name);
-            textureVariantOf[name] = v;
-        }
-        for (int v = 0; v < lib::PresetManager::numPulseVariants; ++v)
-        {
-            const auto name = findPackName (&lib::PresetManager::pulseVariantForPack, "AP", v);
-            packNames.add (name);
-            pulseVariantOf[name] = v;
+            std::set<int> keysSeen, textureSeen, pulseSeen;
+            for (const auto& [name, v] : keysVariantOf) keysSeen.insert (v);
+            for (const auto& [name, v] : textureVariantOf) textureSeen.insert (v);
+            for (const auto& [name, v] : pulseVariantOf) pulseSeen.insert (v);
+            expect ((int) keysSeen.size() == lib::PresetManager::numKeysVariants,
+                    "audibility-test packs cover every Keys variant");
+            expect ((int) textureSeen.size() == lib::PresetManager::numTextureVariants,
+                    "audibility-test packs cover every Texture variant");
+            expect ((int) pulseSeen.size() == lib::PresetManager::numPulseVariants,
+                    "audibility-test packs cover every Pulse variant");
         }
 
         const auto savedRoot = lib::getLibraryRoot();   // restore machine setting after
@@ -2944,7 +3033,14 @@ namespace
         int silentCount = 0, loudCount = 0;
         juce::String diagnostics;
 
-        const auto renderAndCheck = [&] (const juce::String& presetName)
+        // Distinctness fingerprint for Pulse variants: RMS over 4 equal
+        // time windows of the render + overall crest factor (peak/rms).
+        // Keyed by Pulse variant index (0..numPulseVariants-1); populated
+        // by renderAndCheck's optional callback below.
+        std::map<int, std::array<float, 5>> pulseFingerprintOf;
+
+        const auto renderAndCheck = [&] (const juce::String& presetName,
+                                         std::function<void (float, float, float, float, float)> onFingerprint = {})
         {
             bool foundIndex = false;
             size_t idx = 0;
@@ -2985,6 +3081,10 @@ namespace
             int samplesLast = 0;
             constexpr int totalBlocks = 282;    // ~3.0s @ 48kHz/512
             constexpr int skipBlocks = 0;
+            constexpr int numWindows = 4;
+            const int blocksPerWindow = totalBlocks / numWindows;
+            std::array<double, numWindows> windowSumSq {};
+            std::array<int, numWindows> windowSamples {};
             for (int b = 0; b < totalBlocks; ++b)
             {
                 proc.processBlock (buffer, midi);
@@ -2992,13 +3092,18 @@ namespace
                 peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
                 if (b >= skipBlocks)
                 {
+                    const int win = juce::jmin (numWindows - 1, b / blocksPerWindow);
                     for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
                     {
                         const auto* d = buffer.getReadPointer (ch);
                         for (int i = 0; i < buffer.getNumSamples(); ++i)
+                        {
                             sumSqLast += d[i] * d[i];
+                            windowSumSq[(size_t) win] += (double) (d[i] * d[i]);
+                        }
                     }
                     samplesLast += buffer.getNumSamples() * buffer.getNumChannels();
+                    windowSamples[(size_t) win] += buffer.getNumSamples() * buffer.getNumChannels();
                 }
             }
             const auto rmsLast = samplesLast > 0 ? std::sqrt (sumSqLast / (float) samplesLast) : 0.0f;
@@ -3010,6 +3115,17 @@ namespace
                 ++silentCount;
             if (peak > loudPeakCeiling)
                 ++loudCount;
+
+            if (onFingerprint)
+            {
+                std::array<float, numWindows> windowRms {};
+                for (int w = 0; w < numWindows; ++w)
+                    windowRms[(size_t) w] = windowSamples[(size_t) w] > 0
+                        ? (float) std::sqrt (windowSumSq[(size_t) w] / (double) windowSamples[(size_t) w])
+                        : 0.0f;
+                const auto crest = rmsLast > 1.0e-9f ? peak / rmsLast : 0.0f;
+                onFingerprint (windowRms[0], windowRms[1], windowRms[2], windowRms[3], crest);
+            }
 
             // Hard-reset before the next preset shares this processor
             // instance (fresh voices/FX state, no cross-variant bleed).
@@ -3024,7 +3140,13 @@ namespace
         for (const auto& [name, variant] : textureVariantOf)
             renderAndCheck (name + " Texture");
         for (const auto& [name, variant] : pulseVariantOf)
-            renderAndCheck (name + " Pulse");
+        {
+            renderAndCheck (name + " Pulse",
+                            [&, variant] (float w0, float w1, float w2, float w3, float crest)
+                            {
+                                pulseFingerprintOf[variant] = { w0, w1, w2, w3, crest };
+                            });
+        }
 
         std::cout << diagnostics;
 
@@ -3032,6 +3154,44 @@ namespace
                                    + juce::String (silentCount) + " silent) --\n" + diagnostics);
         expect (loudCount == 0, "no recipe variant exceeds the +12dBFS output clamp ("
                                  + juce::String (loudCount) + " over) --\n" + diagnostics);
+
+        // Distinctness (Mike's "many sounded exactly the same" feedback):
+        // every pair of Pulse variants must differ by more than 5% on at
+        // least one of the 5 fingerprint features -- if two come out
+        // within 5% on EVERY feature, they're too similar.
+        {
+            expect (pulseFingerprintOf.size() == (size_t) lib::PresetManager::numPulseVariants,
+                    "collected a fingerprint for every Pulse variant ("
+                        + juce::String ((int) pulseFingerprintOf.size()) + ")");
+
+            juce::String simDiag;
+            for (auto itA = pulseFingerprintOf.begin(); itA != pulseFingerprintOf.end(); ++itA)
+            {
+                auto itB = itA;
+                for (++itB; itB != pulseFingerprintOf.end(); ++itB)
+                {
+                    bool allWithin5pct = true;
+                    for (int f = 0; f < 5; ++f)
+                    {
+                        const auto a = itA->second[(size_t) f], b = itB->second[(size_t) f];
+                        const auto denom = juce::jmax (a, b, 1.0e-6f);
+                        if (std::abs (a - b) / denom > 0.05f)
+                        {
+                            allWithin5pct = false;
+                            break;
+                        }
+                    }
+                    if (allWithin5pct)
+                        simDiag << "Pulse variant " << itA->first << " and " << itB->first
+                                << " are within 5% on every fingerprint feature\n";
+                    expect (! allWithin5pct,
+                            "Pulse variants " + juce::String (itA->first) + " and "
+                                + juce::String (itB->first) + " are distinct (differ >5% on some feature)");
+                }
+            }
+            if (simDiag.isNotEmpty())
+                std::cout << simDiag;
+        }
 
         lib::setLibraryRoot (savedRoot);
         libRoot.deleteRecursively();
@@ -3093,9 +3253,10 @@ namespace
                 // repositions the drawer itself and would leave the window
                 // and module grid at their closed-state width/layout,
                 // producing a snapshot with the drawer wrongly overlapping
-                // the synth. Side-by-side mode has no open animation (see
-                // togglePresetBrowser()), so the resize/relayout is complete
-                // synchronously, no pump needed.
+                // the synth. The window/module-grid resize is synchronous,
+                // but the drawer itself now EASES into its column (~180ms) --
+                // pump well past that too, or the snapshot catches it
+                // mid-slide instead of fully in place.
                 juce::TextButton* browseButton = nullptr;
                 std::function<void (juce::Component&)> frontExtras =
                     [&] (juce::Component& c)
@@ -3127,6 +3288,12 @@ namespace
                     const auto deadline = juce::Time::getMillisecondCounter() + 1000u;
                     while (editor->getWidth() == spa::ui::metrics::baseWidth
                            && juce::Time::getMillisecondCounter() < deadline)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+
+                    // Now pump well past the drawer's own ease-in so it's
+                    // fully in place, not mid-slide, in the captured image.
+                    const auto easeDeadline = juce::Time::getMillisecondCounter() + 400u;
+                    while (juce::Time::getMillisecondCounter() < easeDeadline)
                         juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
                 }
             }
@@ -3935,9 +4102,49 @@ namespace
         }
 
         {
+            // chance 0 rests every step EXCEPT the first step of a new chord
+            // (from silence), which always fires so RANDOMIZE ALL's
+            // audibility floor holds even at very low chance values; chance
+            // gates only the steps after it.
             Arp::Params p;
             p.chance = 0.0f;
-            expect (run (p, 1.0).empty(), "chance 0 rests every step");
+            p.enable = true;
+            p.division = 12;
+            p.sampleRate = sampleRate;
+
+            Arp arp;
+            arp.prepare (sampleRate);
+
+            std::vector<Hit> hits;
+            juce::MidiBuffer midi;
+            const auto runBlocks = [&] (double seconds)
+            {
+                for (int block = 0; block < (int) (seconds * sampleRate / blockSize); ++block)
+                {
+                    arp.process (midi, blockSize, p);
+                    for (const auto metadata : midi)
+                        if (metadata.getMessage().isNoteOn())
+                            hits.push_back ({ metadata.getMessage().getNoteNumber(),
+                                              (int) metadata.getMessage().getVelocity() });
+                    midi.clear();
+                }
+            };
+
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            runBlocks (1.0);
+            expect ((int) hits.size() == 1,
+                    "chance 0 fires exactly the first step of a held chord ("
+                    + juce::String ((int) hits.size()) + ")");
+
+            hits.clear();
+            midi.addEvent (juce::MidiMessage::noteOff (1, 60), 0);
+            runBlocks (0.1);
+            hits.clear();
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            runBlocks (1.0);
+            expect ((int) hits.size() == 1,
+                    "chance 0 fires exactly one more step after a fresh chord re-arms it ("
+                    + juce::String ((int) hits.size()) + ")");
         }
 
         {
@@ -5426,15 +5633,42 @@ namespace
                 "browser starts closed/offscreen (not intersecting the visible editor)");
 
         browseButton->triggerClick();
-        pumpFor (200);   // side-by-side mode has no animation, but be generous
+        // Button::triggerClick() posts an async command; give it one short
+        // slice to land, then check BEFORE the ~180ms open ease finishes:
+        // the window widens and the synth's layout moves to its final
+        // offset in the same turn as the click, only the drawer itself eases.
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 500u;
+            while (editor->getWidth() == widthBefore && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
 
         // The added width is drawerWidth*scale (scale is 1.0 at base size).
         const auto expectedAdded = spa::ui::metrics::presetBrowserWidth;
         expect (editor->getWidth() == widthBefore + expectedAdded,
-                "editor widened by exactly the drawer's width ("
+                "editor widened by exactly the drawer's width, immediately ("
                     + juce::String (editor->getWidth()) + " vs expected "
                     + juce::String (widthBefore + expectedAdded) + ")");
         expect (editor->getHeight() == heightBefore, "editor height unchanged when the drawer opens");
+        {
+            const auto oscAMid = oscA->getBoundsInParent();
+            expect (oscAMid.getX() == oscABefore.getX() + expectedAdded,
+                    "synth is ALREADY at its final offset immediately -- only the drawer animates");
+        }
+
+        // Mid-animation (~60ms into the ~180ms ease): the drawer is easing in
+        // from off the left edge of its column, so it's partially (not yet
+        // fully) in place, while the window/synth are already settled.
+        pumpFor (60);
+        {
+            const auto midBounds = browser->getBounds();
+            expect (midBounds.getRight() > -expectedAdded && midBounds.getX() < 0,
+                    "drawer is partway through easing in at ~60ms (x=" + juce::String (midBounds.getX()) + ")");
+            expect (editor->getWidth() == widthBefore + expectedAdded,
+                    "window stays at its final width throughout the drawer's ease-in");
+        }
+
+        pumpFor (200);   // past the end of the ~180ms ease
 
         expect (browser->isVisible(), "drawer visible once open");
         const auto drawerBounds = browser->getBounds();
@@ -5501,7 +5735,192 @@ namespace
         expect (oscAClosed == oscABefore, "oscA back to its original bounds after closing");
         expect (fxTabsClosed == fxTabsBefore, "fxTabs back to its original bounds after closing");
 
+        // Re-entrancy: toggle open, then close again within 50ms -- well
+        // inside both the ~180ms open ease and the ~150ms close ease. The
+        // second toggle must cancel the running animation and land directly
+        // on the requested end state (closed, original width), not leave a
+        // half-finished animation or a stale deferred window-shrink running.
+        browseButton->triggerClick();   // open
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 500u;
+            while (editor->getWidth() == widthBefore && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+        expect (editor->getWidth() == widthBefore + expectedAdded,
+                "re-entrancy: widened immediately on the re-open");
+
+        pumpFor (30);   // well short of either ease finishing
+        browseButton->triggerClick();   // close again before the open ease settled
+        pumpFor (300);   // past both the (cancelled) opens's and the close's ease
+
+        expect (editor->getWidth() == widthBefore,
+                "re-entrancy: end state is closed with the original width ("
+                    + juce::String (editor->getWidth()) + " vs " + juce::String (widthBefore) + ")");
+        expect (editor->getHeight() == heightBefore, "re-entrancy: height still unchanged");
+        expect (! browser->isVisible(), "re-entrancy: drawer hidden in the end state");
+        expect (oscA->getBoundsInParent() == oscABefore,
+                "re-entrancy: oscA back to its original bounds in the end state");
+
         editor->removeFromDesktop();
+    }
+
+    // Companion to presetBrowserWidensWindowTest: proves the native-window
+    // move (Mike's "anchor on the right, grow left" request) on the one path
+    // this test suite can actually verify it on -- an editor with its own
+    // real desktop peer, standing in for the standalone (a plugin host's
+    // window is the host's own, out of our control the same way). Positions
+    // the window mid-screen first so a real clamp-worthy edge isn't in play,
+    // opens the drawer, and asserts the peer's screen x decreased by exactly
+    // the added width; closing restores it.
+    static void presetBrowserNativeShiftTest()
+    {
+        std::cout << "presetBrowserNativeShiftTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+
+        // Mid-screen, well clear of any edge that would force a clamp.
+        if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+        {
+            const auto area = display->userBounds.toNearestInt();
+            editor->setTopLeftPosition (area.getX() + area.getWidth() / 4,
+                                        area.getY() + area.getHeight() / 4);
+        }
+        pumpFor (200);
+
+        juce::TextButton* browseButton = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (browseButton == nullptr)
+                if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                    if (b->getTooltip() == "Browse presets")
+                        browseButton = b;
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (browseButton != nullptr, "browse button found");
+        if (browseButton == nullptr)
+        {
+            editor->removeFromDesktop();
+            return;
+        }
+
+        auto* peer = editor->getPeer();
+        expect (peer != nullptr, "editor has a real desktop peer");
+        if (peer == nullptr)
+        {
+            editor->removeFromDesktop();
+            return;
+        }
+
+        const auto screenXBefore = peer->getBounds().getX();
+
+        browseButton->triggerClick();
+        pumpFor (400);   // past the drawer's open ease
+
+        const auto expectedAdded = spa::ui::metrics::presetBrowserWidth;
+        const auto screenXOpen = peer->getBounds().getX();
+        expect (screenXOpen == screenXBefore - expectedAdded,
+                "native window moved LEFT by exactly the added width when the drawer opened "
+                "(x " + juce::String (screenXBefore) + " -> " + juce::String (screenXOpen) + ")");
+
+        browseButton->triggerClick();
+        pumpFor (400);   // past the drawer's close ease + the deferred shrink
+
+        const auto screenXClosed = peer->getBounds().getX();
+        expect (screenXClosed == screenXBefore,
+                "native window restored to its original screen position after closing "
+                "(x " + juce::String (screenXClosed) + " vs " + juce::String (screenXBefore) + ")");
+
+        editor->removeFromDesktop();
+
+        // Clamped case: position a second editor's window so the open move
+        // can only go PART of the way (the requested left shift would run
+        // it off the display's usable area) -- proves the editor undoes
+        // exactly the amount shiftNativeWindowX actually applied on close,
+        // not the nominal drawer width, so a clamped open/close cycle
+        // doesn't creep the window. If this editor's platform can't even
+        // move an unclamped window (verified above), a clamped one won't
+        // move either, so only run this half where the plain case worked.
+        if (screenXOpen == screenXBefore - expectedAdded)
+        {
+            std::unique_ptr<juce::AudioProcessorEditor> editor2 (proc.createEditor());
+            editor2->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+            editor2->addToDesktop (0);
+            editor2->setVisible (true);
+
+            juce::Rectangle<int> screenArea;
+            if (auto* display = juce::Desktop::getInstance().getDisplays().getPrimaryDisplay())
+                screenArea = display->userBounds.toNearestInt();
+
+            // Close enough to the left edge that a full-width leftward shift
+            // is impossible, but with SOME room, so the move is clamped
+            // rather than fully rejected (0 applied would trivially satisfy
+            // the "undo what was actually applied" logic without proving
+            // anything about partial clamping).
+            const auto margin = expectedAdded / 2;
+            editor2->setTopLeftPosition (screenArea.getX() + margin,
+                                         screenArea.getY() + screenArea.getHeight() / 4);
+            pumpFor (200);
+
+            juce::TextButton* browseButton2 = nullptr;
+            std::function<void (juce::Component&)> find2 = [&] (juce::Component& c)
+            {
+                if (browseButton2 == nullptr)
+                    if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                        if (b->getTooltip() == "Browse presets")
+                            browseButton2 = b;
+                for (auto* child : c.getChildren())
+                    find2 (*child);
+            };
+            find2 (*editor2);
+
+            expect (browseButton2 != nullptr, "clamped case: browse button found");
+            if (browseButton2 != nullptr)
+            {
+                auto* peer2 = editor2->getPeer();
+                expect (peer2 != nullptr, "clamped case: editor has a real desktop peer");
+                if (peer2 != nullptr)
+                {
+                    const auto clampedXBefore = peer2->getBounds().getX();
+
+                    browseButton2->triggerClick();
+                    pumpFor (400);
+
+                    const auto clampedXOpen = peer2->getBounds().getX();
+                    expect (clampedXOpen > clampedXBefore - expectedAdded,
+                            "clamped case: open move was actually clamped, not the full requested width "
+                            "(x " + juce::String (clampedXBefore) + " -> " + juce::String (clampedXOpen) + ")");
+                    expect (clampedXOpen >= screenArea.getX(),
+                            "clamped case: window stayed within the display's usable area");
+
+                    browseButton2->triggerClick();
+                    pumpFor (400);
+
+                    const auto clampedXClosed = peer2->getBounds().getX();
+                    expect (clampedXClosed == clampedXBefore,
+                            "clamped case: window restored to its EXACT original position after "
+                            "closing, not creeped right by the clamp shortfall "
+                            "(x " + juce::String (clampedXClosed) + " vs " + juce::String (clampedXBefore) + ")");
+                }
+            }
+
+            editor2->removeFromDesktop();
+        }
     }
 
     // Simulates a host that refuses to actually resize the editor for the
@@ -5962,6 +6381,7 @@ int main (int argc, char* argv[])
     voicePanelEditorCloseTest();
     tabLayoutInvarianceTest();
     presetBrowserWidensWindowTest();
+    presetBrowserNativeShiftTest();
     presetBrowserOverlayFallbackTest();
     fxPanelLabelClippingTest();
     chaosDisplayPaintTest();

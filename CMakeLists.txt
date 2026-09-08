@@ -96,6 +96,18 @@ juce_add_binary_data(SPAAssets
         assets/branding/SPAudio_logo_square_black.svg
         assets/branding/SPAudio_logo_sqaure_white.svg)
 
+# Native-window-move helper for the preset drawer (see NativeWindowShift.h):
+# NativeWindowShift.cpp holds the Windows implementation (and a false-
+# returning no-op on any other non-mac platform); the macOS implementation
+# needs real Objective-C message sends (NSWindow/NSScreen), so it lives in
+# NativeWindowShift.mm and needs the OBJCXX language enabled -- only on
+# APPLE, so other platforms' toolchains are never asked to compile .mm.
+set(SPASYNTH_NATIVE_WINDOW_SHIFT_SOURCES source/ui/NativeWindowShift.cpp)
+if(APPLE)
+    enable_language(OBJCXX)
+    list(APPEND SPASYNTH_NATIVE_WINDOW_SHIFT_SOURCES source/ui/NativeWindowShift.mm)
+endif()
+
 set(SPASYNTH_SOURCES
     source/SPASynthProcessor.cpp
     source/MidiLearn.cpp
@@ -114,7 +126,8 @@ set(SPASYNTH_SOURCES
     source/ui/Displays.cpp
     source/ui/ModulePanels.cpp
     source/ui/PresetBrowser.cpp
-    source/ui/SPASynthEditor.cpp)
+    source/ui/SPASynthEditor.cpp
+    ${SPASYNTH_NATIVE_WINDOW_SHIFT_SOURCES})
 
 target_sources(SPASynth PRIVATE ${SPASYNTH_SOURCES})
 

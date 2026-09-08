@@ -21,6 +21,12 @@ void Arpeggiator::prepare (double sampleRate)
 {
     currentSampleRate = sampleRate;
     scratch.ensureSize (8192);
+    // Fixed seed: this is a musical randomizer, not a security context, and a
+    // reproducible chance/stutter/jump/walk pattern makes behaviour (and
+    // tests) deterministic run to run instead of depending on wall-clock
+    // startup jitter (juce::Random's default constructor seeds from the
+    // clock).
+    random = juce::Random (0x5EED);
     reset();
 }
 
@@ -34,6 +40,7 @@ void Arpeggiator::reset()
     walkIndex = 0;
     beatClock = 0.0;
     lastHostPpq = -1.0e9;
+    firstStepPending = false;
     latchedChordDown = false;
     keyDown.fill (false);
     lastLatch = false;
@@ -48,6 +55,13 @@ void Arpeggiator::addHeld (juce::uint8 note, juce::uint8 velocity)
             return;
         }
 
+    // A chord starting from silence always plays its first step -- chance
+    // gates only the steps after it (RANDOMIZE ALL's audibility floor
+    // assumes chance>=0.6 is never fully silent; with a low chance a short
+    // hold could otherwise roll a rest on every step).
+    if (numHeld == 0)
+        firstStepPending = true;
+
     if (numHeld < maxHeld)
         held[numHeld++] = { note, velocity, arrivalCounter++ };
 }
@@ -61,6 +75,8 @@ void Arpeggiator::removeHeld (juce::uint8 note)
             for (int j = i; j < numHeld - 1; ++j)
                 held[j] = held[j + 1];
             --numHeld;
+            if (numHeld == 0)
+                firstStepPending = false;   // re-arm: the next chord's first step always fires
             return;
         }
     }
@@ -105,7 +121,13 @@ void Arpeggiator::triggerStep (juce::MidiBuffer& out, int samplePos, const Param
         return;
 
     // Chance: a skipped step is a rest — the pattern position still advances.
-    if (p.chance < 0.999f && random.nextFloat() >= p.chance)
+    // Exception: the first step of a new chord (from silence) always fires,
+    // so RANDOMIZE ALL's audibility floor holds even at low chance values.
+    if (firstStepPending)
+    {
+        firstStepPending = false;
+    }
+    else if (p.chance < 0.999f && random.nextFloat() >= p.chance)
     {
         ++stepCounter;
         return;

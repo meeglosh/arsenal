@@ -15,20 +15,26 @@ A small visibility improvement requested by our testers.
 - Switching LATCH off now stops the arpeggio immediately, unless keys are
   still held, in which case it continues on just those.
 - RANDOMIZE ALL can no longer land on a silent patch. Every roll is checked
-  and gently nudged so a played note always produces sound.
+  and gently nudged so a played note always produces sound. The arpeggiator's
+  first step of a new chord now always plays, with the chance control only
+  affecting the steps after it, so a low chance setting can't roll a
+  fully-silent arp pattern.
 - Factory presets have been redesigned with several distinct recipes for
   each type (Keys, Texture and Pulse), varying the synthesis engine,
   envelopes, filters, modulation and effects, so packs no longer all sound
-  alike browsing through the preset list. Existing factory presets are
+  alike browsing through the preset list. Every factory preset now always
+  features the pack's own sound in oscillator A, so its waveform is visible
+  and audible rather than hidden behind another engine; neighbouring packs
+  in the browser get different recipes so adjacent presets don't sound the
+  same; and none of them use the arpeggiator. Existing factory presets are
   refreshed automatically the next time your library is scanned; your own
   saved presets are untouched.
-- The preset browser no longer covers the synth. Opening it now widens the
-  window and places the browser beside the instrument instead of over it,
-  and closing it restores the original window width. In the standalone the
-  window grows to the left; in a plugin it grows to the right, because the
-  host owns the window's position there. Hosts that cannot resize the
-  window fall back to the previous behavior, with the browser overlaying
-  the instrument.
+- The preset browser no longer covers the synth. It now eases open beside
+  the instrument, and closing it restores the original window width. Where
+  the host allows it, the window grows to the left so the instrument stays
+  put on screen; otherwise it grows to the right, because the host owns the
+  window's position there. Hosts that cannot resize the window at all fall
+  back to the previous behavior, with the browser overlaying the instrument.
 
 **Notes for this build**
 

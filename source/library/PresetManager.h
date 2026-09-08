@@ -75,20 +75,30 @@ public:
     // generated preset's XML root ("recipe" attribute) so generateFactoryPresets
     // knows to regenerate stale Factory folders. v1 = the original
     // one-recipe-per-archetype scheme (no stamp at all -- treated as v1).
-    static constexpr int factoryRecipeVersion = 2;
+    // v2 = the SFX-follower recipe table. v3 = every Pulse/Keys/Texture
+    // variant keeps the pack's own WAV audible in OSC A, drops the
+    // arpeggiator everywhere, and switches variant selection from a
+    // per-pack hash to round-robin-by-sorted-index (see variantForIndex
+    // below) so alphabetically adjacent packs never land on the same
+    // recipe by chance.
+    static constexpr int factoryRecipeVersion = 3;
 
     static constexpr int numKeysVariants = 6;
     static constexpr int numTextureVariants = 5;
     static constexpr int numPulseVariants = 6;
 
-    // Deterministic 0-based variant index for a pack name, pure function of
-    // the name (FNV-1a over its UTF-8 bytes, mixed with an archetype tag --
-    // see PresetManager.cpp). Exposed for tests: the audibility test picks
-    // pack names whose hash lands on each variant rather than needing a
-    // separate test-only generation path.
-    static int pulseVariantForPack (const juce::String& packName);
-    static int keysVariantForPack (const juce::String& packName);
-    static int textureVariantForPack (const juce::String& packName);
+    // Deterministic 0-based variant index for the pack's position in the
+    // alphabetically-sorted (case-insensitive) pack list, offset per
+    // archetype so the three presets generated for one pack don't line up
+    // in a fixed pattern across archetypes, and so adjacent packs (index
+    // N, N+1) always land on different Pulse/Keys/Texture recipes.
+    // NOTE: inserting a new pack shifts every later pack's index and thus
+    // its variant assignment -- acceptable, since preset *names* (and so
+    // user favorites) are unaffected, only which recipe a pack gets.
+    // Exposed for tests.
+    static int pulseVariantForIndex (int sortedIndex) { return (sortedIndex + 4) % numPulseVariants; }
+    static int keysVariantForIndex (int sortedIndex) { return sortedIndex % numKeysVariants; }
+    static int textureVariantForIndex (int sortedIndex) { return (sortedIndex + 2) % numTextureVariants; }
 
 private:
     juce::ValueTree makeTemplateState() const;
@@ -100,7 +110,8 @@ private:
     juce::ValueTree buildTextureState (const juce::File& smallest, const juce::File& middle,
                                        const juce::File& largest, const juce::File& libraryRoot,
                                        int variant) const;
-    juce::ValueTree buildPulseState (const juce::File& middle, const juce::File& libraryRoot,
+    juce::ValueTree buildPulseState (const juce::File& smallest, const juce::File& middle,
+                                     const juce::File& largest, const juce::File& libraryRoot,
                                      int variant) const;
 
     std::function<juce::ValueTree()> captureState;

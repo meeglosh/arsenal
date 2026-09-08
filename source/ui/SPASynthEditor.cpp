@@ -3,6 +3,7 @@
 #include "../library/Library.h"
 #include "EqEditor.h"
 #include "LimiterDisplay.h"
+#include "NativeWindowShift.h"
 
 #include "BinaryData.h"
 
@@ -1587,16 +1588,18 @@ void ContentComponent::setKeyboardVisible (bool shouldShow)
 void ContentComponent::togglePresetBrowser()
 {
     presetBrowserOpen = ! presetBrowserOpen;
+    // Invalidates any close-completion callback still pending from a
+    // previous toggle (see the CLOSING branch below) -- if this call
+    // supersedes it, that stale callback must not fire.
+    const int seq = ++browserAnimSeq;
 
-    if (! browserOverlays)
+    if (presetBrowserOpen && ! browserOverlays)
     {
-        // Side-by-side mode: widen/narrow our own base size (re-lays-out
-        // resized() above with the module grid offset into/out of the
-        // drawer column), then ask the shell to resize the actual host
-        // window to match. The shell may discover the host won't honor that
-        // and call setBrowserOverlayMode(true) from inside onBrowserToggled
-        // -- re-check browserOverlays below rather than caching it, since it
-        // can change synchronously within this call.
+        // Side-by-side attempt: widen now, BEFORE deciding how to animate --
+        // this call may itself discover the host refused the resize and flip
+        // us into overlay mode via setBrowserOverlayMode() (called from
+        // onBrowserToggled -> SPASynthEditor::browserToggled()), so
+        // browserOverlays must be re-checked below rather than assumed.
         setSize (getContentBaseWidth(), getContentBaseHeight());
         if (onBrowserToggled)
             onBrowserToggled();
@@ -1604,7 +1607,10 @@ void ContentComponent::togglePresetBrowser()
 
     if (browserOverlays)
     {
-        // Overlay fallback: the drawer slides over the grid, which stays put.
+        // Overlay fallback (host refused just now, or a previous open
+        // already discovered that -- sticky): the drawer slides over the
+        // grid, which stays put. Window never resizes in this mode, so
+        // there's nothing to defer on close either. Unchanged behaviour.
         const auto open = presetBrowser->getOpenBounds();
         const auto closed = open.translated (-open.getWidth() - 12, 0);
 
@@ -1614,13 +1620,69 @@ void ContentComponent::togglePresetBrowser()
             presetBrowser.get(), presetBrowserOpen ? open : closed,
             1.0f, 170, false, 1.0, 0.7);
     }
+    else if (presetBrowserOpen)
+    {
+        // OPENING, confirmed side-by-side: the window/layout are already
+        // settled above (one visible change, not two, per Mike's spec) --
+        // only the drawer eases in, from off the left edge of its column.
+        auto& animator = juce::Desktop::getInstance().getAnimator();
+        const bool wasAnimating = animator.isAnimating (presetBrowser.get());
+        if (wasAnimating)
+            // Re-entrant toggle mid-animation: stop exactly where it is --
+            // land directly on the requested end state below instead of
+            // easing, per Mike's spec.
+            animator.cancelAnimation (presetBrowser.get(), false);
+
+        const auto finalBounds = presetBrowser->getBounds();   // resized() above already placed it
+        presetBrowser->setVisible (true);
+        presetBrowser->toFront (false);
+
+        if (wasAnimating)
+            presetBrowser->setBounds (finalBounds);   // land directly, no ease
+        else
+        {
+            presetBrowser->setBounds (finalBounds.withX (-finalBounds.getWidth()));
+            animator.animateComponent (presetBrowser.get(), finalBounds, 1.0f, 180, false, 1.0, 0.7);
+        }
+    }
     else
     {
-        // Side-by-side mode: the column just appeared/disappeared with the
-        // resize above and resized() already placed it correctly -- no
-        // animation, no per-frame host resizes.
-        presetBrowser->setVisible (presetBrowserOpen);
-        presetBrowser->toFront (false);
+        // CLOSING, side-by-side (browserOverlays can't have flipped true on
+        // a close -- see above): ease the drawer out first; only once it's
+        // actually off-screen do we shrink the window and let the synth's
+        // layout return (deferred to the animation's end via a timer -- this
+        // JUCE version's ComponentAnimator has no completion callback).
+        auto& animator = juce::Desktop::getInstance().getAnimator();
+        const bool wasAnimating = animator.isAnimating (presetBrowser.get());
+        if (wasAnimating)
+            animator.cancelAnimation (presetBrowser.get(), false);
+
+        const auto current = presetBrowser->getBounds();
+        const auto offBounds = current.withX (-current.getWidth());
+
+        juce::Component::SafePointer<ContentComponent> safe (this);
+        const auto finishClose = [safe, seq]
+        {
+            // A later toggle already owns the end state -- don't clobber it
+            // (also guards against firing after this editor is destroyed).
+            if (safe == nullptr || seq != safe->browserAnimSeq)
+                return;
+            safe->presetBrowser->setVisible (false);
+            safe->setSize (safe->getContentBaseWidth(), safe->getContentBaseHeight());
+            if (safe->onBrowserToggled)
+                safe->onBrowserToggled();
+        };
+
+        if (wasAnimating)
+        {
+            presetBrowser->setBounds (offBounds);   // land directly, no ease
+            finishClose();
+        }
+        else
+        {
+            animator.animateComponent (presetBrowser.get(), offBounds, 1.0f, 150, false, 1.0, 0.7);
+            juce::Timer::callAfterDelay (150, finishClose);
+        }
     }
 
     if (presetBrowserOpen)
@@ -1918,25 +1980,42 @@ void SPASynthEditor::browserToggled()
         const auto fallbackW = juce::roundToInt ((double) content->getContentBaseWidth() * scale);
         setSize (fallbackW, getHeight());
     }
-    else if (arsenalProcessor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    else
     {
         // The resize above just widened/narrowed the editor view in place
-        // (grows to the right, like a plugin). In the standalone we OWN the
-        // top-level window, so slide it left/right by the same amount to
-        // make it read as growing leftward instead -- never done in a
-        // plugin host, which owns window position.
+        // (grows to the right, like any plugin). Mike's request: anchor the
+        // window on the right instead, so it grows LEFT and the synth stays
+        // put on screen -- best-effort for every wrapper type, not just the
+        // standalone (which owns its window outright). Move the actual OS
+        // top-level window left/right by the added width, in this SAME
+        // message-loop turn as the resize, so the user sees one change.
+        //
+        // shiftNativeWindowX verifies the move actually took effect (reads
+        // the window's frame before/after) -- that's the only way to tell an
+        // in-process top-level window (standalone; or a host that really
+        // does hand us a real NSWindow/HWND) from an out-of-process host
+        // whose peer is a remote window proxy (Logic's AUHostingService on
+        // macOS is the known case: the call "succeeds" but the proxy just
+        // no-ops it). When it returns 0, do nothing further -- the accepted
+        // fallback is that the synth grows to the right in that host, same
+        // as before this feature existed.
+        //
+        // The requested shift can come back CLAMPED (window already near a
+        // screen edge) -- undoing it later by the full requested width would
+        // creep the window further right/left on every open/close cycle, so
+        // the actual applied amount is remembered and the close path undoes
+        // exactly that, not the nominal width.
         const auto addedWidth = getWidth() - widthBefore;
-        if (addedWidth != 0)
+        if (auto* peer = getPeer())
         {
-            if (auto* peer = getPeer())
+            const auto platformScale = peer->getPlatformScaleFactor();
+            if (addedWidth > 0)
+                nativeWindowShiftApplied = ui::shiftNativeWindowX (peer->getNativeHandle(), addedWidth, platformScale);
+            else if (addedWidth < 0)
             {
-                auto windowBounds = peer->getBounds();
-                auto moved = windowBounds.withX (windowBounds.getX() - addedWidth);
-
-                if (auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (windowBounds))
-                    moved = moved.constrainedWithin (display->userBounds.toNearestInt());
-
-                peer->setBounds (moved, false);
+                if (nativeWindowShiftApplied != 0)
+                    ui::shiftNativeWindowX (peer->getNativeHandle(), -nativeWindowShiftApplied, platformScale);
+                nativeWindowShiftApplied = 0;
             }
         }
     }
