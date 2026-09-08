@@ -80,8 +80,17 @@ public:
     // arpeggiator everywhere, and switches variant selection from a
     // per-pack hash to round-robin-by-sorted-index (see variantForIndex
     // below) so alphabetically adjacent packs never land on the same
-    // recipe by chance.
-    static constexpr int factoryRecipeVersion = 3;
+    // recipe by chance. v4 = every Pulse variant now MIXES the pack's own
+    // sample with a genuine synth oscillator (wavetable/analog/fm/pluck)
+    // driven by that sample's own follower/ENV/LFO in a different way per
+    // variant (see the Pulse recipe table in PresetManager.cpp), instead of
+    // several variants being sample-only; and every Keys/Texture/Pulse
+    // sample layer uses a short safe loop window (and granular a nudged-
+    // inward base grain position) so a held note stays audible against a
+    // real, long SFX file for as long as it's held, rather than riding that
+    // one file's own natural decay into silence -- found and fixed via a
+    // real-library audibility pass (factoryPresetsRealLibraryAudibleTest).
+    static constexpr int factoryRecipeVersion = 4;
 
     static constexpr int numKeysVariants = 6;
     static constexpr int numTextureVariants = 5;

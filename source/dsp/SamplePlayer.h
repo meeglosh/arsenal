@@ -41,15 +41,29 @@ public:
             return {};
 
         const auto len = (double) p.sample->lengthSamples();
-        auto loopStart = p.loopStartNorm * len;
-        auto loopEnd = p.loopEndNorm * len;
-        if (loopEnd < loopStart + 64.0)  // degenerate loop -> ignore
-            loopEnd = juce::jmin (loopStart + 64.0, len);
+        // The interpolator reads [i0, i0+1], so the last sample we can ever
+        // legally start an interpolation from is len - 1. A loopEndNorm of
+        // 1.0 (the default -- "loop the whole file") maps to exactly `len`,
+        // which is one sample past that limit: the old code let the
+        // unconditional end-of-buffer cutoff below fire at len - 1 BEFORE
+        // position ever reached loopEnd (== len), so the wrap-to-loopStart
+        // branch never ran and whole-file loops played once and stopped.
+        // Clamping loopEnd (and loopStart, symmetrically) to the last legal
+        // sample makes the wrap always win the race, for loop and reverse
+        // playback alike -- the boundary is direction-agnostic since it's
+        // expressed purely in source-sample position.
+        const auto lastSample = juce::jmax (0.0, len - 1.0);
+        auto loopStart = juce::jmin (p.loopStartNorm * len, lastSample);
+        auto loopEnd = juce::jmin (p.loopEndNorm * len, lastSample);
+        if (loopEnd < loopStart + 64.0)  // degenerate/zero-length loop -> clamp to a safe minimum span
+            loopEnd = juce::jmin (loopStart + 64.0, lastSample);
+        if (loopEnd <= loopStart)        // still degenerate (loopStart itself at/near EOF) -> single-sample loop, never hangs
+            loopStart = juce::jmax (0.0, loopEnd - 1.0);
 
         if (p.loop && position >= loopEnd)
             position = loopStart + std::fmod (position - loopEnd, juce::jmax (1.0, loopEnd - loopStart));
 
-        if (position >= len - 1.0)
+        if (position >= lastSample)
         {
             done = true;
             return {};

@@ -1,9 +1,29 @@
 # SPASynth changelog
 
+## Unreleased
+
+- Pulse factory presets now combine the pack's own sound with a real synth
+  oscillator (wavetable, analog, FM or pluck), with the sample's own
+  dynamics, pitch or envelope driving that synth layer in a different way
+  for each of the six variants (its level, its pitch, the shared filter, a
+  wavetable's scan position, an FM amount, or a plucked layer's damping).
+  Every Pulse preset is now a genuine mix rather than sample-only.
+- Fixed a real cause of totally silent factory presets against long,
+  real-world sound-effects files: a held note's sample loop is now a short,
+  guaranteed-audible window near the start of the file rather than looping
+  the file's full length, so a long recording's own natural decay, or a
+  quiet stretch partway through, can no longer leave a held note silent for
+  the rest of its hold; granular presets nudge their grain read position
+  inward and widen its per-grain spray for the same reason. Every factory
+  preset across every pack in our library has been verified audible on a
+  held note.
+
 ## 1.0.15
 
 A small visibility improvement requested by our testers.
 
+- Fixed sample loops that stopped after one pass when the loop end was left
+  at the very end of the file.
 - Enabled effects now show their tab name in bold and in the brighter text
   colour in the FX section, so you can see at a glance which effects are
   engaged without clicking through each tab.

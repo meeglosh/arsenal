@@ -5,6 +5,7 @@
 #include "dsp/Arpeggiator.h"
 #include "dsp/FXChain.h"
 #include "dsp/MidiClockSync.h"
+#include "dsp/SamplePlayer.h"
 #include "dsp/WavetableLoader.h"
 #include "library/Library.h"
 #include "library/PresetManager.h"
@@ -12,6 +13,7 @@
 #include "params/Randomizer.h"
 #include "ui/SPASynthEditor.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -21,6 +23,12 @@
 namespace
 {
     int failures = 0;
+
+    // Opt-in gate for factoryPresetsRealLibraryAudibleTest, which renders
+    // 178 real presets against Mike's real library (~8.5 min) -- too slow
+    // to run in the default suite (build_release.sh, every dev run). Set
+    // from main() below via --real-library or SPASYNTH_REAL_LIBRARY_TEST=1.
+    bool g_realLibraryTestOptIn = false;
 
     void expect (bool condition, const juce::String& description)
     {
@@ -592,6 +600,153 @@ namespace
                 "keytrack-off sample plays at source pitch (" + juce::String (freq) + " Hz)");
 
         file.deleteFile();
+    }
+
+    // A sample oscillator in LOOP mode with the default loop points
+    // (loopStart=0, loopEnd=1 -- "loop the whole file") used to play once
+    // and stop: the end-of-buffer cutoff in SamplePlayer::getNextSample
+    // fired at (len - 1) before position ever reached loopEnd (== len), so
+    // the wrap-to-loopStart branch never ran. Drives SamplePlayer directly,
+    // the same way SPASynthVoice::updateBlock configures it for a sample
+    // oscillator with LOOP on (see SPASynthVoice.cpp).
+    static void samplePlayerWholeFileLoopTest()
+    {
+        std::cout << "samplePlayerWholeFileLoopTest\n";
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int numSamples = 2000;
+        // 240 Hz divides the sample rate into an exact 200-sample period, so
+        // the buffer is exactly 10 whole cycles -- the whole-file loop wrap
+        // is phase-continuous, isolating the wrap-boundary click check from
+        // an unrelated phase-discontinuity artifact any non-integer-cycle
+        // buffer would introduce regardless of the fix under test.
+        constexpr float freqHz = 240.0f;
+
+        spa::dsp::SampleData sample;
+        sample.sourceSampleRate = sampleRate;
+        sample.audio.setSize (1, numSamples);
+        for (int i = 0; i < numSamples; ++i)
+            sample.audio.setSample (0, i, std::sin (juce::MathConstants<float>::twoPi
+                                                      * freqHz * (float) i / (float) sampleRate));
+
+        // Max per-sample step of a unity-amplitude sine at this rate -- the
+        // click-detection tolerance below is expressed as a multiple of it.
+        const auto maxStep = 2.0f * std::sin (juce::MathConstants<float>::pi * freqHz / (float) sampleRate);
+
+        // Renders numOut samples and folds the per-sample checks into
+        // aggregates (rather than an expect() per sample) so the assertion
+        // count stays proportional to the number of *distinct claims*, not
+        // the render length: whether isDone() ever went true early, whether
+        // any non-finite sample appeared, and the worst single-step jump
+        // (click detector).
+        struct RenderResult
+        {
+            std::vector<float> out;
+            bool wentDoneEarly = false;
+            bool anyNonFinite = false;
+            float worstJump = 0.0f;
+        };
+        const auto render = [&] (double loopEndNorm, int numOut)
+        {
+            spa::dsp::SamplePlayer player;
+            player.noteOn (&sample, 0.0);
+            spa::dsp::SamplePlayer::Params p;
+            p.sample = &sample;
+            p.rateRatio = 1.0;
+            p.loop = true;
+            p.loopStartNorm = 0.0;
+            p.loopEndNorm = loopEndNorm;
+
+            RenderResult r;
+            r.out.reserve ((size_t) numOut);
+            for (int i = 0; i < numOut; ++i)
+            {
+                const auto s = player.getNextSample (p);
+                if (player.isDone())
+                    r.wentDoneEarly = true;
+                if (! std::isfinite (s.left) || ! std::isfinite (s.right))
+                    r.anyNonFinite = true;
+                if (! r.out.empty())
+                    r.worstJump = juce::jmax (r.worstJump, std::abs (s.left - r.out.back()));
+                r.out.push_back (s.left);
+            }
+            return r;
+        };
+
+        const auto rmsOfLastQuarter = [&] (const std::vector<float>& out)
+        {
+            double sumSq = 0.0;
+            const auto start = out.size() - (size_t) numSamples;
+            for (size_t i = start; i < out.size(); ++i)
+                sumSq += (double) out[i] * (double) out[i];
+            return (float) std::sqrt (sumSq / (double) numSamples);
+        };
+
+        const auto outLoop = render (1.0, numSamples * 4);
+        expect (! outLoop.wentDoneEarly, "loopEndNorm=1.0 never reports done (loops instead of stopping)");
+        expect (! outLoop.anyNonFinite, "loopEndNorm=1.0 output stays finite throughout");
+
+        // RMS energy in the last quarter proves it looped rather than
+        // running out of file and (pre-fix) going silently to zero forever.
+        expect (rmsOfLastQuarter (outLoop.out) > 0.3f,
+                "loopEndNorm=1.0 keeps producing sound past one file length (RMS "
+                    + juce::String (rmsOfLastQuarter (outLoop.out)) + ")");
+
+        // No discontinuity (click) at any wrap boundary, aggregated as the
+        // single worst single-step jump across the whole render.
+        // Allow 2x the already-doubled tolerance (i.e. 4x maxStep): the
+        // previous 2x-maxStep bound passed with only a ~0.06% margin, which
+        // is fragile against ordinary FP differences between arm64/x86_64
+        // or compiler versions (sin() rounding, fmod() wrap-position
+        // rounding) that don't reflect an actual audible click regression.
+        const auto allowedJump = maxStep * 4.0f;
+        expect (outLoop.worstJump <= allowedJump + 1.0e-4f,
+                "no click at the whole-file loop wrap (worst jump " + juce::String (outLoop.worstJump)
+                    + " vs allowed " + juce::String (allowedJump) + ")");
+
+        // loopEnd just under 1.0 already worked before the fix; confirm the
+        // fix didn't change its behaviour there. The two runs wrap at very
+        // slightly different sample counts (1999 vs 1998, since loopEnd is
+        // clamped to len-1 either way), so a periodic signal's phase slips
+        // relative to the other run after each wrap -- comparing sample for
+        // sample is only meaningful before the first wrap fires on either
+        // one, folded into a single max-abs-diff aggregate.
+        const auto outNearLoop = render (0.999, numSamples * 4);
+        float maxDiffBeforeFirstWrap = 0.0f;
+        for (int i = 0; i < 1997; ++i)  // strictly before either loopEnd (1998/1999)
+            maxDiffBeforeFirstWrap = juce::jmax (maxDiffBeforeFirstWrap,
+                                                  std::abs (outLoop.out[(size_t) i] - outNearLoop.out[(size_t) i]));
+        expect (maxDiffBeforeFirstWrap < 1.0e-3f,
+                "loopEndNorm=1.0 and 0.999 produce identical output before the first wrap (max diff "
+                    + juce::String (maxDiffBeforeFirstWrap) + ")");
+
+        expect (rmsOfLastQuarter (outNearLoop.out) > 0.3f, "loopEndNorm=0.999 still loops past one file length too");
+
+        // A zero-length loop (start == end) must not hang and must produce
+        // finite output -- SamplePlayer::getNextSample is O(1) per call with
+        // no internal loop construct, so this proves the degenerate-span
+        // guard rather than an actual hang risk, but it's the invariant that
+        // matters: callers must never see NaN/garbage from a pathological
+        // loop-point preset.
+        {
+            spa::dsp::SamplePlayer player;
+            player.noteOn (&sample, 0.5);
+            spa::dsp::SamplePlayer::Params p;
+            p.sample = &sample;
+            p.rateRatio = 1.0;
+            p.loop = true;
+            p.loopStartNorm = 0.5;
+            p.loopEndNorm = 0.5;
+
+            bool allFinite = true;
+            for (int i = 0; i < numSamples * 4; ++i)
+            {
+                const auto s = player.getNextSample (p);
+                if (! std::isfinite (s.left) || ! std::isfinite (s.right))
+                    allFinite = false;
+            }
+            expect (allFinite, "zero-length loop produces finite output and returns promptly");
+        }
     }
 
     static void granularTest()
@@ -2769,8 +2924,8 @@ namespace
         const auto written = pm.generateFactoryPresets (packs, libRoot);
         expect (written == 36, "3 presets x 12 packs written (" + juce::String (written) + ")");
 
-        expect (lib::PresetManager::factoryRecipeVersion == 3,
-                "factoryRecipeVersion stamps at v3 ("
+        expect (lib::PresetManager::factoryRecipeVersion == 4,
+                "factoryRecipeVersion stamps at v4 ("
                     + juce::String (lib::PresetManager::factoryRecipeVersion) + ")");
 
         // Reads one PARAM's value out of a captured state ValueTree.
@@ -2867,6 +3022,82 @@ namespace
 
                     expect (paramValueOf (state, id::arp::enable) <= 0.5f,
                             "\"" + name + "\" does not enable the arpeggiator");
+
+                    // Mike's v1.0.16 feedback: a Pulse preset must be a MIX,
+                    // not sample-only -- at least one other slot enabled in a
+                    // genuine synth engine (wavetable/analog/fm/pluck, never
+                    // sample/granular/noise) at an audible level (>= -12dB),
+                    // with at least one mod route whose source is an SFX
+                    // follower/ENV/LFO and whose destination lands on that
+                    // synth slot (or the shared filter, which is on the same
+                    // signal path as every oscillator).
+                    if (name.endsWith (" Pulse"))
+                    {
+                        static const std::set<int> synthModes {
+                            (int) params::OscMode::wavetable, (int) params::OscMode::analog,
+                            (int) params::OscMode::fm, (int) params::OscMode::pluck
+                        };
+
+                        int synthSlot = -1;
+                        for (int slot = 1; slot < params::numOscSlots; ++slot)
+                        {
+                            const auto enabled = paramValueOf (state, id::oscSlot (slot, id::osc::enable));
+                            const auto mode = (int) paramValueOf (state, id::oscSlot (slot, id::osc::mode));
+                            const auto level = paramValueOf (state, id::oscSlot (slot, id::osc::level));
+                            if (enabled >= 0.5f && synthModes.count (mode) > 0 && level >= -12.05f)
+                            {
+                                synthSlot = slot;
+                                break;
+                            }
+                        }
+                        expect (synthSlot >= 0,
+                                "\"" + name + "\" has a synth oscillator (wavetable/analog/fm/pluck) "
+                                "enabled in another slot at >= -12dB");
+
+                        static const std::set<int> followerEnvLfoSources = [] {
+                            std::set<int> s;
+                            for (int i = 0; i < params::numOscSlots * 2; ++i)
+                                s.insert (params::sfxFollowerBase + i);
+                            s.insert ((int) params::ModSource::env2);
+                            s.insert ((int) params::ModSource::env3);
+                            s.insert ((int) params::ModSource::lfo1);
+                            s.insert ((int) params::ModSource::lfo2);
+                            return s;
+                        } ();
+
+                        bool foundDrivingRoute = false;
+                        if (synthSlot >= 0)
+                        {
+                            const auto synthLevelDest = params::modDestIndex (
+                                id::oscSlot (synthSlot, id::osc::level)) + 1;
+                            const auto synthFineDest = params::modDestIndex (
+                                id::oscSlot (synthSlot, id::osc::fine)) + 1;
+                            const auto synthPosDest = params::modDestIndex (
+                                id::oscSlot (synthSlot, id::osc::position)) + 1;
+                            const auto synthFmDest = params::modDestIndex (
+                                id::oscSlot (synthSlot, id::osc::fmIndex)) + 1;
+                            const auto synthPluckDest = params::modDestIndex (
+                                id::oscSlot (synthSlot, id::osc::pluckDamp)) + 1;
+                            const auto filterDest = params::modDestIndex (id::filter1Cutoff) + 1;
+
+                            for (int r = 0; r < params::numModRoutes; ++r)
+                            {
+                                const auto src = (int) paramValueOf (state, id::routeParam (r, id::route::source));
+                                const auto dest = (int) paramValueOf (state, id::routeParam (r, id::route::dest));
+                                if (followerEnvLfoSources.count (src) == 0)
+                                    continue;
+                                if (dest == synthLevelDest || dest == synthFineDest || dest == synthPosDest
+                                    || dest == synthFmDest || dest == synthPluckDest || dest == filterDest)
+                                {
+                                    foundDrivingRoute = true;
+                                    break;
+                                }
+                            }
+                        }
+                        expect (foundDrivingRoute,
+                                "\"" + name + "\" has an SFX-follower/ENV/LFO route driving the synth "
+                                "oscillator (or the shared filter path)");
+                    }
                 }
             }
             expect (sawKeys && sawTexture && sawPulse,
@@ -3195,6 +3426,231 @@ namespace
 
         lib::setLibraryRoot (savedRoot);
         libRoot.deleteRecursively();
+        presetsRoot.deleteRecursively();
+    }
+
+    // Real-library regression: makeFakeLibrary's synthetic WAVs (short,
+    // no leading silence) can't catch a recipe that only goes silent
+    // against real SFX material -- long files with leading silence,
+    // sample-start offsets or loop points landing past the actual audio,
+    // keytrack transposing a long file to an inaudibly slow/fast rate,
+    // filter cutoffs that miss the file's real spectrum, etc. This test
+    // generates every factory preset (every pack x Keys/Texture/Pulse)
+    // against Mike's real installed library and renders each one for real,
+    // so it catches exactly that class of bug. SKIPPED (not a failure) when
+    // the real library isn't present on this machine -- CI and other dev
+    // machines don't have it.
+    static void factoryPresetsRealLibraryAudibleTest()
+    {
+        std::cout << "factoryPresetsRealLibraryAudibleTest\n";
+
+        if (! g_realLibraryTestOptIn)
+        {
+            std::cout << "  SKIPPED (opt-in: --real-library or SPASYNTH_REAL_LIBRARY_TEST=1)\n";
+            return;
+        }
+
+        namespace lib = spa::library;
+
+        const auto realLibRoot = juce::File ("/Users/Shared/Silverplatter Audio/SPASynth Library");
+        if (! realLibRoot.isDirectory())
+        {
+            std::cout << "  SKIPPED: real library not found at \"" << realLibRoot.getFullPathName()
+                       << "\" on this machine\n";
+            return;
+        }
+
+        const auto startTime = juce::Time::getMillisecondCounterHiRes();
+
+        const auto savedRoot = lib::getLibraryRoot();   // restore machine setting after
+        lib::setLibraryRoot (realLibRoot);
+
+        // Hermetic presets root -- a fresh temp dir, never Mike's real
+        // Factory presets folder (which the global override in main() also
+        // already keeps every PresetManager away from by default, but this
+        // test uses its own explicit temp root just like the two tests
+        // above, to be doubly sure).
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-reallib-presets-test", "");
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (2000);   // let the ctor's
+                                                                             // one-shot auto-discovery
+                                                                             // callback fire first (see
+                                                                             // factoryPresetsAudibleTest)
+
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        auto packs = lib::scanLibrary (realLibRoot);
+        expect (! packs.empty(), "real library scans to at least one pack ("
+                                  + juce::String ((int) packs.size()) + ")");
+
+        // Sort the same way generateFactoryPresets does internally (see its
+        // own comment) so a reduced-set pass below still hits every pack
+        // deterministically and its "never skip a Pulse preset" rule is easy
+        // to reason about.
+        std::sort (packs.begin(), packs.end(),
+                   [] (const lib::Pack& a, const lib::Pack& b)
+                   { return a.name.compareIgnoreCase (b.name) < 0; });
+
+        const auto written = pm.generateFactoryPresets (packs, realLibRoot);
+        std::cout << "  generated " << written << " presets across " << packs.size() << " packs\n";
+
+        // Full set is 3 x every pack (264 on the current 88-pack library);
+        // if that would run too long, fall back to every 2nd pack but NEVER
+        // drop a Pulse preset from the set -- Keys/Texture presets for the
+        // skipped packs are skipped too (their category folder just isn't
+        // visited), only Pulse gets special-cased back in for every pack.
+        constexpr bool reduceIfSlow = true;
+        std::vector<size_t> keysTextureIndices, pulseIndices;
+        for (size_t i = 0; i < packs.size(); ++i)
+            pulseIndices.push_back (i);
+        for (size_t i = 0; i < packs.size(); ++i)
+            keysTextureIndices.push_back (i);
+
+        constexpr int blockSize = 512;
+        constexpr float silentPeakThreshold = 1.0e-3f;
+        constexpr float silentRmsThreshold = 1.0e-4f;
+        constexpr float loudPeakCeiling = 4.0f;
+
+        int silentBefore = 0, loudBefore = 0, testedCount = 0;
+        juce::String failDiag;
+
+        const auto renderAndCheck = [&] (const juce::String& presetName) -> bool
+        {
+            bool foundIndex = false;
+            size_t idx = 0;
+            for (size_t i = 0; i < pm.getPresets().size(); ++i)
+                if (pm.getPresets()[i].name == presetName) { idx = i; foundIndex = true; break; }
+            if (! foundIndex)
+            {
+                failDiag << presetName << ": NOT FOUND in preset list\n";
+                ++silentBefore;
+                return false;
+            }
+
+            if (! pm.loadPreset ((int) idx))
+            {
+                failDiag << presetName << ": FAILED TO LOAD\n";
+                ++silentBefore;
+                return false;
+            }
+
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+            const auto deadline = juce::Time::getMillisecondCounter() + 15000u;
+            while ((proc.isSampleLoading (0) || proc.isSampleLoading (1) || proc.isSampleLoading (2))
+                   && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);   // C3
+
+            float peak = 0.0f;
+            double sumSqLast = 0.0;
+            int samplesLast = 0;
+            constexpr int totalBlocks = 282;   // ~3.0s @ 48kHz/512
+            for (int b = 0; b < totalBlocks; ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+                peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+
+                // Last-2s RMS, matching the task's spec (last 2 of the 3
+                // held seconds -- ~188 blocks at 48k/512).
+                if (b >= totalBlocks - 188)
+                {
+                    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    {
+                        const auto* d = buffer.getReadPointer (ch);
+                        for (int i = 0; i < buffer.getNumSamples(); ++i)
+                            sumSqLast += (double) d[i] * (double) d[i];
+                    }
+                    samplesLast += buffer.getNumSamples() * buffer.getNumChannels();
+                }
+            }
+            const auto rmsLast = samplesLast > 0 ? (float) std::sqrt (sumSqLast / (double) samplesLast) : 0.0f;
+
+            const bool silent = peak < silentPeakThreshold || rmsLast < silentRmsThreshold;
+            const bool loud = peak > loudPeakCeiling;
+            if (silent)
+            {
+                ++silentBefore;
+                failDiag << presetName << ": SILENT peak=" << juce::String (peak, 5)
+                         << " rms=" << juce::String (rmsLast, 5) << "\n";
+            }
+            if (loud)
+            {
+                ++loudBefore;
+                failDiag << presetName << ": TOO LOUD peak=" << juce::String (peak, 5) << "\n";
+            }
+            ++testedCount;
+
+            // Hard-reset before the next preset shares this processor.
+            proc.panic();
+            juce::MidiBuffer noMidi;
+            for (int b = 0; b < 4; ++b)
+                proc.processBlock (buffer, noMidi);
+
+            return ! silent && ! loud;
+        };
+
+        // Budget check: render one pack's worth (3 presets) to estimate
+        // total runtime, then decide full vs. reduced set. A single
+        // render-and-check call is dominated by disk I/O (long real WAVs)
+        // and the fixed 3s render, so one pack is a reasonable sample.
+        bool useReducedSet = false;
+        if (reduceIfSlow && ! packs.empty())
+        {
+            const auto probeStart = juce::Time::getMillisecondCounterHiRes();
+            renderAndCheck (packs[0].name + " Keys");
+            renderAndCheck (packs[0].name + " Texture");
+            renderAndCheck (packs[0].name + " Pulse");
+            const auto probeMs = juce::Time::getMillisecondCounterHiRes() - probeStart;
+            const auto estimateTotalMs = probeMs * (double) packs.size();
+            std::cout << "  probe: " << (int) probeMs << "ms for 1 pack, estimate "
+                       << (int) (estimateTotalMs / 1000.0) << "s for all " << packs.size() << " packs\n";
+            if (estimateTotalMs > 150000.0)   // > ~2.5 min projected -> reduce
+                useReducedSet = true;
+        }
+
+        if (useReducedSet)
+        {
+            keysTextureIndices.clear();
+            for (size_t i = 1; i < packs.size(); i += 2)   // every 2nd pack (index 0 already probed above)
+                keysTextureIndices.push_back (i);
+            // pulseIndices already covers every pack -- never reduced.
+            std::cout << "  reduced set: Keys/Texture on " << (keysTextureIndices.size() + 1)
+                       << "/" << packs.size() << " packs, Pulse on ALL " << packs.size() << " packs\n";
+        }
+
+        for (auto i : keysTextureIndices)
+        {
+            if (i == 0 && reduceIfSlow) continue;   // pack 0 already rendered by the probe above
+            renderAndCheck (packs[i].name + " Keys");
+            renderAndCheck (packs[i].name + " Texture");
+        }
+        for (auto i : pulseIndices)
+        {
+            if (i == 0 && reduceIfSlow) continue;   // pack 0 already rendered by the probe above
+            renderAndCheck (packs[i].name + " Pulse");
+        }
+
+        const auto elapsedMs = juce::Time::getMillisecondCounterHiRes() - startTime;
+        std::cout << "  tested " << testedCount << " presets across " << packs.size()
+                   << " packs in " << (int) (elapsedMs / 1000.0) << "s\n";
+        if (failDiag.isNotEmpty())
+            std::cout << failDiag;
+
+        expect (silentBefore == 0, "0 silent presets against the real library ("
+                                    + juce::String (silentBefore) + " silent) --\n" + failDiag);
+        expect (loudBefore == 0, "0 too-loud presets against the real library ("
+                                  + juce::String (loudBefore) + " over +12dBFS) --\n" + failDiag);
+
+        lib::setLibraryRoot (savedRoot);
         presetsRoot.deleteRecursively();
     }
 
@@ -6312,6 +6768,13 @@ int main (int argc, char* argv[])
         return 0;
     }
 
+    for (int i = 1; i < argc; ++i)
+        if (juce::String (argv[i]) == "--real-library")
+            g_realLibraryTestOptIn = true;
+    if (std::getenv ("SPASYNTH_REAL_LIBRARY_TEST") != nullptr
+        && juce::String (std::getenv ("SPASYNTH_REAL_LIBRARY_TEST")) == "1")
+        g_realLibraryTestOptIn = true;
+
     presetsRootIsHermeticTest();
     renderSmokeTest();
     multiSlotUnisonTest();
@@ -6323,6 +6786,7 @@ int main (int argc, char* argv[])
     chaosMatrixSourceTest();
     chaosTraceTest();
     samplePlaybackTest();
+    samplePlayerWholeFileLoopTest();
     granularTest();
     quickSwapTest();
     sfxFollowerTest();
@@ -6372,6 +6836,7 @@ int main (int argc, char* argv[])
     factoryPresetRootPackTest();
     factoryRecipeVarietyTest();
     factoryPresetsAudibleTest();
+    factoryPresetsRealLibraryAudibleTest();
     presetBrowserFilterTest();
     licenseLineTest();
     dependentEnableTest();
