@@ -14,6 +14,7 @@
 
 #include <iostream>
 #include <limits>
+#include <map>
 #include <set>
 #include <typeinfo>
 
@@ -2638,6 +2639,405 @@ namespace
         presetsRoot.deleteRecursively();
     }
 
+    // Builds a throwaway library with one pack per name in `packNames`, each
+    // holding 3 short sine WAVs ("one"/"two"/"three" -- matching
+    // makeFakeLibrary's convention so a pack's smallest/middle/largest are
+    // all valid, playable files).
+    static juce::File makeFakeLibraryFromNames (const juce::StringArray& packNames)
+    {
+        const auto root = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getNonexistentChildFile ("spasynth-recipe-lib-test", "");
+        juce::Random noiseRng (12345);
+        for (const auto& pack : packNames)
+            for (auto* wav : { "one.wav", "two.wav", "three.wav" })
+            {
+                // Broadband content (a few harmonics + a little noise), unlike
+                // makeFakeLibrary's pure 220Hz tone -- some recipe variants
+                // apply a high-pass or band-pass filter, which would reduce a
+                // pure low tone to near-nothing regardless of how sane the
+                // recipe actually is against real (broadband) SFX material.
+                juce::AudioBuffer<float> buffer (1, 4800);
+                for (int i = 0; i < 4800; ++i)
+                {
+                    const auto t = (double) i / 48000.0;
+                    float s = 0.35f * (float) std::sin (juce::MathConstants<double>::twoPi * 220.0 * t)
+                            + 0.2f * (float) std::sin (juce::MathConstants<double>::twoPi * 660.0 * t)
+                            + 0.15f * (float) std::sin (juce::MathConstants<double>::twoPi * 1800.0 * t)
+                            + 0.1f * noiseRng.nextFloat() - 0.05f;
+                    buffer.setSample (0, i, s);
+                }
+
+                const auto file = root.getChildFile (pack).getChildFile (wav);
+                file.getParentDirectory().createDirectory();
+                juce::WavAudioFormat fmt;
+                std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+                if (auto writer = fmt.createWriterFor (stream,
+                        juce::AudioFormatWriterOptions().withSampleRate (48000.0)
+                            .withNumChannels (1).withBitsPerSample (24)))
+                    writer->writeFromAudioSampleBuffer (buffer, 0, 4800);
+            }
+        return root;
+    }
+
+    // Regression test for the v1.0.15 "Pulse presets all basically sound the
+    // same" request: factory presets now come from a small table of distinct
+    // recipes per archetype (Keys/Texture/Pulse), a deterministic pure
+    // function of the pack name. This test builds a temp library + a temp
+    // presets root (never touching Mike's real library or Presets/Factory)
+    // and checks: exactly the 3 named presets per pack; every one stamped
+    // with the current recipe version; real variety across packs; every
+    // $LIB$ path stays inside that pack's 3 files; and the regeneration
+    // trigger (stale/missing "recipe" stamp) actually fires, while an
+    // up-to-date folder is left alone.
+    static void factoryRecipeVarietyTest()
+    {
+        std::cout << "factoryRecipeVarietyTest\n";
+
+        namespace lib = spa::library;
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        juce::StringArray packNames;
+        for (int i = 0; i < 12; ++i)
+            packNames.add ("Recipe Pack " + juce::String (i));
+
+        const auto libRoot = makeFakeLibraryFromNames (packNames);
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-recipe-presets-test", "");
+
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        const auto packs = lib::scanLibrary (libRoot);
+        expect (packs.size() == 12, "test library scans to 12 packs");
+
+        const auto written = pm.generateFactoryPresets (packs, libRoot);
+        expect (written == 36, "3 presets x 12 packs written (" + juce::String (written) + ")");
+
+        // Fingerprint (osc modes across the 3 slots + filter1 type + the
+        // first two mod-route sources) of each pack's Pulse preset, used
+        // below to count distinct variants actually produced.
+        const auto fingerprintPulse = [&] (const juce::String& packName) -> juce::String
+        {
+            const auto file = presetsRoot.getChildFile ("Factory").getChildFile (packName)
+                                  .getChildFile (juce::File::createLegalFileName (packName + " Pulse")
+                                                 + lib::PresetManager::presetExtension);
+            const auto xml = juce::XmlDocument::parse (file);
+            if (xml == nullptr) return {};
+            const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
+
+            const auto paramValue = [&] (const juce::String& pid) -> float
+            {
+                for (auto child : state)
+                    if (child.hasType ("PARAM") && child.getProperty ("id").toString() == pid)
+                        return (float) (double) child.getProperty ("value");
+                return -999.0f;
+            };
+
+            juce::String fp;
+            for (int s = 0; s < params::numOscSlots; ++s)
+                fp << "m" << juce::String (paramValue (id::oscSlot (s, id::osc::mode)), 1) << ";";
+            fp << "f" << juce::String (paramValue (id::filter1Type), 1) << ";";
+            fp << "r0" << juce::String (paramValue (id::routeParam (0, id::route::source)), 1) << ";";
+            fp << "r1" << juce::String (paramValue (id::routeParam (1, id::route::source)), 1);
+            return fp;
+        };
+
+        juce::StringArray keysNames, textureNames, pulseNames;
+        std::set<juce::String> pulseFingerprints;
+
+        for (const auto& pack : packs)
+        {
+            const auto categoryDir = presetsRoot.getChildFile ("Factory").getChildFile (pack.name);
+            const auto found = categoryDir.findChildFiles (juce::File::findFiles, false,
+                                                            "*" + juce::String (
+                                                                lib::PresetManager::presetExtension));
+            expect (found.size() == 3, "pack \"" + pack.name + "\" has exactly 3 presets ("
+                                        + juce::String (found.size()) + ")");
+
+            bool sawKeys = false, sawTexture = false, sawPulse = false;
+            for (const auto& f : found)
+            {
+                const auto name = f.getFileNameWithoutExtension();
+                if (name == pack.name + " Keys") sawKeys = true;
+                else if (name == pack.name + " Texture") sawTexture = true;
+                else if (name == pack.name + " Pulse") sawPulse = true;
+
+                const auto xml = juce::XmlDocument::parse (f);
+                expect (xml != nullptr && xml->hasTagName ("SPASynthPreset"),
+                        "\"" + name + "\" parses as a preset");
+                if (xml != nullptr)
+                    expect (xml->getIntAttribute ("recipe", -1) == lib::PresetManager::factoryRecipeVersion,
+                            "\"" + name + "\" is stamped at the current recipe version");
+
+                // Every $LIB$ reference in the preset must resolve to one of
+                // this pack's own 3 WAVs -- never another pack's file.
+                if (xml != nullptr)
+                {
+                    const auto state = juce::ValueTree::fromXml (*xml->getFirstChildElement());
+                    const auto samples = state.getChildWithName ("SAMPLES");
+                    for (int slot = 0; slot < params::numOscSlots; ++slot)
+                    {
+                        const auto stored = samples.getProperty ("slot" + juce::String (slot)).toString();
+                        if (stored.isEmpty())
+                            continue;
+                        const auto resolved = lib::fromPortable (stored, libRoot);
+                        expect (resolved.existsAsFile() && resolved.getParentDirectory()
+                                    == libRoot.getChildFile (pack.name),
+                                "\"" + name + "\" slot" + juce::String (slot)
+                                    + " references only this pack's own files");
+                    }
+                }
+            }
+            expect (sawKeys && sawTexture && sawPulse,
+                    "pack \"" + pack.name + "\" has all 3 named presets");
+
+            pulseFingerprints.insert (fingerprintPulse (pack.name));
+        }
+
+        expect (pulseFingerprints.size() >= 4,
+                "at least 4 distinct Pulse recipes across 12 packs ("
+                    + juce::String ((int) pulseFingerprints.size()) + " distinct)");
+
+        // Regeneration trigger: hand-write a v1 (unstamped-equivalent)
+        // preset over one pack's Keys file, then confirm generateFactoryPresets
+        // regenerates that whole pack (stamped v2 again) while a pack that
+        // was already current is left untouched.
+        const auto stalePack = packs.front().name;
+        const auto staleFile = presetsRoot.getChildFile ("Factory").getChildFile (stalePack)
+                                    .getChildFile (juce::File::createLegalFileName (stalePack + " Keys")
+                                                   + lib::PresetManager::presetExtension);
+        {
+            juce::XmlElement root ("SPASynthPreset");
+            root.setAttribute ("name", stalePack + " Keys");
+            root.setAttribute ("version", 1);
+            root.setAttribute ("recipe", 1);   // stale version
+            root.addChildElement (proc.buildStateTree().createXml().release());
+            root.writeTo (staleFile);
+        }
+
+        const auto untouchedPack = packs.back().name;
+        const auto untouchedTextureFile = presetsRoot.getChildFile ("Factory").getChildFile (untouchedPack)
+                                    .getChildFile (juce::File::createLegalFileName (untouchedPack + " Texture")
+                                                   + lib::PresetManager::presetExtension);
+        const auto untouchedBefore = untouchedTextureFile.getLastModificationTime();
+
+        // Sleep-free "did it get rewritten" check: compare file content
+        // instead of mtime (mtime resolution can be coarser than this test
+        // runs in). Capture the stale file's un-regenerated bytes first.
+        const auto staleBytesBefore = staleFile.loadFileAsString();
+
+        juce::Thread::sleep (5);   // ensure any rewrite gets a strictly later mtime too
+        const auto written2 = pm.generateFactoryPresets (packs, libRoot);
+        expect (written2 == 3, "regeneration rewrites exactly the 1 stale pack's 3 presets ("
+                                + juce::String (written2) + ")");
+
+        const auto staleBytesAfter = staleFile.loadFileAsString();
+        expect (staleBytesAfter != staleBytesBefore, "the stale (v1) preset file was rewritten");
+        const auto xmlAfter = juce::XmlDocument::parse (staleFile);
+        expect (xmlAfter != nullptr
+                    && xmlAfter->getIntAttribute ("recipe", -1) == lib::PresetManager::factoryRecipeVersion,
+                "regenerated preset is stamped at the current recipe version");
+
+        expect (untouchedTextureFile.getLastModificationTime() == untouchedBefore,
+                "an already-current pack is left untouched by regeneration");
+
+        libRoot.deleteRecursively();
+        presetsRoot.deleteRecursively();
+    }
+
+    // Regression test for the same v1.0.15 request: every recipe variant of
+    // every archetype must actually be audible and sane on a held note (no
+    // silent or ear-splitting variant slipped in). Rather than a separate
+    // test-only generation path, this picks pack names whose deterministic
+    // hash lands on each target variant (PresetManager::*VariantForPack is
+    // exposed for exactly this) and generates real factory presets from
+    // them, then loads each preset through the normal
+    // PresetManager::loadPresetFile path and renders it for real.
+    static void factoryPresetsAudibleTest()
+    {
+        std::cout << "factoryPresetsAudibleTest\n";
+
+        namespace lib = spa::library;
+        namespace params = spa::params;
+
+        // Finds the first "<prefix><n>" pack name whose variant function
+        // returns `target`. Deterministic and cheap (a handful of hashes).
+        const auto findPackName = [] (int (*variantFn) (const juce::String&),
+                                      const char* prefix, int target) -> juce::String
+        {
+            for (int i = 0; i < 20000; ++i)
+            {
+                const auto name = juce::String (prefix) + juce::String (i);
+                if (variantFn (name) == target)
+                    return name;
+            }
+            jassertfalse;
+            return {};
+        };
+
+        juce::StringArray packNames;
+        std::map<juce::String, int> keysVariantOf, textureVariantOf, pulseVariantOf;
+
+        for (int v = 0; v < lib::PresetManager::numKeysVariants; ++v)
+        {
+            const auto name = findPackName (&lib::PresetManager::keysVariantForPack, "AK", v);
+            packNames.add (name);
+            keysVariantOf[name] = v;
+        }
+        for (int v = 0; v < lib::PresetManager::numTextureVariants; ++v)
+        {
+            const auto name = findPackName (&lib::PresetManager::textureVariantForPack, "AT", v);
+            packNames.add (name);
+            textureVariantOf[name] = v;
+        }
+        for (int v = 0; v < lib::PresetManager::numPulseVariants; ++v)
+        {
+            const auto name = findPackName (&lib::PresetManager::pulseVariantForPack, "AP", v);
+            packNames.add (name);
+            pulseVariantOf[name] = v;
+        }
+
+        const auto savedRoot = lib::getLibraryRoot();   // restore machine setting after
+
+        // SPASynthProcessor's constructor schedules a ONE-SHOT
+        // MessageManager::callAsync that auto-discovers the library and
+        // calls its OWN internal PresetManager::generateFactoryPresets
+        // against the REAL, machine-wide library::defaultPresetsRoot() --
+        // regardless of the separate, temp-rooted `pm` this test uses below.
+        // That callback reads library::findLibraryRoot() at the moment it
+        // actually runs, not at construction time, so it MUST be allowed to
+        // fire (harmlessly, against whatever the real configured library
+        // is) before this test ever calls setLibraryRoot() to point at a
+        // fake one -- otherwise that one-shot callback can fire *while* the
+        // fake root is set and write this test's throwaway pack names into
+        // Mike's real Factory presets folder (caught once during this
+        // recipe work; cleaned up by hand, not by this test).
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (2000);
+
+        const auto libRoot = makeFakeLibraryFromNames (packNames);
+        lib::setLibraryRoot (libRoot);
+
+        const auto presetsRoot = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                     .getNonexistentChildFile ("spasynth-audible-presets-test", "");
+
+        lib::PresetManager pm ([&] { return proc.buildStateTree(); },
+                               [&] (const juce::ValueTree& t) { proc.restoreStateTree (t); },
+                               presetsRoot);
+
+        const auto packs = lib::scanLibrary (libRoot);
+        const auto written = pm.generateFactoryPresets (packs, libRoot);
+        expect (written == (int) packNames.size() * 3,
+                "3 presets per audibility-test pack written (" + juce::String (written) + ")");
+
+        constexpr int blockSize = 512;
+        constexpr float silentPeakThreshold = 1.0e-3f;
+        constexpr float silentRmsThreshold = 1.0e-4f;
+        constexpr float loudPeakCeiling = 4.0f;
+
+        int silentCount = 0, loudCount = 0;
+        juce::String diagnostics;
+
+        const auto renderAndCheck = [&] (const juce::String& presetName)
+        {
+            bool foundIndex = false;
+            size_t idx = 0;
+            for (size_t i = 0; i < pm.getPresets().size(); ++i)
+                if (pm.getPresets()[i].name == presetName) { idx = i; foundIndex = true; break; }
+            expect (foundIndex, "preset \"" + presetName + "\" is found in the browser list");
+            if (! foundIndex)
+                return;
+
+            expect (pm.loadPreset ((int) idx), "preset \"" + presetName + "\" loads");
+
+            // Preset loads kick off each slot's sample/granular load via a
+            // deferred MessageManager::callAsync, so pump the loop for a
+            // while before even checking isSampleLoading -- otherwise the
+            // poll can run before the async load has even been scheduled
+            // (let alone started) and see "nothing pending" when really
+            // "not started yet" (found via a flaky first-preset-in-the-run
+            // failure with a shorter initial pump).
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+            const auto deadline = juce::Time::getMillisecondCounter() + 15000u;
+            while ((proc.isSampleLoading (0) || proc.isSampleLoading (1) || proc.isSampleLoading (2))
+                   && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+
+            // Unlike randomizeNeverSilentTest (which judges only the tail, to
+            // catch a patch that never speaks up), some recipes here are
+            // deliberately percussive -- a fast-decay, zero-sustain envelope
+            // that legitimately goes quiet well before 3s on a held note (the
+            // "Pulse" percussive variant, the pluck-layered "Keys" variant).
+            // So RMS is measured over the WHOLE render (not just the tail):
+            // a real transient counts as real audio, and a patch that never
+            // makes a sound at all still fails both checks.
+            float peak = 0.0f, sumSqLast = 0.0f;
+            int samplesLast = 0;
+            constexpr int totalBlocks = 282;    // ~3.0s @ 48kHz/512
+            constexpr int skipBlocks = 0;
+            for (int b = 0; b < totalBlocks; ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+                peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+                if (b >= skipBlocks)
+                {
+                    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    {
+                        const auto* d = buffer.getReadPointer (ch);
+                        for (int i = 0; i < buffer.getNumSamples(); ++i)
+                            sumSqLast += d[i] * d[i];
+                    }
+                    samplesLast += buffer.getNumSamples() * buffer.getNumChannels();
+                }
+            }
+            const auto rmsLast = samplesLast > 0 ? std::sqrt (sumSqLast / (float) samplesLast) : 0.0f;
+
+            diagnostics << presetName << ": peak=" << juce::String (peak, 5)
+                        << " rms=" << juce::String (rmsLast, 5) << "\n";
+
+            if (peak < silentPeakThreshold || rmsLast < silentRmsThreshold)
+                ++silentCount;
+            if (peak > loudPeakCeiling)
+                ++loudCount;
+
+            // Hard-reset before the next preset shares this processor
+            // instance (fresh voices/FX state, no cross-variant bleed).
+            proc.panic();
+            juce::MidiBuffer noMidi;
+            for (int b = 0; b < 4; ++b)
+                proc.processBlock (buffer, noMidi);
+        };
+
+        for (const auto& [name, variant] : keysVariantOf)
+            renderAndCheck (name + " Keys");
+        for (const auto& [name, variant] : textureVariantOf)
+            renderAndCheck (name + " Texture");
+        for (const auto& [name, variant] : pulseVariantOf)
+            renderAndCheck (name + " Pulse");
+
+        std::cout << diagnostics;
+
+        expect (silentCount == 0, "no silent recipe variants ("
+                                   + juce::String (silentCount) + " silent) --\n" + diagnostics);
+        expect (loudCount == 0, "no recipe variant exceeds the +12dBFS output clamp ("
+                                 + juce::String (loudCount) + " over) --\n" + diagnostics);
+
+        lib::setLibraryRoot (savedRoot);
+        libRoot.deleteRecursively();
+        presetsRoot.deleteRecursively();
+    }
+
     // Renders the editor offscreen for visual review: SPASynthTests --snapshot <dir>
     static void renderEditorSnapshots (const juce::File& outDir)
     {
@@ -5227,6 +5627,8 @@ int main (int argc, char* argv[])
     presetLoadNoiseBurstTest();
     factoryPresetGenerationTest();
     factoryPresetRootPackTest();
+    factoryRecipeVarietyTest();
+    factoryPresetsAudibleTest();
     presetBrowserFilterTest();
     licenseLineTest();
     dependentEnableTest();

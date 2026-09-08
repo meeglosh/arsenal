@@ -16,6 +16,12 @@ A small visibility improvement requested by our testers.
   still held, in which case it continues on just those.
 - RANDOMIZE ALL can no longer land on a silent patch. Every roll is checked
   and gently nudged so a played note always produces sound.
+- Factory presets have been redesigned with several distinct recipes for
+  each type (Keys, Texture and Pulse), varying the synthesis engine,
+  envelopes, filters, modulation and effects, so packs no longer all sound
+  alike browsing through the preset list. Existing factory presets are
+  refreshed automatically the next time your library is scanned; your own
+  saved presets are untouched.
 
 **Notes for this build**
 

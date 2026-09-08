@@ -62,16 +62,46 @@ public:
     juce::String getCurrentName() const { return currentName; }
 
     // Writes showcase presets for each pack (Keys / Texture / Pulse
-    // templates). Fast: builds state trees directly, never loads audio.
-    // Returns the number of presets written; skips packs that already have
-    // a factory folder.
+    // templates, each with several distinct sonic recipes -- see the
+    // "Recipe table" comment in PresetManager.cpp). Fast: builds state
+    // trees directly, never loads audio. Returns the number of presets
+    // written; regenerates a pack's Factory folder whenever its existing
+    // presets are missing the "recipe" stamp or carry an older
+    // factoryRecipeVersion, and otherwise skips it.
     int generateFactoryPresets (const std::vector<Pack>& packs,
                                 const juce::File& libraryRoot);
+
+    // Bumped whenever the factory-preset recipes change; stamped into every
+    // generated preset's XML root ("recipe" attribute) so generateFactoryPresets
+    // knows to regenerate stale Factory folders. v1 = the original
+    // one-recipe-per-archetype scheme (no stamp at all -- treated as v1).
+    static constexpr int factoryRecipeVersion = 2;
+
+    static constexpr int numKeysVariants = 6;
+    static constexpr int numTextureVariants = 5;
+    static constexpr int numPulseVariants = 6;
+
+    // Deterministic 0-based variant index for a pack name, pure function of
+    // the name (FNV-1a over its UTF-8 bytes, mixed with an archetype tag --
+    // see PresetManager.cpp). Exposed for tests: the audibility test picks
+    // pack names whose hash lands on each variant rather than needing a
+    // separate test-only generation path.
+    static int pulseVariantForPack (const juce::String& packName);
+    static int keysVariantForPack (const juce::String& packName);
+    static int textureVariantForPack (const juce::String& packName);
 
 private:
     juce::ValueTree makeTemplateState() const;
     bool writePreset (const juce::File& file, const juce::String& name,
-                      const juce::ValueTree& state) const;
+                      const juce::ValueTree& state, int recipeVersionStamp = 0) const;
+
+    juce::ValueTree buildKeysState (const juce::File& smallest, const juce::File& libraryRoot,
+                                    int variant) const;
+    juce::ValueTree buildTextureState (const juce::File& smallest, const juce::File& middle,
+                                       const juce::File& largest, const juce::File& libraryRoot,
+                                       int variant) const;
+    juce::ValueTree buildPulseState (const juce::File& middle, const juce::File& libraryRoot,
+                                     int variant) const;
 
     std::function<juce::ValueTree()> captureState;
     std::function<void (const juce::ValueTree&)> applyState;
