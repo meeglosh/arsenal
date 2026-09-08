@@ -3085,6 +3085,18 @@ namespace
             // so they get visual review; accent pass shows the plain grid.
             if (! customAccents)
             {
+                // v1.0.15: the drawer now widens the window rather than
+                // sliding over the grid (see togglePresetBrowser()), so it
+                // has to be opened through the real click path (the preset
+                // name button, tooltip "Browse presets") rather than
+                // PresetBrowser::openImmediately() directly -- that only
+                // repositions the drawer itself and would leave the window
+                // and module grid at their closed-state width/layout,
+                // producing a snapshot with the drawer wrongly overlapping
+                // the synth. Side-by-side mode has no open animation (see
+                // togglePresetBrowser()), so the resize/relayout is complete
+                // synchronously, no pump needed.
+                juce::TextButton* browseButton = nullptr;
                 std::function<void (juce::Component&)> frontExtras =
                     [&] (juce::Component& c)
                 {
@@ -3097,12 +3109,26 @@ namespace
                         if (tabs->getTabNames().contains ("FILTER 2"))
                             tabs->setCurrentTabIndex (1);
                     }
-                    if (auto* browser = dynamic_cast<spa::ui::PresetBrowser*> (&c))
-                        browser->openImmediately();
+                    if (browseButton == nullptr)
+                        if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                            if (b->getTooltip() == "Browse presets")
+                                browseButton = b;
                     for (auto* child : c.getChildren())
                         frontExtras (*child);
                 };
                 frontExtras (*editor);
+                if (browseButton != nullptr)
+                {
+                    browseButton->triggerClick();   // Button::triggerClick() is
+                                                     // asynchronous (posts a command
+                                                     // message) -- pump it through so
+                                                     // the resize/relayout has actually
+                                                     // happened before the snapshot below.
+                    const auto deadline = juce::Time::getMillisecondCounter() + 1000u;
+                    while (editor->getWidth() == spa::ui::metrics::baseWidth
+                           && juce::Time::getMillisecondCounter() < deadline)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+                }
             }
 
             const auto image = editor->createComponentSnapshot (editor->getLocalBounds());
@@ -4806,18 +4832,25 @@ namespace
                     // exercised through the real peer, the same path a live
                     // Esc keystroke takes (ComponentPeer::handleKeyPress in
                     // juce_ComponentPeer.cpp).
+                    //
+                    // v1.0.15: the drawer now widens the (real, desktop) peer
+                    // rather than sliding over the grid, so "open" means
+                    // visible at its (dynamically re-laid-out) column bounds,
+                    // and "closed" means hidden again with the window back to
+                    // its original width -- not a fixed off-screen translate.
+                    const auto widthBeforeClose = editor->getWidth();
                     const auto openBounds = browser->getOpenBounds();
-                    const auto closedBounds = openBounds.translated (
-                        -openBounds.getWidth() - 12, 0);
-                    expect (browser->getBounds() == openBounds,
-                            "(b) drawer is at its open bounds before Esc");
+                    expect (browser->isVisible() && browser->getBounds() == openBounds,
+                            "(b) drawer is visible at its open bounds before Esc");
 
                     if (auto* peer = editor->getPeer())
                         peer->handleKeyPress (juce::KeyPress::escapeKey, 0);
-                    pumpFor (500);   // outlast the 170ms close animation
+                    pumpFor (500);   // outlast any close animation
 
-                    expect (browser->getBounds() == closedBounds,
+                    expect (! browser->isVisible(),
                             "(b) Esc closed the drawer while focus was on the keyboard");
+                    expect (editor->getWidth() < widthBeforeClose,
+                            "(b) the window narrowed back down after Esc closed the drawer");
                     expect (keyboard->hasKeyboardFocus (false),
                             "(b) keyboard still/again has focus after Esc closed the drawer");
                 }
@@ -5321,6 +5354,258 @@ namespace
         editor->removeFromDesktop();
     }
 
+    // v1.0.15: the preset drawer used to slide OVER the module grid, hiding
+    // it; Mike wanted it to never overlap -- opening it now widens the
+    // window by the drawer's column width (metrics::presetBrowserWidth),
+    // the drawer sits in that new space on the left, and the whole synth UI
+    // is offset right by the same amount, unchanged in size/scale. Closing
+    // returns the window to its original width. Exercised on a real desktop
+    // peer (addToDesktop) so the shell's setSize() calls are actually
+    // fulfilled -- this is the "host honors the resize" path (see
+    // presetBrowserOverlayFallbackTest below for the refused-host path).
+    static void presetBrowserWidensWindowTest()
+    {
+        std::cout << "presetBrowserWidensWindowTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+        pumpFor (200);
+
+        spa::ui::PresetBrowser* browser = nullptr;
+        juce::TextButton* browseButton = nullptr;
+        spa::ui::OscStrip* oscA = nullptr;
+        juce::TabbedComponent* fxTabs = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (browser == nullptr)
+                browser = dynamic_cast<spa::ui::PresetBrowser*> (&c);
+            if (browseButton == nullptr)
+                if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                    if (b->getTooltip() == "Browse presets")
+                        browseButton = b;
+            if (oscA == nullptr)
+                if (auto* s = dynamic_cast<spa::ui::OscStrip*> (&c))
+                    oscA = s;
+            if (fxTabs == nullptr)
+                if (auto* t = dynamic_cast<juce::TabbedComponent*> (&c))
+                    if (t->getTabNames().contains ("TREM/VIB"))
+                        fxTabs = t;
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (browser != nullptr && browseButton != nullptr && oscA != nullptr && fxTabs != nullptr,
+                "browser/browse button/oscA/fxTabs found");
+        if (browser == nullptr || browseButton == nullptr || oscA == nullptr || fxTabs == nullptr)
+        {
+            editor->removeFromDesktop();
+            return;
+        }
+
+        const auto widthBefore = editor->getWidth();
+        const auto heightBefore = editor->getHeight();
+        const auto oscABefore = oscA->getBoundsInParent();
+        const auto fxTabsBefore = fxTabs->getBoundsInParent();
+        expect (! browser->isVisible() || browser->getBounds().isEmpty()
+                    || browser->getBounds().getX() < 0
+                    || ! editor->getLocalBounds().intersects (browser->getBounds())
+                    || browser->getBounds().getWidth() == 0,
+                "browser starts closed/offscreen (not intersecting the visible editor)");
+
+        browseButton->triggerClick();
+        pumpFor (200);   // side-by-side mode has no animation, but be generous
+
+        // The added width is drawerWidth*scale (scale is 1.0 at base size).
+        const auto expectedAdded = spa::ui::metrics::presetBrowserWidth;
+        expect (editor->getWidth() == widthBefore + expectedAdded,
+                "editor widened by exactly the drawer's width ("
+                    + juce::String (editor->getWidth()) + " vs expected "
+                    + juce::String (widthBefore + expectedAdded) + ")");
+        expect (editor->getHeight() == heightBefore, "editor height unchanged when the drawer opens");
+
+        expect (browser->isVisible(), "drawer visible once open");
+        const auto drawerBounds = browser->getBounds();
+        expect (drawerBounds.getX() == 0 && drawerBounds.getWidth() == expectedAdded,
+                "drawer occupies the left column at its full configured width");
+        expect (! drawerBounds.intersects (oscA->getBoundsInParent())
+                    && ! drawerBounds.intersects (fxTabs->getBoundsInParent()),
+                "drawer bounds do not intersect module bounds");
+
+        const auto oscAAfter = oscA->getBoundsInParent();
+        const auto fxTabsAfter = fxTabs->getBoundsInParent();
+        expect (oscAAfter.getX() == oscABefore.getX() + expectedAdded
+                    && oscAAfter.getY() == oscABefore.getY()
+                    && oscAAfter.getWidth() == oscABefore.getWidth()
+                    && oscAAfter.getHeight() == oscABefore.getHeight(),
+                "oscA moved right by exactly the drawer width, same size ("
+                    + oscABefore.toString() + " -> " + oscAAfter.toString() + ")");
+        expect (fxTabsAfter.getX() == fxTabsBefore.getX() + expectedAdded
+                    && fxTabsAfter.getY() == fxTabsBefore.getY()
+                    && fxTabsAfter.getWidth() == fxTabsBefore.getWidth()
+                    && fxTabsAfter.getHeight() == fxTabsBefore.getHeight(),
+                "fxTabs moved right by exactly the drawer width, same size ("
+                    + fxTabsBefore.toString() + " -> " + fxTabsAfter.toString() + ")");
+
+        // Aspect-locked manual resize still works with the drawer open: grow
+        // the editor by a scale step. The module grid's layout is computed
+        // once in base (untransformed) units and the whole thing is scaled
+        // uniformly by the shell's AffineTransform, so oscA's raw bounds
+        // must stay EXACTLY where they were (only the on-screen scale
+        // changes) and the aspect ratio (width/height) must be preserved.
+        {
+            const auto openW = editor->getWidth();
+            const auto openH = editor->getHeight();
+            const auto aspectBefore = (double) openW / (double) openH;
+
+            editor->setSize (juce::roundToInt ((float) openW * 1.2f),
+                             juce::roundToInt ((float) openH * 1.2f));
+            pumpFor (50);
+
+            const auto oscAResized = oscA->getBoundsInParent();
+            const auto aspectAfter = (double) editor->getWidth() / (double) editor->getHeight();
+            expect (oscAResized == oscAAfter,
+                    "oscA's raw (pre-transform) bounds are unchanged by a manual resize -- "
+                    "only the shell's uniform scale changes");
+            expect (std::abs (aspectAfter - aspectBefore) < 0.002,
+                    "window aspect ratio still locked after a manual resize with the drawer open");
+
+            // Put it back before closing, so the close-path assertions below
+            // compare against the original opened size.
+            editor->setSize (openW, openH);
+            pumpFor (50);
+        }
+
+        browseButton->triggerClick();
+        pumpFor (200);
+
+        expect (editor->getWidth() == widthBefore, "editor width restored after closing ("
+                    + juce::String (editor->getWidth()) + " vs " + juce::String (widthBefore) + ")");
+        expect (editor->getHeight() == heightBefore, "editor height still unchanged after closing");
+        expect (! browser->isVisible(), "drawer hidden again once closed");
+
+        const auto oscAClosed = oscA->getBoundsInParent();
+        const auto fxTabsClosed = fxTabs->getBoundsInParent();
+        expect (oscAClosed == oscABefore, "oscA back to its original bounds after closing");
+        expect (fxTabsClosed == fxTabsBefore, "fxTabs back to its original bounds after closing");
+
+        editor->removeFromDesktop();
+    }
+
+    // Simulates a host that refuses to actually resize the editor for the
+    // widened drawer (e.g. a fixed-size host view): a holder component pins
+    // the editor back to its old size any time it tries to grow, via
+    // childBoundsChanged. Opening the drawer must detect this (the editor's
+    // width doesn't match what was requested) and fall back to the old
+    // overlay-over-the-grid behaviour, with the drawer still fully visible
+    // and nothing clipped.
+    static void presetBrowserOverlayFallbackTest()
+    {
+        std::cout << "presetBrowserOverlayFallbackTest\n";
+
+        struct RefusingHolder : juce::Component
+        {
+            juce::Rectangle<int> pinnedSize;
+            bool pinning = false;
+
+            void childBoundsChanged (juce::Component* c) override
+            {
+                if (pinning || c == nullptr)
+                    return;
+                if (c->getWidth() != pinnedSize.getWidth() || c->getHeight() != pinnedSize.getHeight())
+                {
+                    pinning = true;
+                    c->setSize (pinnedSize.getWidth(), pinnedSize.getHeight());
+                    pinning = false;
+                }
+            }
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        RefusingHolder holder;
+        holder.pinnedSize = editor->getBounds();
+        holder.setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        holder.addAndMakeVisible (*editor);
+        editor->setBounds (holder.getLocalBounds());
+        holder.pinnedSize = editor->getBounds();
+
+        spa::ui::PresetBrowser* browser = nullptr;
+        juce::TextButton* browseButton = nullptr;
+        spa::ui::ContentComponent* contentComp = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (browser == nullptr)
+                browser = dynamic_cast<spa::ui::PresetBrowser*> (&c);
+            if (contentComp == nullptr)
+                contentComp = dynamic_cast<spa::ui::ContentComponent*> (&c);
+            if (browseButton == nullptr)
+                if (auto* b = dynamic_cast<juce::TextButton*> (&c))
+                    if (b->getTooltip() == "Browse presets")
+                        browseButton = b;
+            for (auto* child : c.getChildren())
+                find (*child);
+        };
+        find (*editor);
+
+        expect (browser != nullptr && browseButton != nullptr, "browser/browse button found");
+        if (browser == nullptr || browseButton == nullptr)
+            return;
+
+        const auto widthBefore = editor->getWidth();
+        browseButton->triggerClick();   // Button::triggerClick() is asynchronous
+        // Poll rather than a fixed pump: this editor has no real desktop
+        // peer (deliberately, to keep the "refusing host" holder in full
+        // control of sizing), and the very first posted async command in
+        // that state can take more than one short dispatch-loop slice to
+        // land -- poll for the actual effect instead of guessing a duration.
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 2000u;
+            while (! contentComp->isBrowserOverlayMode()
+                   && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+
+        expect (editor->getWidth() == widthBefore,
+                "the refusing holder kept the editor at its original width");
+
+        expect (browser->isVisible(), "drawer still ends up visible via the overlay fallback");
+        expect (editor->getLocalBounds().contains (browser->getBounds()),
+                "drawer bounds are entirely inside the editor -- nothing clipped");
+        expect (browser->getBounds().getX() >= 0 && browser->getBounds().getRight() <= editor->getWidth(),
+                "drawer sits within the editor's width in overlay mode");
+
+        // Close it again: overlay mode is sticky, so no further resize
+        // attempts, and the drawer just slides back off (same as pre-1.0.15
+        // behaviour).
+        browseButton->triggerClick();
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 2000u;
+            while (browser->isVisible() && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (20);
+        }
+        expect (editor->getWidth() == widthBefore, "width still unchanged after closing in overlay mode");
+        expect (! browser->getBounds().intersects (editor->getLocalBounds())
+                    || ! browser->isVisible(),
+                "drawer moved fully off/invisible again after closing in overlay mode");
+    }
+
     // Regression for a second restyle bug: TREM/VIB's bottom control row
     // (TREM SHAPE / TREM STEREO / TREM MIX / VIB RATE) had its caption
     // labels rendered half-clipped at the base window size. Root cause:
@@ -5676,6 +5961,8 @@ int main (int argc, char* argv[])
     voicePanelCallOutFocusTest();
     voicePanelEditorCloseTest();
     tabLayoutInvarianceTest();
+    presetBrowserWidensWindowTest();
+    presetBrowserOverlayFallbackTest();
     fxPanelLabelClippingTest();
     chaosDisplayPaintTest();
     fxTabEngagedBoldTest();

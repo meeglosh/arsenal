@@ -39,7 +39,21 @@ public:
     // Base height grows by the keyboard strip when it is shown; the editor
     // shell reads this to drive the window aspect ratio and scale.
     int getContentBaseHeight() const;
+    // Base width grows by the preset drawer's column when it is open AND the
+    // host let us actually widen the window (see browserOverlays below); the
+    // editor shell reads this the same way it reads getContentBaseHeight().
+    int getContentBaseWidth() const;
     std::function<void()> onKeyboardToggled;   // shell re-sizes when this fires
+    std::function<void()> onBrowserToggled;    // shell re-sizes (width) when this fires
+
+    // The shell calls this if it asked the host to widen the window for a
+    // newly opened drawer and the host didn't actually honor it (fixed-size
+    // host view): switches to the old overlay-over-the-grid behaviour and
+    // shrinks our own base size back down to match (see resized()).
+    // Sticky for the life of this editor -- once a host has shown it can't
+    // resize us, later opens don't try again.
+    void setBrowserOverlayMode (bool shouldOverlay);
+    bool isBrowserOverlayMode() const { return browserOverlays; }
 
 private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
@@ -136,9 +150,14 @@ private:
     MatrixPanel matrixPanel;
     OutputMeter outputMeter;
 
-    // Preset drawer: slides over the left side of the module grid.
+    // Preset drawer: normally widens the window and sits in a left column of
+    // its own, beside (never over) the module grid -- see
+    // getContentBaseWidth()/resized(). Falls back to the old overlay-over-
+    // the-grid behaviour (browserOverlays) if a host refuses to actually
+    // resize the editor for it.
     std::unique_ptr<PresetBrowser> presetBrowser;
     bool presetBrowserOpen = false;
+    bool browserOverlays = false;
 
     std::unique_ptr<juce::FileChooser> fileChooser;
 
@@ -158,6 +177,9 @@ private:
                                                       // row's own recessed-band rule can sit flush against
                                                       // it with no extra shadow doubling up nearby
     juce::Image noiseTexture;                        // cached fine-grain texture tile (seeded once)
+    int moduleOriginX = 0;                           // left edge of the module area in resized()/
+                                                      // paint() -- 0 normally, presetBrowserWidth
+                                                      // when the drawer occupies its own column
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ContentComponent)
 };
@@ -180,6 +202,7 @@ private:
     void applyTheme();
     void configureConstrainer();   // aspect + size limits from content base size
     void keyboardToggled();        // resize the shell when the keyboard strip toggles
+    void browserToggled();         // resize (width) the shell when the drawer toggles
 
     SPASynthProcessor& arsenalProcessor;
     ui::SPASynthLookAndFeel lookAndFeel;

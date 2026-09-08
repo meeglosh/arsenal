@@ -82,6 +82,10 @@ namespace metrics
     inline constexpr int lockRowHeight = 26;
     inline constexpr int footerHeight = 24;
     inline constexpr int keyboardStripHeight = 96;   // on-screen keyboard when shown
+    inline constexpr int presetBrowserWidth = 320;   // drawer column width; widens the
+                                                      // window by this amount when open
+                                                      // (rather than overlaying) -- see
+                                                      // ContentComponent::getContentBaseWidth
     inline constexpr int unit = 8;
     inline constexpr float cornerRadius = 7.0f;  // softer, elevated panels
 

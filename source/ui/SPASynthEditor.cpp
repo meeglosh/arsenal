@@ -1033,6 +1033,25 @@ int ContentComponent::getContentBaseHeight() const
          + (keyboardVisible ? metrics::keyboardStripHeight : 0);
 }
 
+int ContentComponent::getContentBaseWidth() const
+{
+    return metrics::baseWidth
+         + ((presetBrowserOpen && ! browserOverlays) ? metrics::presetBrowserWidth : 0);
+}
+
+void ContentComponent::setBrowserOverlayMode (bool shouldOverlay)
+{
+    if (browserOverlays == shouldOverlay)
+        return;
+
+    browserOverlays = shouldOverlay;
+    // Re-derive our own base size for the new mode (overlay mode adds
+    // nothing to it -- the drawer just slides over the grid) and re-layout;
+    // NOT onBrowserToggled -- that would ask the shell to resize the host
+    // window again, which is exactly what just failed.
+    setSize (getContentBaseWidth(), getContentBaseHeight());
+}
+
 void ContentComponent::mouseDown (const juce::MouseEvent& e)
 {
     if (! e.mods.isPopupMenu())
@@ -1150,8 +1169,13 @@ void ContentComponent::paint (juce::Graphics& g)
         g.fillRect (getLocalBounds());
     }
 
+    // Everything below shares the same module-area offset as resized() (see
+    // moduleOriginX there) -- the whole synth chrome, not just the grid,
+    // shifts right into the space the drawer's column takes on the left.
+    auto moduleArea = getLocalBounds().withTrimmedLeft (moduleOriginX);
+
     // Brand band: the big tracked wordmark, centred (per the redesign mock).
-    auto band = getLocalBounds().removeFromTop (metrics::brandBandHeight);
+    auto band = moduleArea.removeFromTop (metrics::brandBandHeight);
     g.setColour (t.header.darker (0.25f));
     g.fillRect (band);
     // Tracked text carries trailing kern space, so plain centred drawText
@@ -1184,9 +1208,8 @@ void ContentComponent::paint (juce::Graphics& g)
     drawTrackedCentred (metrics::brandSubFont(), "SILVERPLATTER AUDIO",
                         band.withTrimmedTop (21), juce::Colour (0xff7f8d97));
 
-    // Header strip.
-    auto header = getLocalBounds().withTrimmedTop (metrics::brandBandHeight)
-                      .removeFromTop (metrics::headerHeight);
+    // Header strip. (moduleArea already lost the brand band above.)
+    auto header = moduleArea.removeFromTop (metrics::headerHeight);
     g.setColour (t.header);
     g.fillRect (header);
 
@@ -1195,7 +1218,8 @@ void ContentComponent::paint (juce::Graphics& g)
                               juce::RectanglePlacement::centred, 1.0f);
 
     // Footer strip.
-    auto footer = getLocalBounds().removeFromBottom (metrics::footerHeight);
+    auto footer = juce::Rectangle<int> (moduleOriginX, getHeight() - metrics::footerHeight,
+                                        getWidth() - moduleOriginX, metrics::footerHeight);
     g.setColour (t.header);
     g.fillRect (footer);
     g.setColour (t.textSecondary);
@@ -1212,10 +1236,9 @@ void ContentComponent::paint (juce::Graphics& g)
     g.setFont (metrics::labelFont());
     g.drawText ("SPASynth", footer, juce::Justification::centred);
 
-    // Caption for the randomizer lock strip.
-    auto lockCaption = getLocalBounds()
-                           .withTrimmedTop (metrics::brandBandHeight + metrics::headerHeight)
-                           .removeFromTop (metrics::lockRowHeight)
+    // Caption for the randomizer lock strip. (moduleArea already lost the
+    // brand band + header above.)
+    auto lockCaption = moduleArea.removeFromTop (metrics::lockRowHeight)
                            .reduced (metrics::unit, 0).removeFromLeft (44);
     g.setColour (t.textSecondary);
     g.setFont (metrics::smallFont());
@@ -1250,17 +1273,18 @@ void ContentComponent::paint (juce::Graphics& g)
     // once the module grid's own top margin is applied), so the loop below
     // still skips index 0 to avoid a second, offset shadow a few pixels away.
     {
-        const float w = (float) getWidth();
+        const float x = (float) moduleOriginX;
+        const float w = (float) (getWidth() - moduleOriginX);
         const float edgeY = (float) topNavRuleY;
 
         g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
-        g.fillRect (juce::Rectangle<float> (0.0f, edgeY, w, 1.0f));
+        g.fillRect (juce::Rectangle<float> (x, edgeY, w, 1.0f));
 
         const float gradTop = edgeY + 1.0f;
-        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
-                                                       { 0.0f, gradTop + shadowSoftLength },
+        g.setGradientFill (draw::easedShadowGradient ({ x, gradTop },
+                                                       { x, gradTop + shadowSoftLength },
                                                        shadowStartAlpha));
-        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+        g.fillRect (juce::Rectangle<float> (x, gradTop, w, shadowSoftLength));
     }
 
     for (size_t i = 0; i < rowShadowYs.size(); ++i)
@@ -1272,10 +1296,11 @@ void ContentComponent::paint (juce::Graphics& g)
             continue;
         const auto rowY = rowShadowYs[i];
         if (rowY <= 0) continue;
-        const auto w = (float) getWidth();
+        const float x = (float) moduleOriginX;
+        const float w = (float) (getWidth() - moduleOriginX);
 
         g.setColour (juce::Colours::black.withAlpha (edgeLineAlpha));
-        g.fillRect (juce::Rectangle<float> (0.0f, (float) rowY, w, 1.0f));
+        g.fillRect (juce::Rectangle<float> (x, (float) rowY, w, 1.0f));
 
         const float gradTop = (float) rowY + 1.0f;
         // Eased falloff (concave -- steep near the edge, long soft tail) rather
@@ -1283,10 +1308,10 @@ void ContentComponent::paint (juce::Graphics& g)
         // Same recipe as the tab-strip recess (SPASynthLookAndFeel::
         // drawTabAreaBehindFrontButton) via draw::easedShadowGradient, so the
         // two shadow languages can't drift apart.
-        g.setGradientFill (draw::easedShadowGradient ({ 0.0f, gradTop },
-                                                       { 0.0f, gradTop + shadowSoftLength },
+        g.setGradientFill (draw::easedShadowGradient ({ x, gradTop },
+                                                       { x, gradTop + shadowSoftLength },
                                                        shadowStartAlpha));
-        g.fillRect (juce::Rectangle<float> (0.0f, gradTop, w, shadowSoftLength));
+        g.fillRect (juce::Rectangle<float> (x, gradTop, w, shadowSoftLength));
         // (A faint top-light on the plate below was tried here and dropped --
         // at a restrained alpha it was imperceptible even under 4x contrast
         // boost, so it was decoration rather than a real 3D cue.)
@@ -1311,7 +1336,16 @@ void ContentComponent::paint (juce::Graphics& g)
 
 void ContentComponent::resized()
 {
-    auto bounds = getLocalBounds();
+    // Side-by-side mode (not browserOverlays): the drawer owns a column of
+    // its own on the left, and the ENTIRE rest of the module layout below
+    // (header/lock strip/module grid/footer/keyboard strip) is offset right
+    // by its width via this one trim -- every existing rect in this function
+    // is derived from `bounds`, so the layout math itself is unchanged, it
+    // just starts further right. Overlay mode keeps moduleOriginX at 0 (the
+    // drawer floats over the grid instead, as before).
+    moduleOriginX = (presetBrowserOpen && ! browserOverlays) ? metrics::presetBrowserWidth : 0;
+
+    auto bounds = getLocalBounds().withTrimmedLeft (moduleOriginX);
     auto brandBand = bounds.removeFromTop (metrics::brandBandHeight);
     if (tempoBar != nullptr)   // standalone tempo bar, top-left of the brand band
         tempoBar->setBounds (brandBand.removeFromLeft (188).reduced (8, 5));
@@ -1434,16 +1468,34 @@ void ContentComponent::resized()
     // regardless of keyboard-strip visibility.
     rowShadowYs[3] = getHeight() - metrics::footerHeight;
 
-    // --- Preset drawer (overlay, left) ----------------------------------------
-    const auto drawerArea = getLocalBounds()
-                                .withTrimmedTop (metrics::brandBandHeight + metrics::headerHeight)
-                                .withTrimmedBottom (metrics::footerHeight
-                                    + (keyboardVisible ? metrics::keyboardStripHeight : 0))
-                                .removeFromLeft (320);
-    presetBrowser->setOpenBounds (drawerArea);
-    presetBrowser->setBounds (presetBrowserOpen
-                                  ? drawerArea
-                                  : drawerArea.translated (-drawerArea.getWidth() - 12, 0));
+    // --- Preset drawer ----------------------------------------------------
+    if (browserOverlays)
+    {
+        // Fallback (today's original behaviour, used when a host wouldn't
+        // actually widen the window for us): the drawer slides over the left
+        // side of the module grid, which stays put.
+        const auto drawerArea = getLocalBounds()
+                                    .withTrimmedTop (metrics::brandBandHeight + metrics::headerHeight)
+                                    .withTrimmedBottom (metrics::footerHeight
+                                        + (keyboardVisible ? metrics::keyboardStripHeight : 0))
+                                    .removeFromLeft (metrics::presetBrowserWidth);
+        presetBrowser->setOpenBounds (drawerArea);
+        presetBrowser->setBounds (presetBrowserOpen
+                                      ? drawerArea
+                                      : drawerArea.translated (-drawerArea.getWidth() - 12, 0));
+    }
+    else
+    {
+        // Side-by-side mode: our own base width already includes this column
+        // (getContentBaseWidth()) only while open, and the rest of the
+        // layout above is offset out of it (moduleOriginX) -- so the drawer
+        // just owns the full-height left column outright, visible only while
+        // open (there's nothing to slide off-screen to when closed: the
+        // window itself has shrunk back by then).
+        const auto drawerArea = getLocalBounds().removeFromLeft (metrics::presetBrowserWidth);
+        presetBrowser->setOpenBounds (drawerArea);
+        presetBrowser->setBounds (drawerArea);
+    }
 }
 
 // Parent for pop-over call-outs: the editor shell (SPASynthEditor), which
@@ -1525,7 +1577,7 @@ void ContentComponent::setKeyboardVisible (bool shouldShow)
 
     // Grow/shrink our base height; this re-lays-out our children (below), then
     // the shell resizes the window to the new aspect ratio.
-    setSize (metrics::baseWidth, getContentBaseHeight());
+    setSize (getContentBaseWidth(), getContentBaseHeight());
     if (onKeyboardToggled)
         onKeyboardToggled();
     if (keyboardVisible)
@@ -1536,14 +1588,40 @@ void ContentComponent::togglePresetBrowser()
 {
     presetBrowserOpen = ! presetBrowserOpen;
 
-    const auto open = presetBrowser->getOpenBounds();
-    const auto closed = open.translated (-open.getWidth() - 12, 0);
+    if (! browserOverlays)
+    {
+        // Side-by-side mode: widen/narrow our own base size (re-lays-out
+        // resized() above with the module grid offset into/out of the
+        // drawer column), then ask the shell to resize the actual host
+        // window to match. The shell may discover the host won't honor that
+        // and call setBrowserOverlayMode(true) from inside onBrowserToggled
+        // -- re-check browserOverlays below rather than caching it, since it
+        // can change synchronously within this call.
+        setSize (getContentBaseWidth(), getContentBaseHeight());
+        if (onBrowserToggled)
+            onBrowserToggled();
+    }
 
-    presetBrowser->setVisible (true);
-    presetBrowser->toFront (false);
-    juce::Desktop::getInstance().getAnimator().animateComponent (
-        presetBrowser.get(), presetBrowserOpen ? open : closed,
-        1.0f, 170, false, 1.0, 0.7);
+    if (browserOverlays)
+    {
+        // Overlay fallback: the drawer slides over the grid, which stays put.
+        const auto open = presetBrowser->getOpenBounds();
+        const auto closed = open.translated (-open.getWidth() - 12, 0);
+
+        presetBrowser->setVisible (true);
+        presetBrowser->toFront (false);
+        juce::Desktop::getInstance().getAnimator().animateComponent (
+            presetBrowser.get(), presetBrowserOpen ? open : closed,
+            1.0f, 170, false, 1.0, 0.7);
+    }
+    else
+    {
+        // Side-by-side mode: the column just appeared/disappeared with the
+        // resize above and resized() already placed it correctly -- no
+        // animation, no per-frame host resizes.
+        presetBrowser->setVisible (presetBrowserOpen);
+        presetBrowser->toFront (false);
+    }
 
     if (presetBrowserOpen)
     {
@@ -1707,10 +1785,13 @@ SPASynthEditor::SPASynthEditor (SPASynthProcessor& p)
 
     content = std::make_unique<ui::ContentComponent> (p, [this] { applyTheme(); });
     content->onKeyboardToggled = [this] { keyboardToggled(); };
+    content->onBrowserToggled = [this] { browserToggled(); };
     addAndMakeVisible (*content);
 
-    constexpr auto baseW = ui::metrics::baseWidth;
-    // Base height includes the keyboard strip if it was left open last session.
+    // Base width grows if the preset drawer is open (side-by-side mode only
+    // -- never true at construction, the drawer always starts closed); base
+    // height includes the keyboard strip if it was left open last session.
+    const auto baseW = content->getContentBaseWidth();
     const auto baseH = content->getContentBaseHeight();
 
     // content's real (base/untransformed) size is set HERE, after it's been
@@ -1792,7 +1873,7 @@ void SPASynthEditor::configureConstrainer()
 {
     if (auto* constrainer = getConstrainer())
     {
-        constexpr auto baseW = ui::metrics::baseWidth;
+        const auto baseW = content->getContentBaseWidth();
         const auto baseH = content->getContentBaseHeight();
         constrainer->setFixedAspectRatio ((double) baseW / baseH);
         constrainer->setSizeLimits (baseW * 40 / 100, baseH * 40 / 100,
@@ -1805,9 +1886,60 @@ void SPASynthEditor::configureConstrainer()
 void SPASynthEditor::keyboardToggled()
 {
     configureConstrainer();
-    constexpr auto baseW = ui::metrics::baseWidth;
+    const auto baseW = content->getContentBaseWidth();
     const auto baseH = content->getContentBaseHeight();
     setSize (getWidth(), juce::roundToInt ((float) getWidth() * (float) baseH / (float) baseW));
+}
+
+// Preset drawer opened/closed: re-fix the aspect from the new base width and
+// ask the host to resize the window so the synth part keeps its on-screen
+// size (window grows/shrinks by drawerWidth*scale). If the host doesn't
+// actually honor that width, fall back to the drawer overlaying the grid
+// instead (content shrinks back to its un-widened base size) and settle the
+// window there -- see ContentComponent::setBrowserOverlayMode.
+void SPASynthEditor::browserToggled()
+{
+    configureConstrainer();
+
+    // Derived from height, which the drawer never changes, so it stays
+    // correct through the whole open/close round trip regardless of mode.
+    const auto baseH = content->getContentBaseHeight();
+    const auto scale = baseH > 0 ? (double) getHeight() / (double) baseH : 1.0;
+    const auto widthBefore = getWidth();
+
+    const auto requestedW = juce::roundToInt ((double) content->getContentBaseWidth() * scale);
+    setSize (requestedW, getHeight());
+
+    if (! content->isBrowserOverlayMode() && getWidth() != requestedW)
+    {
+        // Host refused the resize (e.g. a fixed-size host view).
+        content->setBrowserOverlayMode (true);
+        configureConstrainer();
+        const auto fallbackW = juce::roundToInt ((double) content->getContentBaseWidth() * scale);
+        setSize (fallbackW, getHeight());
+    }
+    else if (arsenalProcessor.wrapperType == juce::AudioProcessor::wrapperType_Standalone)
+    {
+        // The resize above just widened/narrowed the editor view in place
+        // (grows to the right, like a plugin). In the standalone we OWN the
+        // top-level window, so slide it left/right by the same amount to
+        // make it read as growing leftward instead -- never done in a
+        // plugin host, which owns window position.
+        const auto addedWidth = getWidth() - widthBefore;
+        if (addedWidth != 0)
+        {
+            if (auto* peer = getPeer())
+            {
+                auto windowBounds = peer->getBounds();
+                auto moved = windowBounds.withX (windowBounds.getX() - addedWidth);
+
+                if (auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect (windowBounds))
+                    moved = moved.constrainedWithin (display->userBounds.toNearestInt());
+
+                peer->setBounds (moved, false);
+            }
+        }
+    }
 }
 
 SPASynthEditor::~SPASynthEditor()
@@ -1828,7 +1960,7 @@ void SPASynthEditor::resized()
     if (content == nullptr)
         return;
 
-    const auto scale = (float) getWidth() / (float) ui::metrics::baseWidth;
+    const auto scale = (float) getWidth() / (float) content->getContentBaseWidth();
     content->setTransform (juce::AffineTransform::scale (scale));
     content->setTopLeftPosition (0, 0);
 

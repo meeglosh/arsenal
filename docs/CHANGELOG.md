@@ -22,6 +22,13 @@ A small visibility improvement requested by our testers.
   alike browsing through the preset list. Existing factory presets are
   refreshed automatically the next time your library is scanned; your own
   saved presets are untouched.
+- The preset browser no longer covers the synth. Opening it now widens the
+  window and places the browser beside the instrument instead of over it,
+  and closing it restores the original window width. In the standalone the
+  window grows to the left; in a plugin it grows to the right, because the
+  host owns the window's position there. Hosts that cannot resize the
+  window fall back to the previous behavior, with the browser overlaying
+  the instrument.
 
 **Notes for this build**
 
