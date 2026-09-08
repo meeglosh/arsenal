@@ -1866,6 +1866,95 @@ namespace
                 "limiter is always on after a re-roll (safety ceiling)");
     }
 
+    // Regression test for the v1.0.15 "RANDOMIZE ALL must never land on a
+    // silent patch" requirement. Grew out of a throwaway 500-2000 seed sweep
+    // that dumped every silent seed's parameters; that investigation traced
+    // the causes (see the "Audibility floor" comment in
+    // SPASynthProcessor::randomizeAll) to slow amp attack, mod-matrix routes
+    // hard-muting a level/cutoff/sustain destination, an arp step chance
+    // that can roll to 0, an arp division slow enough to leave a gap wider
+    // than the hold, and a bandpass/lowpass filter cutoff far enough from
+    // the note to remove it entirely. Before the fix this found ~32/500
+    // (6.4%) silent seeds at max wildness; this test asserts zero.
+    //
+    // The arp division floor only bans bar-length steps (1-8 bars), so a
+    // legitimate 1/4-note arp (the slowest now allowed) at 120bpm fires only
+    // ~3 steps in 1.5s -- too short a hold to fairly judge "did the chance
+    // floor make this audible". The hold is widened to 3.0s (skip the first
+    // 1.0s instead of judging from note-on) so a 1/4 arp gets ~8 steps, and
+    // the RMS window covers the last 2.0s instead of 1.0s.
+    static void randomizeNeverSilentTest()
+    {
+        std::cout << "randomizeNeverSilentTest\n";
+        namespace params = spa::params;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+        constexpr float silentPeakThreshold = 1.0e-3f;
+        constexpr float silentRmsThreshold = 1.0e-4f;
+
+        const auto runSweep = [&] (float wildness, int seeds)
+        {
+            int silent = 0;
+            for (int seed = 0; seed < seeds; ++seed)
+            {
+                spa::SPASynthProcessor proc;
+                proc.prepareToPlay (sampleRate, blockSize);
+                proc.setRandomWildness (wildness);
+                // randomizeAll draws from the system RNG (see Randomizer.cpp),
+                // so seed it directly for a reproducible per-iteration roll.
+                juce::Random::getSystemRandom() = juce::Random ((juce::int64) seed * 7919 + 13);
+
+                proc.randomizeAll();
+
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                juce::MidiBuffer midi;
+                midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+
+                // 3.0s hold: skip the first 1.0s (attack + time for a 1/4
+                // note arp to get going) before judging RMS over the rest.
+                float peak = 0.0f, sumSqLast = 0.0f;
+                int samplesLast = 0;
+                constexpr int totalBlocks = 282;   // ~3.0s @ 48kHz/512
+                constexpr int skipBlocks = 94;      // ~1.0s
+                for (int b = 0; b < totalBlocks; ++b)
+                {
+                    proc.processBlock (buffer, midi);
+                    midi.clear();
+                    peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+                    if (b >= skipBlocks)
+                    {
+                        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                        {
+                            const auto* d = buffer.getReadPointer (ch);
+                            for (int i = 0; i < buffer.getNumSamples(); ++i)
+                                sumSqLast += d[i] * d[i];
+                        }
+                        samplesLast += buffer.getNumSamples() * buffer.getNumChannels();
+                    }
+                }
+                const auto rmsLast = samplesLast > 0 ? std::sqrt (sumSqLast / (float) samplesLast) : 0.0f;
+
+                if (peak < silentPeakThreshold || rmsLast < silentRmsThreshold)
+                    ++silent;
+            }
+            return silent;
+        };
+
+        // The hold was widened from 1.5s to 3.0s (see comment above) to give
+        // a legitimate 1/4-note arp enough steps to prove itself, which
+        // roughly doubles this test's runtime; seed counts trimmed from
+        // 200+100 to 150+75 to keep it well under ~40s.
+        const auto silentDefault = runSweep (0.5f, 150);
+        const auto silentMax = runSweep (1.0f, 75);
+
+        expect (silentDefault == 0, "no silent patches over 150 seeds at default wildness ("
+                                     + juce::String (silentDefault) + "/150 silent)");
+        expect (silentMax == 0, "no silent patches over 75 seeds at max wildness ("
+                                 + juce::String (silentMax) + "/75 silent)");
+    }
+
+
     // Builds a throwaway library: two packs with tiny WAVs.
     static juce::File makeFakeLibrary()
     {
@@ -5111,6 +5200,7 @@ int main (int argc, char* argv[])
     randomizerTest();
     randomizerProducesSoundTest();
     randomizeLoudnessGuardTest();
+    randomizeNeverSilentTest();
     editorHitTestProbe();
     midiLearnTest();
     arpeggiatorTest();

@@ -526,6 +526,42 @@ void SPASynthProcessor::randomizeAll()
             if (auto* param = apvts.getParameter (params::id::filter2Cutoff))
                 param->setValueNotifyingHost (
                     param->convertTo0to1 (150.0f + rng.nextFloat() * 850.0f));
+
+        // Bandpass centred far from a played note's fundamental/harmonics
+        // silences it just as completely as an over-eager HP/notch -- traced
+        // two "genuinely zero forever" sweep seeds (filter type BP12/BP24,
+        // cutoff ~4.5-12.9 kHz) all the way to SPASynthVoice's oscillator sum
+        // itself measuring 0 at the sample level once that filter's mix blend
+        // was engaged. Reusing this pass's existing HP/notch case, so this
+        // was a missing bandpass case, not a new mechanism. A wide clamp
+        // (100 Hz-3 kHz) keeps plenty of filter character while guaranteeing
+        // the band overlaps a mid-range note's fundamental and early
+        // harmonics.
+        const bool bandpass1 = type == params::FilterType::bp12 || type == params::FilterType::bp24;
+        if (bandpass1 && (cutoff < 100.0f || cutoff > 3000.0f))
+            if (auto* param = apvts.getParameter (params::id::filter1Cutoff))
+                param->setValueNotifyingHost (
+                    param->convertTo0to1 (100.0f + rng.nextFloat() * 2900.0f));
+
+        const bool bandpass2 = f2Type == params::FilterType::bp12 || f2Type == params::FilterType::bp24;
+        if (f2Enabled && bandpass2 && (f2Cutoff < 100.0f || f2Cutoff > 3000.0f))
+            if (auto* param = apvts.getParameter (params::id::filter2Cutoff))
+                param->setValueNotifyingHost (
+                    param->convertTo0to1 (100.0f + rng.nextFloat() * 2900.0f));
+
+        // Low-pass cut low enough to remove even the note's fundamental is
+        // the mirror image of the HP/notch case above.
+        const bool lowpass1 = type == params::FilterType::lp12 || type == params::FilterType::lp24;
+        if (lowpass1 && cutoff < 150.0f)
+            if (auto* param = apvts.getParameter (params::id::filter1Cutoff))
+                param->setValueNotifyingHost (
+                    param->convertTo0to1 (150.0f + rng.nextFloat() * 850.0f));
+
+        const bool lowpass2 = f2Type == params::FilterType::lp12 || f2Type == params::FilterType::lp24;
+        if (f2Enabled && lowpass2 && f2Cutoff < 150.0f)
+            if (auto* param = apvts.getParameter (params::id::filter2Cutoff))
+                param->setValueNotifyingHost (
+                    param->convertTo0to1 (150.0f + rng.nextFloat() * 850.0f));
     }
 
     // Individual oscillator-level rolls are each bounded, but combinations
@@ -609,6 +645,144 @@ void SPASynthProcessor::randomizeAll()
         resetToDefault (fx::limTruePeak);
         resetToDefault (fx::limLookahead);
         resetToDefault (fx::limAutoGain);
+    }
+
+    // --- Audibility floor -----------------------------------------------------
+    // Empirically found via a throwaway multi-thousand-seed sweep (see
+    // randomizeNeverSilentTest's history/comment in SPASynthTests.cpp, seeds
+    // e.g. 49/405/427 at max wildness) that RANDOMIZE ALL could land on a
+    // patch that makes NO sound at all when a note is held, from three
+    // independent causes:
+    //
+    //  1. Amp envelope attack rolled long enough (spec allows up to 10s) that
+    //     a short test/user check window sees nothing yet -- not permanently
+    //     silent, just too slow to ever feel like "hitting play worked".
+    //  2. The mod matrix (rolled at the same time, unless locked) can route a
+    //     mostly-static source (velocity, aftertouch, a macro) at a strongly
+    //     negative depth onto an oscillator's level (or the amp sustain, or a
+    //     filter cutoff), pushing the *effective* normalized value to 0
+    //     regardless of the oscillator's own rolled level -- a single route
+    //     can hard-mute a slot outright, and independent routes doing this to
+    //     every enabled slot silences the whole patch, indefinitely (not just
+    //     during the attack).
+    //  3. THE DOMINANT CAUSE, found by tracing seeds 49/405/427 all the way
+    //     to SPASynthVoice::renderNextBlock (ampEnv genuinely active with a
+    //     correct non-zero gain, yet the processor's output stayed at exact
+    //     0 for seconds): the arpeggiator. It randomizes independently of the
+    //     oscillator/filter/matrix rolls above (its own lock group), and a
+    //     held note only ever sounds via the arp's note stream once it is
+    //     enabled. `arp.chance` (the per-step "does this step fire" trig
+    //     condition) can roll all the way to 0, silencing every step
+    //     forever, and `arp.division` can roll as slow as 8 bars/step, so
+    //     even at chance=1 a short test/user hold can easily fall entirely
+    //     within one silent gap between two steps. Neither is a bug in
+    //     isolation (probability-gated steps and slow arps are legitimate
+    //     creative choices) but the combination reproduces exactly the "hit
+    //     RANDOMIZE ALL, play a note, hear nothing" complaint.
+    //
+    // All three are fixed here as minimal clamps on the specific values found
+    // to cause it, gated by the same lock groups as everything else above so
+    // a locked section's rolled values are never second-guessed.
+    if (oscsUnlocked)
+    {
+        // Cause 1: an attack this long (spec max is 10s) means a listener
+        // checking "did that make a sound" within any reasonable window hears
+        // nothing, even though the patch isn't truly silent. Clamp instead of
+        // re-rolling so the rest of the envelope's character survives.
+        constexpr float maxAudibleAttackSeconds = 2.5f;
+        if (auto* param = apvts.getParameter (params::id::ampAttack))
+        {
+            const auto attack = param->convertFrom0to1 (param->getValue());
+            if (attack > maxAudibleAttackSeconds)
+                param->setValueNotifyingHost (param->convertTo0to1 (maxAudibleAttackSeconds));
+        }
+    }
+
+    const bool matrixUnlocked = (lockedMask & (1u << (int) params::LockGroup::matrix)) == 0;
+    if (matrixUnlocked)
+    {
+        // Cause 2: cap how hard any single route can push a level-ish
+        // destination toward its floor. 0.5 leaves a route's duck/swell
+        // clearly audible (matrix modulation is supposed to move things) but
+        // means a static-ish source at its extreme can no longer, by itself,
+        // walk the destination's effective normalized value all the way to
+        // 0 -- observed at |depth| approaching 1.0 with the destination
+        // already sitting low from its own roll.
+        constexpr float maxRiskyRouteDepth = 0.5f;
+
+        juce::Array<int> riskyDests;
+        for (int s = 0; s < params::numOscSlots; ++s)
+        {
+            if (realValue (params::id::oscSlot (s, params::id::osc::enable)) >= 0.5f)
+            {
+                const auto idx = params::modDestIndex (params::id::oscSlot (s, params::id::osc::level));
+                if (idx >= 0)
+                    riskyDests.add (idx);
+            }
+        }
+        if (const auto idx = params::modDestIndex (params::id::ampSustain); idx >= 0)
+            riskyDests.add (idx);
+        if (realValue (params::id::filter1Enable) >= 0.5f)
+            if (const auto idx = params::modDestIndex (params::id::filter1Cutoff); idx >= 0)
+                riskyDests.add (idx);
+        if (realValue (params::id::filter2Enable) >= 0.5f)
+            if (const auto idx = params::modDestIndex (params::id::filter2Cutoff); idx >= 0)
+                riskyDests.add (idx);
+
+        for (int r = 0; r < params::numModRoutes; ++r)
+        {
+            const auto destId = params::id::routeParam (r, params::id::route::dest);
+            const auto destChoice = (int) realValue (destId); // 0 = None
+            if (destChoice <= 0)
+                continue;
+            if (! riskyDests.contains (destChoice - 1))
+                continue;
+
+            const auto depthId = params::id::routeParam (r, params::id::route::depth);
+            const auto depth = realValue (depthId);
+            if (std::abs (depth) > maxRiskyRouteDepth)
+            {
+                const auto clamped = (depth < 0.0f ? -1.0f : 1.0f) * maxRiskyRouteDepth;
+                if (auto* param = apvts.getParameter (depthId))
+                    param->setValueNotifyingHost (param->convertTo0to1 (clamped));
+            }
+        }
+    }
+
+    const bool arpUnlocked = (lockedMask & (1u << (int) params::LockGroup::arp)) == 0;
+    if (arpUnlocked && realValue (params::id::arp::enable) >= 0.5f)
+    {
+        // Cause 3a: a step that never fires can silence the arp forever.
+        // 0.6 keeps "some steps rest" as an audible, characterful trig
+        // pattern (the default is 1.0 = always fires) while making a
+        // multi-second dry spell astronomically unlikely once combined with
+        // the division floor below.
+        constexpr float minAudibleArpChance = 0.6f;
+        if (auto* param = apvts.getParameter (params::id::arp::chance))
+        {
+            const auto chance = param->convertFrom0to1 (param->getValue());
+            if (chance < minAudibleArpChance)
+                param->setValueNotifyingHost (param->convertTo0to1 (minAudibleArpChance));
+        }
+
+        // Cause 3b: division choice index into lfoDivisionNames() ("8/1",
+        // "4/1", "2/1", "1/1", "1/2", ... down to "1/32"). The real offenders
+        // were the 1-8 BAR steps (indices 0-3: 8/1, 4/1, 2/1, 1/1 = 32, 16, 8,
+        // 4 beats/step) -- multi-second-or-longer gaps a short hold can fall
+        // entirely within even at chance=1. Flooring at index 6 ("1/4" = 1
+        // beat/step, lfoDivisionBeats) bans only those bar-length steps and
+        // leaves every quarter-note-or-faster arp (the overwhelming majority
+        // of musically useful settings, including 1/4 and 1/8) untouched.
+        // Flooring the index (not the musical rate) guarantees several steps
+        // land inside any reasonable hold, so with the chance floor above the
+        // odds of every one of them resting at once are negligible.
+        constexpr float minAudibleArpDivisionIndex = 6.0f; // "1/4" (1 beat/step)
+        if (auto* param = apvts.getParameter (params::id::arp::division))
+        {
+            const auto division = param->convertFrom0to1 (param->getValue());
+            if (division < minAudibleArpDivisionIndex)
+                param->setValueNotifyingHost (param->convertTo0to1 (minAudibleArpDivisionIndex));
+        }
     }
 
     sendChangeMessage();

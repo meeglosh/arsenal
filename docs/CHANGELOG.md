@@ -14,6 +14,8 @@ A small visibility improvement requested by our testers.
   across in real time, like a seismograph, instead of a static preview curve.
 - Switching LATCH off now stops the arpeggio immediately, unless keys are
   still held, in which case it continues on just those.
+- RANDOMIZE ALL can no longer land on a silent patch. Every roll is checked
+  and gently nudged so a played note always produces sound.
 
 **Notes for this build**
 
