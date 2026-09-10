@@ -40,10 +40,19 @@ public:
         if (mode == params::PhaseMode::free_)
             return;
 
+        // One phase for every unison voice (matching Reset's "all aligned"
+        // behaviour, just at a random rotation instead of a fixed one) --
+        // NOT one independent random draw per sub-oscillator. Independent
+        // draws could land two unison voices at (near) opposite phase; at
+        // zero/near-zero detune (a legitimate, common roll) they then never
+        // beat back out of that alignment, silencing the slot for the life
+        // of the note. Found via a rare, non-reproducible "RANDOMIZE ALL
+        // sometimes silent" report that traced to exactly this.
+        const auto startPhase = mode == params::PhaseMode::random && random != nullptr
+                               ? (double) random->nextFloat()
+                               : (double) phaseParam;
         for (auto& ph : phases)
-            ph = mode == params::PhaseMode::random && random != nullptr
-               ? (double) random->nextFloat()
-               : (double) phaseParam;
+            ph = startPhase;
     }
 
     // Called once per block before getNextSample() calls.

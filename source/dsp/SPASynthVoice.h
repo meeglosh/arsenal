@@ -334,7 +334,9 @@ public:
     // Modulation is evaluated at this granularity within a block.
     static constexpr int chunkSize = 64;
 
-    explicit SPASynthVoice (const SharedState& shared);
+    // voiceIndex seeds `random` deterministically (see the member comment) --
+    // pass a distinct value per voice (e.g. its construction order).
+    explicit SPASynthVoice (const SharedState& shared, int voiceIndex = 0);
 
     bool canPlaySound (juce::SynthesiserSound* sound) override;
     void startNote (int midiNoteNumber, float velocity,
@@ -378,6 +380,15 @@ private:
     juce::ADSR ampEnv, env2, env3;
     std::array<LFO, params::numLFOs> lfos;
     ChaosGenerator chaosGen;
+    // Drives ChaosGenerator's walker targets, PluckString's excitation noise,
+    // and UnisonOscillator's PhaseMode::random rotation. Deterministically
+    // seeded per voice (ctor) rather than juce::Random's default (wall-clock)
+    // construction, so a given (RANDOMIZE ALL seed, note) always renders
+    // identical audio -- found while chasing a rare "RANDOMIZE ALL sometimes
+    // produces near-total silence" report that reproduced with IDENTICAL
+    // rolled parameters but not every run: with the default ctor, this was
+    // genuinely non-reproducible run-to-run. Voices still differ from each
+    // other via the per-voice seed.
     juce::Random random;
 
     int currentNote = -1;

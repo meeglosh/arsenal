@@ -5,6 +5,7 @@
 
 #include "params/ParameterRegistry.h"
 #include "dsp/SPASynthVoice.h"
+#include "dsp/WavetableFactory.h"
 #include "dsp/FXChain.h"
 #include "dsp/Arpeggiator.h"
 #include "dsp/MidiClockSync.h"
@@ -65,6 +66,14 @@ public:
     // thread; ChangeBroadcaster fires when a slot's table changes.
     void loadWavetableFromFile (int slot, const juce::File& file);
     void setFactoryWavetable (int slot);
+    // Installs one of the built-in Table-menu wavetables (see
+    // dsp::WavetableFactory) -- INIT is choice 0 (Basic Shapes), same as
+    // setFactoryWavetable(). Discards any loaded file. Choice 0 is always
+    // instant (built in the ctor); every other choice is built lazily on
+    // first selection, on a background thread (isWavetableLoading() is true
+    // while it builds, exactly like loadWavetableFromFile), then cached for
+    // the processor's lifetime so later selections are instant.
+    void setBuiltInWavetable (int slot, int tableChoice);
     juce::String getWavetableName (int slot) const;
     juce::String getWavetableError (int slot) const;
 
@@ -186,6 +195,11 @@ private:
     // this callback is safely message-thread-only.
     void parameterChanged (const juce::String& parameterID, float newValue) override;
     void ensurePluckAllocatedForSlot (int slot);
+    // Rebuilds a slot's wavetable from its current osc::table choice param --
+    // the parameterChanged() handler for that param, and also reused by
+    // restoreStateTree()'s "no file loaded" fallback since the choice value
+    // is already restored (it's a plain APVTS param) by the time that runs.
+    void applyBuiltInWavetableFromParam (int slot);
 
     juce::AudioProcessorValueTreeState apvts;
 
@@ -253,6 +267,11 @@ private:
         int requestSerial = 0;   // latest-swap-wins, same rationale as SlotSample::requestSerial
     };
     std::shared_ptr<const dsp::Wavetable> factoryTable;
+    // Pre-built Table-menu wavetables, indexed by WavetableTableChoice; built
+    // once at construction (message thread, not the audio thread) since
+    // there are few enough (numWavetableTableChoices) that precomputing all
+    // of them is cheap and keeps table-choice switching allocation-free.
+    std::array<std::shared_ptr<const dsp::Wavetable>, (size_t) dsp::numWavetableTableChoices> builtInTables;
     std::array<SlotTable, params::maxOscSlots> slotTables;
     std::vector<std::shared_ptr<const dsp::Wavetable>> retiredTables;  // message thread
 

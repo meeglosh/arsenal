@@ -113,8 +113,12 @@ namespace
     }
 }
 
-SPASynthVoice::SPASynthVoice (const SharedState& sharedState)
-    : shared (sharedState)
+SPASynthVoice::SPASynthVoice (const SharedState& sharedState, int voiceIndex)
+    : shared (sharedState),
+      // Fixed base XOR'd with the voice index: deterministic per voice
+      // (never wall-clock-seeded, see the member comment on `random`), but
+      // distinct across voices so they don't all draw identical sequences.
+      random ((juce::int64) 0x5350417500000000LL ^ (juce::int64) voiceIndex)
 {
     DestLookup::get();  // resolve indices before the audio thread needs them
 }

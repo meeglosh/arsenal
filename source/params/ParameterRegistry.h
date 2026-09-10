@@ -197,6 +197,7 @@ namespace id
         inline constexpr const char* pan          = "pan";
         inline constexpr const char* phase        = "phase";
         inline constexpr const char* phaseMode    = "phaseMode";
+        inline constexpr const char* table        = "table";     // wavetable-engine built-in Table menu
         inline constexpr const char* unisonCount  = "unisonCount";
         inline constexpr const char* unisonDetune = "unisonDetune";
         inline constexpr const char* unisonBlend  = "unisonBlend";

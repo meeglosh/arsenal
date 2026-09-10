@@ -133,6 +133,7 @@ set(SPASYNTH_SOURCES
     source/library/Library.cpp
     source/library/PresetManager.cpp
     source/dsp/Wavetable.cpp
+    source/dsp/WavetableFactory.cpp
     source/dsp/WavetableLoader.cpp
     source/dsp/SampleLoader.cpp
     source/dsp/FXChain.cpp

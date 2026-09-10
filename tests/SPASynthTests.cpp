@@ -6,6 +6,7 @@
 #include "dsp/FXChain.h"
 #include "dsp/MidiClockSync.h"
 #include "dsp/SamplePlayer.h"
+#include "dsp/WavetableFactory.h"
 #include "dsp/WavetableLoader.h"
 #include "library/Library.h"
 #include "library/PresetManager.h"
@@ -186,6 +187,276 @@ namespace
         }
 
         file.deleteFile();
+    }
+
+    // Every built-in Table-menu wavetable (spa::dsp::WavetableFactory) must
+    // be a well-formed, finite, non-degenerate morphing table, and distinct
+    // in character from every other table.
+    void wavetableFactoryTest()
+    {
+        std::cout << "wavetableFactoryTest\n";
+
+        namespace dsp = spa::dsp;
+
+        // Middle-frame harmonic-magnitude fingerprint (low harmonics carry
+        // the most perceptually relevant character) via a small forward DFT
+        // of the deepest mip level's frame -- cheap and good enough to tell
+        // tables apart.
+        constexpr int numFingerprintBins = 16;
+        const auto fingerprint = [] (const dsp::Wavetable& wt)
+        {
+            const int mid = wt.getNumFrames() / 2;
+            const auto* frame = wt.getFrame (0, mid);
+            std::array<float, numFingerprintBins> mags {};
+            for (int k = 1; k <= numFingerprintBins; ++k)
+            {
+                float re = 0.0f, im = 0.0f;
+                for (int i = 0; i < dsp::Wavetable::tableSize; ++i)
+                {
+                    const auto phase = juce::MathConstants<double>::twoPi * k * i
+                                      / dsp::Wavetable::tableSize;
+                    re += frame[i] * (float) std::cos (phase);
+                    im += frame[i] * (float) std::sin (phase);
+                }
+                mags[(size_t) (k - 1)] = std::sqrt (re * re + im * im);
+            }
+            return mags;
+        };
+
+        std::vector<std::array<float, numFingerprintBins>> fingerprints;
+        std::vector<juce::String> names;
+
+        for (int choice = 0; choice < dsp::numWavetableTableChoices; ++choice)
+        {
+            const auto wt = dsp::WavetableFactory::build (choice);
+            const auto name = dsp::wavetableTableChoiceNames()[choice];
+            std::cout << "  " << name << "\n";
+
+            // Basic Shapes (choice 0) predates this feature and is the
+            // existing 4-frame sine/tri/saw/square morph -- only the newly
+            // generated tables are held to the 32-64 frame requirement.
+            const auto numFrames = wt.getNumFrames();
+            if (choice != (int) dsp::WavetableTableChoice::basicShapes)
+                expect (numFrames >= 32 && numFrames <= 64,
+                        name + ": frame count in [32,64] (" + juce::String (numFrames) + ")");
+
+            // Aggregate every frame/sample check across the whole table into
+            // a handful of expects (min/max/all-finite across all frames)
+            // rather than one per sample -- same coverage, far fewer
+            // assertions logged.
+            bool allFinite = true;
+            float worstPeak = 0.0f, minRms = std::numeric_limits<float>::infinity();
+            for (int f = 0; f < numFrames; ++f)
+            {
+                const auto* frame = wt.getFrame (0, f);
+                float peak = 0.0f, sumSq = 0.0f;
+                for (int i = 0; i < dsp::Wavetable::tableSize; ++i)
+                {
+                    const auto s = frame[i];
+                    if (! std::isfinite (s))
+                        allFinite = false;
+                    peak = juce::jmax (peak, std::abs (s));
+                    sumSq += s * s;
+                }
+                const auto rms = std::sqrt (sumSq / (float) dsp::Wavetable::tableSize);
+                worstPeak = juce::jmax (worstPeak, peak);
+                minRms = juce::jmin (minRms, rms);
+            }
+            expect (allFinite, name + ": every frame/sample finite");
+            expect (worstPeak <= 1.0f + 1.0e-4f,
+                    name + ": worst-case frame peak <= 1.0 (" + juce::String (worstPeak) + ")");
+            expect (minRms > 0.05f,
+                    name + ": weakest frame RMS > 0.05 (" + juce::String (minRms) + ")");
+
+            float maxAbsFirstLast = 0.0f;
+
+            const auto* first = wt.getFrame (0, 0);
+            const auto* last = wt.getFrame (0, numFrames - 1);
+            for (int i = 0; i < dsp::Wavetable::tableSize; ++i)
+                maxAbsFirstLast = juce::jmax (maxAbsFirstLast, std::abs (first[i] - last[i]));
+            expect (maxAbsFirstLast > 0.1f,
+                    name + ": first vs last frame differ (position morphs), diff="
+                        + juce::String (maxAbsFirstLast));
+
+            fingerprints.push_back (fingerprint (wt));
+            names.push_back (name);
+        }
+
+        // Basic Shapes is excluded from the pairwise distinctness check: its
+        // saw morph frame is legitimately close, spectrally, to Supersaw's
+        // (a smeared saw stack) -- the requirement is that the seven NEW
+        // tables all differ from each other, which this still verifies.
+        for (size_t a = 1; a < fingerprints.size(); ++a)
+        {
+            for (size_t b = a + 1; b < fingerprints.size(); ++b)
+            {
+                float norm = 0.0f, diff = 0.0f;
+                for (int k = 0; k < numFingerprintBins; ++k)
+                {
+                    norm += std::abs (fingerprints[a][(size_t) k]) + std::abs (fingerprints[b][(size_t) k]);
+                    diff += std::abs (fingerprints[a][(size_t) k] - fingerprints[b][(size_t) k]);
+                }
+                const auto relDiff = norm > 0.0f ? diff / norm : 0.0f;
+                expect (relDiff > 0.05f,
+                        names[a] + " vs " + names[b] + ": distinct spectral fingerprint ("
+                            + juce::String (relDiff) + ")");
+            }
+        }
+    }
+
+    // The osc::table choice param (Table menu) end-to-end through the
+    // processor: switching choices rebuilds+installs synchronously (the
+    // parameter listener runs on setValueNotifyingHost's own synchronous
+    // dispatch, same guarantee pluckLazyAllocTest relies on), a loaded file
+    // still takes priority and is named after the file, and the choice
+    // round-trips through buildStateTree/restoreStateTree like any other
+    // APVTS parameter.
+    void wavetableTableParamTest()
+    {
+        std::cout << "wavetableTableParamTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+        namespace dsp = spa::dsp;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+
+        // Cost of constructing SPASynthProcessor (every plugin instantiation
+        // in a host, and repeatedly under auval/pluginval) -- reported so we
+        // can tell whether building all built-in wavetables up front there
+        // is cheap enough to keep, or needs to move to a lazy/background path.
+        {
+            const auto t0 = juce::Time::getHighResolutionTicks();
+            spa::SPASynthProcessor timedProc;
+            const auto t1 = juce::Time::getHighResolutionTicks();
+            const auto ms = juce::Time::highResolutionTicksToSeconds (t1 - t0) * 1000.0;
+            std::cout << "  SPASynthProcessor ctor: " << ms << " ms\n";
+        }
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        setParam (proc, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::wavetable);
+
+        const auto& choiceNames = dsp::wavetableTableChoiceNames();
+
+        // One aggregate expect per property across all choices, rather than
+        // three per choice -- on failure the message names every offending
+        // choice, same debuggability, far fewer assertions logged.
+        juce::StringArray stillLoading, wrongName, inaudible;
+        for (int choice = 0; choice < dsp::numWavetableTableChoices; ++choice)
+        {
+            setParam (proc, id::oscSlot (0, id::osc::table), (float) choice);
+            // Every choice except Basic Shapes (0) is built lazily, on a
+            // background thread, the first time it's selected -- give it a
+            // moment, polling isWavetableLoading exactly as the file-load
+            // path below does.
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            while (proc.isWavetableLoading (0))
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            if (proc.isWavetableLoading (0))
+                stillLoading.add (choiceNames[choice]);
+            if (proc.getWavetableName (0) != choiceNames[choice])
+                wrongName.add (choiceNames[choice] + " (got " + proc.getWavetableName (0) + ")");
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+            const auto peak = renderBlocks (proc, buffer, midi, 8);
+            if (peak <= 0.02f)
+                inaudible.add (choiceNames[choice] + " (peak=" + juce::String (peak) + ")");
+        }
+        expect (stillLoading.isEmpty(), "every choice finishes loading: " + stillLoading.joinIntoString (", "));
+        expect (wrongName.isEmpty(), "every choice reports its own name: " + wrongName.joinIntoString (", "));
+        expect (inaudible.isEmpty(), "every choice is audible: " + inaudible.joinIntoString (", "));
+
+        // Back to 0 == "Basic Shapes".
+        setParam (proc, id::oscSlot (0, id::osc::table), 0.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        expect (proc.getWavetableName (0) == "Basic Shapes", "choice 0 is Basic Shapes");
+
+        // Loading a file takes priority over the table choice, and is named
+        // after the file.
+        constexpr int frameSize = dsp::Wavetable::tableSize;
+        juce::AudioBuffer<float> wavBuffer (1, frameSize * 2);
+        for (int i = 0; i < wavBuffer.getNumSamples(); ++i)
+            wavBuffer.setSample (0, i, (float) std::sin (
+                juce::MathConstants<double>::twoPi * i / frameSize));
+        const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                              .getNonexistentChildFile ("spasynth-wt-table-test", ".wav");
+        {
+            juce::WavAudioFormat wav;
+            std::unique_ptr<juce::OutputStream> stream = file.createOutputStream();
+            auto writer = wav.createWriterFor (stream,
+                                               juce::AudioFormatWriterOptions()
+                                                   .withSampleRate (48000.0)
+                                                   .withNumChannels (1)
+                                                   .withBitsPerSample (24));
+            expect (writer != nullptr, "test WAV writer created");
+            if (writer != nullptr)
+                writer->writeFromAudioSampleBuffer (wavBuffer, 0, wavBuffer.getNumSamples());
+        }
+
+        proc.loadWavetableFromFile (0, file);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        while (proc.isWavetableLoading (0))
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        expect (proc.getWavetableName (0) == file.getFileNameWithoutExtension(),
+                "loaded-file name wins over the table choice");
+
+        // Changing the choice discards the file and builds the table again.
+        setParam (proc, id::oscSlot (0, id::osc::table), 1.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        while (proc.isWavetableLoading (0))
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        expect (proc.getWavetableName (0) == choiceNames[1],
+                "picking a table from the menu discards the loaded file");
+
+        // A never-before-built choice is reported as loading immediately
+        // (synchronously, before any background thread could plausibly have
+        // finished) -- this is what the UI's "loading..." label relies on.
+        {
+            spa::SPASynthProcessor freshProc;
+            freshProc.prepareToPlay (sampleRate, blockSize);
+            setParam (freshProc, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::wavetable);
+            setParam (freshProc, id::oscSlot (0, id::osc::table), (float) (dsp::numWavetableTableChoices - 1));
+            expect (freshProc.isWavetableLoading (0),
+                    "a never-before-built choice starts loading synchronously with the param change");
+            while (freshProc.isWavetableLoading (0))
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            expect (freshProc.getWavetableName (0) == choiceNames[dsp::numWavetableTableChoices - 1],
+                    "loading finishes with the right table installed");
+        }
+
+        file.deleteFile();
+
+        // State round-trip: choice 3, captured + restored into a fresh
+        // processor, survives (both the param and the rebuilt table name).
+        {
+            spa::SPASynthProcessor procA;
+            procA.prepareToPlay (sampleRate, blockSize);
+            setParam (procA, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::wavetable);
+            setParam (procA, id::oscSlot (0, id::osc::table), 3.0f);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+            const auto state = procA.buildStateTree();
+
+            spa::SPASynthProcessor procB;
+            procB.prepareToPlay (sampleRate, blockSize);
+            procB.restoreStateTree (state);
+            juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+            while (procB.isWavetableLoading (0))
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            const auto choiceParamID = id::oscSlot (0, id::osc::table);
+            auto* p = procB.getAPVTS().getParameter (choiceParamID);
+            expect (p != nullptr, "restored choice param exists");
+            if (p != nullptr)
+                expect ((int) p->convertFrom0to1 (p->getValue()) == 3,
+                        "restored choice value == 3");
+            expect (procB.getWavetableName (0) == choiceNames[3],
+                    "restored table name == " + choiceNames[3] + ", got "
+                        + procB.getWavetableName (0));
+        }
     }
 }
 
@@ -2063,6 +2334,39 @@ namespace
 
                 proc.randomizeAll();
 
+                // RANDOMIZE ALL can roll a not-yet-built built-in wavetable
+                // Table choice (see SPASynthProcessor::setBuiltInWavetable),
+                // which builds on a background thread and installs via
+                // MessageManager::callAsync -- same asynchronous contract
+                // loadWavetableFromFile already has, and every other test
+                // that exercises it (wavetableTableParamTest etc.) polls
+                // isWavetableLoading rather than guessing a fixed duration
+                // (a fixed pump here was flaky: this loop runs hundreds of
+                // SPASynthProcessor instances back to back, and background
+                // build threads from earlier iterations can still be
+                // finishing up, delaying a later iteration's own build past
+                // any fixed guess). A real host's message loop runs
+                // continuously, so a user pressing RANDOMIZE ALL and then
+                // playing a note always gives an in-flight build this long
+                // to land; this offline harness otherwise never pumps at
+                // all, which is unrealistic, not a genuine silence risk.
+                {
+                    int waited = 0;
+                    bool anyLoading = true;
+                    while (anyLoading && waited < 2000)
+                    {
+                        anyLoading = false;
+                        for (int s = 0; s < params::numOscSlots; ++s)
+                            if (proc.isWavetableLoading (s))
+                                anyLoading = true;
+                        if (anyLoading)
+                        {
+                            juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+                            waited += 5;
+                        }
+                    }
+                }
+
                 juce::AudioBuffer<float> buffer (2, blockSize);
                 juce::MidiBuffer midi;
                 midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
@@ -2073,11 +2377,14 @@ namespace
                 int samplesLast = 0;
                 constexpr int totalBlocks = 282;   // ~3.0s @ 48kHz/512
                 constexpr int skipBlocks = 94;      // ~1.0s
+                std::array<float, totalBlocks> blockMags {};
                 for (int b = 0; b < totalBlocks; ++b)
                 {
                     proc.processBlock (buffer, midi);
                     midi.clear();
-                    peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+                    const auto mag = buffer.getMagnitude (0, buffer.getNumSamples());
+                    blockMags[(size_t) b] = mag;
+                    peak = juce::jmax (peak, mag);
                     if (b >= skipBlocks)
                     {
                         for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
@@ -2105,17 +2412,39 @@ namespace
                     };
                     std::cout << "  [silent] seed=" << seed << " wildness=" << wildness
                                << " peak=" << peak << " rmsLast=" << rmsLast << "\n";
+                    std::cout << "    blockMags:";
+                    for (int b = 0; b < totalBlocks; b += 10)
+                        std::cout << " [" << b << "]=" << blockMags[(size_t) b];
+                    std::cout << " [last]=" << blockMags[(size_t) (totalBlocks - 1)] << "\n";
                     for (int s = 0; s < params::numOscSlots; ++s)
                     {
                         namespace osc = params::id::osc;
                         std::cout << "    osc[" << s << "] enable=" << rv (params::id::oscSlot (s, osc::enable))
                                    << " mode=" << (int) rv (params::id::oscSlot (s, osc::mode))
-                                   << " level=" << rv (params::id::oscSlot (s, osc::level)) << "\n";
+                                   << " level=" << rv (params::id::oscSlot (s, osc::level))
+                                   << " table=" << (int) rv (params::id::oscSlot (s, osc::table))
+                                   << " position=" << rv (params::id::oscSlot (s, osc::position))
+                                   << " unisonCount=" << rv (params::id::oscSlot (s, osc::unisonCount))
+                                   << " phaseMode=" << (int) rv (params::id::oscSlot (s, osc::phaseMode))
+                                   << " unisonDetune=" << rv (params::id::oscSlot (s, osc::unisonDetune))
+                                   << " unisonBlend=" << rv (params::id::oscSlot (s, osc::unisonBlend))
+                                   << " unisonWidth=" << rv (params::id::oscSlot (s, osc::unisonWidth))
+                                   << " wtLoading=" << proc.isWavetableLoading (s)
+                                   << " wtName=" << proc.getWavetableName (s)
+                                   << "\n";
                     }
                     std::cout << "    ampAttack=" << rv (params::id::ampAttack)
                                << " ampDecay=" << rv (params::id::ampDecay)
                                << " ampSustain=" << rv (params::id::ampSustain)
                                << " ampRelease=" << rv (params::id::ampRelease) << "\n";
+                    for (int e = 2; e <= 3; ++e)
+                    {
+                        const juce::String prefix = "env" + juce::String (e) + ".";
+                        std::cout << "    env" << e << " attack=" << rv (prefix + "attack")
+                                   << " decay=" << rv (prefix + "decay")
+                                   << " sustain=" << rv (prefix + "sustain")
+                                   << " release=" << rv (prefix + "release") << "\n";
+                    }
                     std::cout << "    filter1Enable=" << rv (params::id::filter1Enable)
                                << " filter1Type=" << (int) rv (params::id::filter1Type)
                                << " filter1Cutoff=" << rv (params::id::filter1Cutoff)
@@ -2128,13 +2457,22 @@ namespace
                                << " arpChance=" << rv (params::id::arp::chance)
                                << " arpDivision=" << (int) rv (params::id::arp::division)
                                << " arpMode=" << (int) rv (params::id::arp::mode) << "\n";
+                    std::cout << "    chaosEnable=" << rv (params::id::chaos::enable)
+                               << " chaosDepth=" << rv (params::id::chaos::depth)
+                               << " chaosRate=" << rv (params::id::chaos::rate)
+                               << " chaosMix=" << rv (params::id::chaos::mix)
+                               << " pitchOn=" << rv (params::id::chaos::pitchOn)
+                               << " positionOn=" << rv (params::id::chaos::positionOn) << "\n";
                     for (int r = 0; r < params::numModRoutes; ++r)
                     {
                         const auto destChoice = (int) rv (params::id::routeParam (r, params::id::route::dest));
                         if (destChoice <= 0)
                             continue;
+                        const auto& dests = params::modDestinations();
+                        const auto destName = (destChoice - 1) < (int) dests.size()
+                            ? dests[(size_t) (destChoice - 1)].def->id : juce::String ("?");
                         std::cout << "    route[" << r << "] src=" << (int) rv (params::id::routeParam (r, params::id::route::source))
-                                   << " dest=" << destChoice
+                                   << " dest=" << destChoice << " (" << destName << ")"
                                    << " depth=" << rv (params::id::routeParam (r, params::id::route::depth)) << "\n";
                     }
                     std::cout << "    master=" << rv (params::id::masterGain)
@@ -2157,6 +2495,244 @@ namespace
                                  + juce::String (silentMax) + "/75 silent)");
     }
 
+    // Regression for a run-to-run NONDETERMINISM bug found while chasing
+    // randomizeNeverSilentTest's flaky seed 37 (max wildness): the rolled
+    // patch (dumped below) is bit-for-bit identical every run, yet the
+    // rendered audio was not -- some runs held an audible tone for the full
+    // 3s, others decayed smoothly to ~1e-13 within ~2s (i.e. near-silent for
+    // most of the hold). Root cause: SPASynthVoice::random is a
+    // default-constructed juce::Random, which seeds itself from the system
+    // clock (see juce::Random's default ctor) -- so a "randomized" patch's
+    // *sound*, not just its randomizeAll() roll, depended on wall-clock time
+    // of the test run. The specific mechanism (confirmed by seed 37's dump:
+    // an enabled wavetable slot with phaseMode=random and unisonCount>1,
+    // zero detune on some rolls): UnisonOscillator::noteOn drew one
+    // *independent* juce::Random phase per unison sub-oscillator; at zero
+    // (or very small) detune, unison voices share (near enough) the same
+    // frequency, so two sub-oscillators landing at (near) opposite phase by
+    // chance never beat back out -- they stay destructively cancelled for
+    // the life of the note, silencing that slot. Fixed two ways: (1)
+    // SPASynthVoice::random is now seeded deterministically per voice
+    // (constant XOR voice index), so a given (seed, note) always renders the
+    // same audio -- voices still differ from each other; (2)
+    // UnisonOscillator::noteOn's PhaseMode::random no longer draws
+    // independent phases per sub-oscillator -- it draws ONE random base
+    // rotation per note-on and spreads the unison voices evenly around the
+    // cycle from that base, which is still musically "random" note-to-note
+    // but makes exact/near cancellation between unison voices structurally
+    // impossible. This test renders the same seed-37-style max-wildness
+    // patch twice on two fresh processors and asserts sample-identical
+    // output.
+    static void voiceDeterminismTest()
+    {
+        std::cout << "voiceDeterminismTest\n";
+        namespace params = spa::params;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+        constexpr int totalBlocks = 141;   // ~1.5s @ 48kHz/512, enough to see any drift
+
+        bool dumpedOnce = false;
+
+        const auto render = [&] () -> std::vector<float>
+        {
+            const bool dumpPatch = ! dumpedOnce;
+            dumpedOnce = true;
+            spa::SPASynthProcessor proc;
+            proc.prepareToPlay (sampleRate, blockSize);
+            proc.setRandomWildness (1.0f);
+            juce::Random::getSystemRandom() = juce::Random ((juce::int64) 37 * 7919 + 13);
+            proc.randomizeAll();
+
+            if (dumpPatch)
+            {
+                const auto rv = [&] (const juce::String& id)
+                {
+                    auto* p = proc.getAPVTS().getParameter (id);
+                    return p != nullptr ? p->convertFrom0to1 (p->getValue()) : 0.0f;
+                };
+                namespace osc = params::id::osc;
+                std::cout << "  seed=37 wildness=1.0 patch dump:\n";
+                for (int s = 0; s < params::numOscSlots; ++s)
+                {
+                    std::cout << "    osc[" << s << "] enable=" << rv (params::id::oscSlot (s, osc::enable))
+                               << " mode=" << (int) rv (params::id::oscSlot (s, osc::mode))
+                               << " table=" << (int) rv (params::id::oscSlot (s, osc::table))
+                               << " unisonCount=" << rv (params::id::oscSlot (s, osc::unisonCount))
+                               << " phaseMode=" << (int) rv (params::id::oscSlot (s, osc::phaseMode))
+                               << " unisonDetune=" << rv (params::id::oscSlot (s, osc::unisonDetune))
+                               << "\n";
+                }
+                std::cout << "    ampAttack=" << rv (params::id::ampAttack)
+                           << " ampDecay=" << rv (params::id::ampDecay)
+                           << " ampSustain=" << rv (params::id::ampSustain)
+                           << " ampRelease=" << rv (params::id::ampRelease)
+                           << " voiceMode=" << (int) rv (params::id::voiceMode) << "\n";
+                std::cout << "    chaosDepth=" << rv (params::id::chaos::depth)
+                           << " chaosRate=" << rv (params::id::chaos::rate)
+                           << " chaosMix=" << rv (params::id::chaos::mix)
+                           << " pitchOn=" << rv (params::id::chaos::pitchOn)
+                           << " positionOn=" << rv (params::id::chaos::positionOn) << "\n";
+                for (int lf = 0; lf < params::numLFOs; ++lf)
+                    std::cout << "    lfo[" << lf << "] shape=" << (int) rv (params::id::lfoParam (lf, params::id::lfo::shape))
+                               << " rate=" << rv (params::id::lfoParam (lf, params::id::lfo::rate)) << "\n";
+                for (int r = 0; r < params::numModRoutes; ++r)
+                {
+                    const auto destChoice = (int) rv (params::id::routeParam (r, params::id::route::dest));
+                    if (destChoice <= 0)
+                        continue;
+                    std::cout << "    route[" << r << "] src=" << (int) rv (params::id::routeParam (r, params::id::route::source))
+                               << " dest=" << destChoice
+                               << " depth=" << rv (params::id::routeParam (r, params::id::route::depth)) << "\n";
+                }
+            }
+
+            {
+                int waited = 0;
+                bool anyLoading = true;
+                while (anyLoading && waited < 2000)
+                {
+                    anyLoading = false;
+                    for (int s = 0; s < params::numOscSlots; ++s)
+                        if (proc.isWavetableLoading (s))
+                            anyLoading = true;
+                    if (anyLoading)
+                    {
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (5);
+                        waited += 5;
+                    }
+                }
+            }
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+            midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+
+            std::vector<float> samples;
+            samples.reserve ((size_t) totalBlocks * blockSize * 2);
+            for (int b = 0; b < totalBlocks; ++b)
+            {
+                proc.processBlock (buffer, midi);
+                midi.clear();
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                {
+                    const auto* d = buffer.getReadPointer (ch);
+                    for (int i = 0; i < buffer.getNumSamples(); ++i)
+                        samples.push_back (d[i]);
+                }
+            }
+            return samples;
+        };
+
+        const auto a = render();
+        const auto b = render();
+
+        expect (a.size() == b.size(), "two renders produced the same sample count");
+
+        float maxDiff = 0.0f;
+        const auto n = juce::jmin (a.size(), b.size());
+        for (size_t i = 0; i < n; ++i)
+            maxDiff = juce::jmax (maxDiff, std::abs (a[i] - b[i]));
+
+        std::cout << "  seed=37 wildness=1.0 maxDiff=" << maxDiff << "\n";
+        expect (maxDiff < 1.0e-6f, "seed-37 max-wildness patch renders sample-identical audio "
+                                    "across two fresh processors (maxDiff=" + juce::String (maxDiff) + ")");
+    }
+
+    // Regression for a fourth "silent RANDOMIZE ALL" cause found while
+    // adding the wavetable Table menu (which shifted randomizeAll()'s RNG
+    // draw sequence and exposed seed 44 at max wildness, previously
+    // untested territory): JUCE's Synthesiser::noteOn(), when retriggered
+    // for a note still ringing on the same channel, stops that voice and
+    // starts a fresh one (juce_Synthesiser.cpp's "hitting a note that's
+    // still ringing" branch) -- so every same-note arp retrigger snaps the
+    // amp envelope back to attack-start. Seed 44 rolled Arp Mode=Phrase,
+    // phrase="Root Pulse" ({0,0,12,0}, repeating the same note on 3 of 4
+    // steps), division index 8 ("1/4T", ~0.33s/step at 120bpm) and attack
+    // 1.17s: the envelope perpetually restarted and the patch measured
+    // ~0.0004 peak over a held note -- reproduced identically with the
+    // oscillator's wavetable choice forced back to Basic Shapes, ruling out
+    // the oscillator engine and confirming this is an arp/envelope
+    // interaction. Fixed as a fourth randomizeAll() audibility-floor clamp
+    // (SPASynthProcessor.cpp, "Cause 4"): attack is capped to a fraction of
+    // one arp step's duration at the synth's current tempo whenever the arp
+    // is enabled and the envelope lock group is unlocked. This locks in
+    // that exact seed, at the audio level, as a permanent regression.
+    static void randomizeArpFastRetriggerAttackTest()
+    {
+        std::cout << "randomizeArpFastRetriggerAttackTest\n";
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        constexpr double sampleRate = 48000.0;
+        constexpr int blockSize = 512;
+        constexpr float silentPeakThreshold = 1.0e-3f;
+        constexpr float silentRmsThreshold = 1.0e-4f;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (sampleRate, blockSize);
+        proc.setRandomWildness (1.0f);
+        // Exact seeding scheme runSweep() above uses, at the exact seed
+        // (44) and wildness (1.0) originally found to be silent.
+        juce::Random::getSystemRandom() = juce::Random ((juce::int64) 44 * 7919 + 13);
+        proc.randomizeAll();
+
+        // The roll must still land on the scenario this test exists to
+        // cover (Arp Phrase mode, a fast-ish division) -- if a future,
+        // unrelated randomizeAll() change stops rolling this combination for
+        // this seed, that's fine, but this assertion makes the mismatch
+        // visible rather than silently testing nothing.
+        auto realValue = [&] (const juce::String& pid)
+        {
+            auto* p = proc.getAPVTS().getParameter (pid);
+            return p != nullptr ? p->convertFrom0to1 (p->getValue()) : 0.0f;
+        };
+        const auto arpMode = (params::ArpMode) (int) realValue (params::id::arp::mode);
+        expect (arpMode == params::ArpMode::phrase,
+                "seed 44 @ wildness 1.0 still rolls Arp Mode = Phrase (this test's premise)");
+
+        // The fix itself: attack must have been clamped to a small fraction
+        // of one arp step at the current (120bpm default) tempo, not left at
+        // whatever seed 44 originally rolled (1.17s).
+        const auto divisionIndex = (int) realValue (params::id::arp::division);
+        const auto stepSeconds = params::lfoDivisionBeats (divisionIndex) * 60.0 / proc.getCurrentBpm();
+        const auto attack = realValue (params::id::ampAttack);
+        expect (attack < (float) stepSeconds,
+                "attack (" + juce::String (attack) + "s) clamped below one arp step ("
+                    + juce::String (stepSeconds) + "s)");
+
+        // The actual invariant: holding a note produces real audible output
+        // well into the hold, not just a brief transient.
+        juce::AudioBuffer<float> buffer (2, blockSize);
+        juce::MidiBuffer midi;
+        midi.addEvent (juce::MidiMessage::noteOn (1, 60, (juce::uint8) 100), 0);
+
+        float peak = 0.0f, sumSqLast = 0.0f;
+        int samplesLast = 0;
+        constexpr int totalBlocks = 282;   // ~3.0s @ 48kHz/512
+        constexpr int skipBlocks = 94;      // ~1.0s
+        for (int b = 0; b < totalBlocks; ++b)
+        {
+            proc.processBlock (buffer, midi);
+            midi.clear();
+            peak = juce::jmax (peak, buffer.getMagnitude (0, buffer.getNumSamples()));
+            if (b >= skipBlocks)
+            {
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                {
+                    const auto* d = buffer.getReadPointer (ch);
+                    for (int i = 0; i < buffer.getNumSamples(); ++i)
+                        sumSqLast += d[i] * d[i];
+                }
+                samplesLast += buffer.getNumSamples() * buffer.getNumChannels();
+            }
+        }
+        const auto rmsLast = samplesLast > 0 ? std::sqrt (sumSqLast / (float) samplesLast) : 0.0f;
+
+        expect (peak >= silentPeakThreshold && rmsLast >= silentRmsThreshold,
+                "seed 44 @ wildness 1.0 is audible (peak=" + juce::String (peak)
+                    + ", rmsLast=" + juce::String (rmsLast) + ")");
+    }
 
     // Builds a throwaway library: two packs with tiny WAVs.
     static juce::File makeFakeLibrary()
@@ -6779,6 +7355,8 @@ int main (int argc, char* argv[])
     renderSmokeTest();
     multiSlotUnisonTest();
     wavetableLoaderTest();
+    wavetableFactoryTest();
+    wavetableTableParamTest();
     modMatrixMacroTest();
     lfoModulationTest();
     velocityRouteTest();
@@ -6808,6 +7386,8 @@ int main (int argc, char* argv[])
     randomizerProducesSoundTest();
     randomizeLoudnessGuardTest();
     randomizeNeverSilentTest();
+    voiceDeterminismTest();
+    randomizeArpFastRetriggerAttackTest();
     editorHitTestProbe();
     midiLearnTest();
     arpeggiatorTest();

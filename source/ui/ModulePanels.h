@@ -57,7 +57,7 @@ private:
     std::vector<std::unique_ptr<Knob>> sampleKnobs;
     std::vector<std::unique_ptr<Knob>> granularKnobs;
     std::vector<std::unique_ptr<Knob>> analogKnobs, fmKnobs, pluckKnobs;
-    std::unique_ptr<Choice> phaseMode, analogShape, noiseColor;
+    std::unique_ptr<Choice> phaseMode, table, analogShape, noiseColor;
     std::unique_ptr<Toggle> loop, keytrackSample, keytrackGranular;
 
     // Loop start/end only mean anything while looping is on; kept as a

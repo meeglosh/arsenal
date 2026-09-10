@@ -3,6 +3,7 @@
 #include "params/Randomizer.h"
 #include "ui/SPASynthEditor.h"
 #include <cmath>
+#include <mutex>
 
 namespace spa
 {
@@ -68,6 +69,8 @@ SPASynthProcessor::SPASynthProcessor()
 
         // Drives the lazy Pluck-buffer allocation below (parameterChanged()).
         apvts.addParameterListener (pid (params::id::osc::mode), this);
+        // Drives the built-in wavetable Table menu (parameterChanged()).
+        apvts.addParameterListener (pid (params::id::osc::table), this);
     }
 
     for (int i = 0; i < params::numLFOs; ++i)
@@ -223,6 +226,16 @@ SPASynthProcessor::SPASynthProcessor()
     }
 
     factoryTable = std::make_shared<const dsp::Wavetable> (dsp::Wavetable::createBasicShapes());
+    // Choice 0 (Basic Shapes) is the only built-in Table-menu entry built
+    // here in the ctor -- it's also the pre-1.0.15 default, so it must stay
+    // instant. Measured: building all numWavetableTableChoices tables here
+    // cost ~76ms, unacceptable for a ctor that runs on every plugin
+    // instantiation (repeatedly under auval/pluginval too), so every other
+    // choice is instead built lazily on first selection (setBuiltInWavetable)
+    // via the same background-thread + latest-wins + pendingLoads bookkeeping
+    // as loadWavetableFromFile, and cached in builtInTables for the
+    // processor's lifetime so later selections of the same choice are instant.
+    builtInTables[0] = factoryTable;   // choice 0 == Basic Shapes, same table
     for (int s = 0; s < params::numOscSlots; ++s)
     {
         slotTables[(size_t) s].current = factoryTable;
@@ -235,7 +248,7 @@ SPASynthProcessor::SPASynthProcessor()
 
     synth.addSound (new dsp::SPASynthSound());
     for (int i = 0; i < numVoices; ++i)
-        synth.addVoice (new dsp::SPASynthVoice (shared));
+        synth.addVoice (new dsp::SPASynthVoice (shared, i));
 
     presetManager = std::make_unique<library::PresetManager> (
         [this] { return buildStateTree (false); },   // presets carry no MIDI map
@@ -258,7 +271,10 @@ SPASynthProcessor::~SPASynthProcessor()
     stopTimer();
 
     for (int s = 0; s < params::numOscSlots; ++s)
+    {
         apvts.removeParameterListener (params::id::oscSlot (s, params::id::osc::mode), this);
+        apvts.removeParameterListener (params::id::oscSlot (s, params::id::osc::table), this);
+    }
 }
 
 void SPASynthProcessor::parameterChanged (const juce::String& parameterID, float)
@@ -275,8 +291,12 @@ void SPASynthProcessor::parameterChanged (const juce::String& parameterID, float
     // which is recursive, so this is also safe to call reentrantly from
     // inside restoreStateTree()'s own ScopedLock on the same thread.)
     for (int s = 0; s < params::numOscSlots; ++s)
+    {
         if (parameterID == params::id::oscSlot (s, params::id::osc::mode))
             ensurePluckAllocatedForSlot (s);
+        else if (parameterID == params::id::oscSlot (s, params::id::osc::table))
+            applyBuiltInWavetableFromParam (s);
+    }
 }
 
 void SPASynthProcessor::ensurePluckAllocatedForSlot (int s)
@@ -783,6 +803,50 @@ void SPASynthProcessor::randomizeAll()
             if (division < minAudibleArpDivisionIndex)
                 param->setValueNotifyingHost (param->convertTo0to1 (minAudibleArpDivisionIndex));
         }
+
+        // Cause 4, found while diagnosing a leftover silent seed (44 at
+        // wildness=1) after 3a/3b above: JUCE's Synthesiser::noteOn(), when
+        // retriggered for a note that's still ringing on the same channel,
+        // stops that voice and starts a fresh one (see the "hitting a note
+        // that's still ringing" branch in juce_Synthesiser.cpp) -- so EVERY
+        // same-note arp retrigger snaps that voice's amp envelope back to
+        // attack-start. Any arp mode with a repeated note (every mode when
+        // only one note is held; several phrase presets, e.g. "Root Pulse"'s
+        // {0,0,12,0}) hits this once the step interval is faster than the
+        // attack: the envelope perpetually restarts and never rises past a
+        // sliver of attack, so the patch never becomes more than barely
+        // audible -- not from a step never firing (3a) or a slow division
+        // (3b), but from FAST retriggering outrunning a slow attack. Seed 44
+        // rolled Phrase/"Root Pulse" + division index 8 ("1/4T", ~0.33s/step
+        // at 120bpm) + attack 1.17s and measured peak ~0.0004; reproduced
+        // identically with the oscillator's wavetable choice forced back to
+        // Basic Shapes, ruling out the oscillator engine. Clamp attack to a
+        // fraction of one step's duration at the synth's current tempo so a
+        // retrigger always lands comfortably after the envelope has risen.
+        // Gated on the envelope lock group (what this actually modifies),
+        // independent of whether the arp section itself is locked -- a
+        // locked arp's own real division/tempo combination is still read to
+        // decide how much headroom a freshly-rolled attack needs.
+        const bool envelopesUnlocked =
+            (lockedMask & (1u << (int) params::LockGroup::envelopes)) == 0;
+        if (envelopesUnlocked)
+        {
+            const auto divisionIndex = (int) realValue (params::id::arp::division);
+            const auto beatsPerStep = params::lfoDivisionBeats (divisionIndex);
+            const auto secondsPerBeat = 60.0 / juce::jmax (20.0, getCurrentBpm());
+            const auto stepSeconds = beatsPerStep * secondsPerBeat;
+
+            constexpr float maxAttackFractionOfStep = 0.4f;
+            const auto maxAttackForArp = juce::jmax (0.001f,
+                (float) (stepSeconds * maxAttackFractionOfStep));
+
+            if (auto* param = apvts.getParameter (params::id::ampAttack))
+            {
+                const auto attack = param->convertFrom0to1 (param->getValue());
+                if (attack > maxAttackForArp)
+                    param->setValueNotifyingHost (param->convertTo0to1 (maxAttackForArp));
+            }
+        }
     }
 
     sendChangeMessage();
@@ -837,6 +901,82 @@ void SPASynthProcessor::loadWavetableFromFile (int slot, const juce::File& file)
 void SPASynthProcessor::setFactoryWavetable (int slot)
 {
     installTable (slot, factoryTable, {}, {});
+}
+
+void SPASynthProcessor::setBuiltInWavetable (int slot, int tableChoice)
+{
+    const auto choice = juce::jlimit (0, dsp::numWavetableTableChoices - 1, tableChoice);
+
+    // Basic Shapes is always ready (built in the ctor); any other choice
+    // already built once for this processor is cached and equally instant.
+    // Still bump requestSerial: an EARLIER selection on this slot may have a
+    // background build in flight, and without this its callback's
+    // serial-match check (below) would not notice it has been superseded --
+    // it would land after this instant selection and silently overwrite it
+    // with stale content once it completes.
+    if (choice == 0 || builtInTables[(size_t) choice] != nullptr)
+    {
+        ++slotTables[(size_t) slot].requestSerial;
+        installTable (slot, builtInTables[(size_t) choice], {}, {});
+        return;
+    }
+
+    // First selection of this choice: build it on a background thread, same
+    // loading-state (pendingLoads/isWavetableLoading) + latest-wins
+    // (requestSerial) bookkeeping as loadWavetableFromFile -- see that
+    // function's comment. The built table is cached in builtInTables
+    // regardless of whether this particular request is superseded, so a
+    // later reselect (this slot or another) never rebuilds it.
+    auto& st = slotTables[(size_t) slot];
+    const int serial = ++st.requestSerial;
+    st.pendingLoads.fetch_add (1);
+    sendChangeMessage();
+
+    juce::WeakReference<SPASynthProcessor> weak (this);
+    juce::Thread::launch ([weak, slot, choice, serial]
+    {
+        // Serialize actual table generation: WavetableFactory::build() goes
+        // through juce::dsp::FFT (Wavetable::fromSpectra), and on some
+        // platforms/backends an FFT engine has shared/cached setup state
+        // that is not safe under truly concurrent use from independent FFT
+        // instances on different threads. Multiple slots/processors can each
+        // kick off a background build around the same moment (e.g. several
+        // oscillator slots randomized to new table choices at once), so
+        // without this, concurrent builds could silently corrupt each
+        // other's result -- reproduced as a deterministic-per-race, garbage
+        // (near-silent) built-in wavetable under back-to-back RANDOMIZE ALL
+        // stress (randomizeNeverSilentTest, seed 37 @ wildness 1.0). Building
+        // is rare and cheap (a handful of ms), so serializing it here costs
+        // nothing that matters.
+        static std::mutex buildMutex;
+        std::unique_ptr<const dsp::Wavetable> built;
+        {
+            const std::lock_guard<std::mutex> lock (buildMutex);
+            built = std::make_unique<const dsp::Wavetable> (dsp::WavetableFactory::build (choice));
+        }
+        std::shared_ptr<const dsp::Wavetable> table (std::move (built));
+
+        juce::MessageManager::callAsync ([weak, slot, choice, serial, table]() mutable
+        {
+            if (weak == nullptr)
+                return;   // processor was destroyed while this build was in flight
+            weak->builtInTables[(size_t) choice] = table;
+            auto& t = weak->slotTables[(size_t) slot];
+            t.pendingLoads.fetch_sub (1);
+            if (serial != t.requestSerial)
+                return;   // superseded by a newer request on this slot -- drop it
+            weak->installTable (slot, std::move (table), {}, {});
+        });
+    });
+}
+
+void SPASynthProcessor::applyBuiltInWavetableFromParam (int slot)
+{
+    if (slot < 0 || slot >= params::numOscSlots)
+        return;
+    const auto pid = params::id::oscSlot (slot, params::id::osc::table);
+    if (auto* v = apvts.getRawParameterValue (pid))
+        setBuiltInWavetable (slot, (int) v->load());
 }
 
 juce::String SPASynthProcessor::getWavetableName (int slot) const
@@ -1596,8 +1736,12 @@ void SPASynthProcessor::restoreStateTree (const juce::ValueTree& incoming)
             if (weak == nullptr)
                 return;
 
+            // apvts.replaceState() already ran synchronously above, so the
+            // osc::table choice param is already restored by the time this
+            // deferred callback runs -- rebuild from it rather than always
+            // forcing Basic Shapes. A loaded file still wins over the choice.
             if (wtPath.isEmpty())
-                weak->setFactoryWavetable (s);
+                weak->applyBuiltInWavetableFromParam (s);
             else
                 weak->loadWavetableFromFile (s, library::fromPortable (wtPath, libraryRoot));
 

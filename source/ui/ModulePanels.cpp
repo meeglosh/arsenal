@@ -30,7 +30,14 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
     loadButton.onClick = [this] { chooseContent(); };
     loadButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (loadButton);
-    factoryButton.onClick = [this] { processor.setFactoryWavetable (slot); };
+    factoryButton.onClick = [this]
+    {
+        // Set the Table choice back to 0 (Basic Shapes); the processor's
+        // parameter listener rebuilds/installs it in response (also
+        // discards any loaded file, same as picking a table from the menu).
+        if (auto* param = processor.getAPVTS().getParameter (id::oscSlot (slot, id::osc::table)))
+            param->setValueNotifyingHost (0.0f);
+    };
     factoryButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (factoryButton);
 
@@ -51,6 +58,7 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
     wavetableKnobs.push_back (knob (pid (id::osc::unisonWidth), "WIDTH"));
     wavetableKnobs.push_back (knob (pid (id::osc::phase), "PHASE"));
     phaseMode = std::make_unique<Choice> (apvts, pid (id::osc::phaseMode));
+    table = std::make_unique<Choice> (apvts, pid (id::osc::table));
 
     sampleKnobs.push_back (knob (pid (id::osc::sampleStart), "START"));
     auto loopStartKnob = knob (pid (id::osc::loopStart), "LOOP ST");
@@ -92,6 +100,7 @@ OscStrip::OscStrip (SPASynthProcessor& p, int slotIndex)
         for (auto& k : *set)
             addChildComponent (*k);
     addChildComponent (*phaseMode);
+    addChildComponent (*table);
     addChildComponent (*loop);
     addChildComponent (*keytrackSample);
     addChildComponent (*keytrackGranular);
@@ -166,6 +175,7 @@ void OscStrip::handleAsyncUpdate()
         k->setVisible (m == params::OscMode::pluck);
 
     phaseMode->setVisible (m == params::OscMode::wavetable);
+    table->setVisible (m == params::OscMode::wavetable);
     loop->setVisible (m == params::OscMode::sample);
     keytrackSample->setVisible (m == params::OscMode::sample);
     keytrackGranular->setVisible (m == params::OscMode::granular);
@@ -339,7 +349,12 @@ void OscStrip::resized()
     auto extraRow = area.removeFromTop (22);
     const auto m = currentMode();
     if (m == params::OscMode::wavetable)
-        phaseMode->setBounds (extraRow.removeFromLeft (extraRow.getWidth() / 2).reduced (2, 1));
+    {
+        // Table menu on the left, phase-reset mode on the right -- the row
+        // was previously half-empty here (phaseMode only took the left half).
+        table->setBounds (extraRow.removeFromLeft (extraRow.getWidth() / 2).reduced (2, 1));
+        phaseMode->setBounds (extraRow.reduced (2, 1));
+    }
     else if (m == params::OscMode::sample)
     {
         loop->setBounds (extraRow.removeFromLeft (70));

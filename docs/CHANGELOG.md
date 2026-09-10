@@ -55,6 +55,11 @@ A small visibility improvement requested by our testers.
   put on screen; otherwise it grows to the right, because the host owns the
   window's position there. Hosts that cannot resize the window at all fall
   back to the previous behavior, with the browser overlaying the instrument.
+- Wavetable oscillators now have a TABLE menu with built-in tables to choose
+  from: Basic Shapes, Supersaw, PWM, Formant, Additive, Unison Spread, Sync
+  Sweep and Bells, all morphable with the POSITION knob. Loading your own
+  wavetable file still works exactly as before and takes priority over the
+  TABLE menu.
 
 **Notes for this build**
 

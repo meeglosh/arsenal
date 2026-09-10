@@ -183,6 +183,18 @@ static void addOscSlotParams (std::vector<ParamDef>& p, int slot)
                    ParamKind::choiceParam, {}, 0.0f, "",
                    false, { .enabled = true },
                    { "Reset", "Random", "Free" } });
+    // Built-in wavetable Table menu (choice 0 = Basic Shapes, the pre-1.0.15
+    // default, so existing presets/sessions are unchanged). Names mirror
+    // spa::dsp::wavetableTableChoiceNames() -- APPEND-ONLY, it rides presets.
+    // Not a mod destination. Enabled for RANDOMIZE ALL so it explores tables
+    // (the never-silent guarantee is enforced independently in
+    // SPASynthProcessor::randomizeAll()'s audibility-floor pass, not by
+    // excluding params from the roll).
+    p.push_back ({ pid (id::osc::table), letter + "Table", section,
+                   ParamKind::choiceParam, {}, 0.0f, "",
+                   false, { .enabled = true },
+                   { "Basic Shapes", "Supersaw", "PWM", "Formant",
+                     "Additive", "Unison Spread", "Sync Sweep", "Bells" } });
     p.push_back ({ pid (id::osc::unisonCount), letter + "Unison", section,
                    ParamKind::intParam, { 1.0f, 8.0f, 1.0f }, 1.0f, "",
                    false, { .enabled = true, .maxNorm = 0.75f, .biasCentre = 0.1f,
