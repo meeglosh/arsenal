@@ -7953,7 +7953,16 @@ namespace
         const auto cursorX = area.getX() + area.getWidth() * 0.33f;
         const auto normUnderCursorBefore = wave->xToNorm (cursorX, area);
 
-        juce::MouseWheelDetails wheel;
+        // MouseWheelDetails is a plain aggregate with no default member
+        // initializers (deltaX/deltaY/isReversed/isSmooth/isInertial) --
+        // value-initialize with {} or the unset fields are indeterminate.
+        // Left as `wheel;` this passed in Debug (stack happened to read as
+        // zero) but failed under Release -O3, where a garbage deltaX could
+        // beat deltaY in WaveDisplay::mouseWheelMove's
+        // abs(deltaX) > abs(deltaY) pan/zoom branch and skip zooming
+        // entirely -- a real bug in this test's event simulation, not in
+        // WaveDisplay.
+        juce::MouseWheelDetails wheel {};
         wheel.deltaY = 0.5f;   // scroll "up" -> zoom in
         for (int i = 0; i < 6 && wave->getViewLength() > 0.15f; ++i)
         {
