@@ -1207,6 +1207,19 @@ clangd/IDE diagnostics ("juce not found" etc.) — the build is the arbiter.
 
 ## Conventions & gotchas
 
+- **`SPASYNTH_NOTARY` keychain profile is unreliable** — it has vanished six
+  times now (`security find-generic-password -s com.apple.gke.notary.tool`
+  finds nothing after each loss), cause never identified. Notarization is now
+  a standalone step, `scripts/notarize.sh <pkg>`, which prefers a credentials
+  FILE (`~/.config/spasynth/notary.env`, mode 600, hand-created by Mike,
+  **never inside the repo** — `SPASYNTH_NOTARY_APPLE_ID` /
+  `_TEAM_ID` / `_PASSWORD`, an app-specific password) and only falls back to
+  `SPASYNTH_NOTARIZE_PROFILE` if that file is absent. `build_release.sh` now
+  only signs the pkg via `installers/macos/build_installer.sh`, then calls
+  `scripts/notarize.sh` itself; on failure it exits 69 and skips Shopify
+  staging. To recover without a rebuild: fix credentials, run
+  `scripts/notarize.sh dist/installers/SPASynth-<v>-macOS.pkg`, then
+  `scripts/build_release.sh --stage-only <v>`.
 - Comment style: explain constraints/why, sparingly; match existing density.
 - CI (`.github/workflows/build.yml`): macOS universal + Windows x64. macOS
   job is slow (~1 h JUCE build) and still uploads via `actions/upload-artifact`.

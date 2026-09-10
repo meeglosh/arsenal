@@ -3,9 +3,15 @@
 # library packages, and the assembled Shopify deliverable folders.
 #
 #   ./scripts/build_release.sh [<library folder>]
+#   ./scripts/build_release.sh --stage-only <version>
 #
 # <library folder> defaults to ./library (the build_library.sh output). Pass
 # "-" to skip library packaging (much faster; installers + docs only).
+#
+# --stage-only <version> re-runs ONLY the Shopify-folder staging step (4)
+# against an already-built dist/installers/SPASynth-<version>-macOS.pkg —
+# use this after a notarization failure is fixed (see scripts/notarize.sh)
+# without rebuilding the plugin.
 #
 # Output layout (dist/):
 #   installers/SPASynth-<v>-macOS.pkg        (signed if identities are set —
@@ -17,16 +23,52 @@
 #
 # The Windows installer is built by CI (windows job, Inno Setup) — download
 # the artifact and drop it into both shopify folders before uploading.
+#
+# Notarization is a separate step, scripts/notarize.sh (see that file for
+# why — the notarytool keychain profile has repeatedly vanished on this
+# machine). This script signs the pkg here, then calls notarize.sh.
 
 set -e -u
 
 REPO_ROOT="${0:A:h:h}"
 cd "$REPO_ROOT"
 
-LIBRARY="${1:-$REPO_ROOT/library}"
-VERSION=$(sed -n 's/^project(SPASynth VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
 DIST="$REPO_ROOT/dist"
 BUILD="$REPO_ROOT/build-release"
+
+# --- Shopify folder staging (step 4), factored out so it can be re-run  -----
+# standalone after a notarize-then-fix cycle, without rebuilding anything.
+stage_shopify() {
+    local VERSION="$1" LIBRARY="${2:--}"
+    for sku in Standard Pro; do
+        local folder="$DIST/shopify/SPASynth-$sku-$VERSION"
+        mkdir -p "$folder/Library"
+        cp "$DIST/installers/SPASynth-$VERSION-macOS.pkg" "$folder/"
+        cp packaging/docs/README.txt packaging/docs/QUICKSTART.txt \
+           packaging/docs/EULA.txt "$folder/"
+
+        if [[ "$LIBRARY" != "-" ]]; then
+            if [[ "$sku" == "Standard" ]]; then
+                cp "$DIST/library/SPASynth Starter Library.zip" "$folder/Library/"
+            else
+                cp "$DIST/library/SPASynth Pro Library"*.zip "$folder/Library/"
+            fi
+        fi
+    done
+    echo "staged: dist/shopify/SPASynth-{Standard,Pro}-$VERSION"
+    md5 "$DIST/installers/SPASynth-$VERSION-macOS.pkg" \
+        "$DIST/shopify/SPASynth-Standard-$VERSION/SPASynth-$VERSION-macOS.pkg" \
+        "$DIST/shopify/SPASynth-Pro-$VERSION/SPASynth-$VERSION-macOS.pkg"
+}
+
+if [[ "${1:-}" == "--stage-only" ]]; then
+    [[ -n "${2:-}" ]] || { echo "usage: $0 --stage-only <version>" >&2; exit 2; }
+    stage_shopify "$2" "-"
+    exit 0
+fi
+
+LIBRARY="${1:-$REPO_ROOT/library}"
+VERSION=$(sed -n 's/^project(SPASynth VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
 
 echo "=== SPASynth $VERSION release build ==="
 
@@ -49,9 +91,35 @@ cmake -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 cmake --build "$BUILD"
 "$BUILD/SPASynthTests_artefacts/Release/SPASynthTests"
 
-# --- 2. macOS installer ---------------------------------------------------------
+# --- 2. macOS installer (sign only here; notarize is a separate step) -----------
 mkdir -p "$DIST/installers"
+# build_installer.sh notarizes inline if SPASYNTH_NOTARIZE_PROFILE is set in
+# the environment; hide it during the call so it only signs here, and we
+# drive notarization ourselves below (via scripts/notarize.sh, which tries
+# the ~/.config/spasynth/notary.env fallback before this same profile).
+_saved_notarize_profile="${SPASYNTH_NOTARIZE_PROFILE:-}"
+unset SPASYNTH_NOTARIZE_PROFILE
 "$REPO_ROOT/installers/macos/build_installer.sh" "$BUILD" "$DIST/installers"
+[[ -n "$_saved_notarize_profile" ]] && export SPASYNTH_NOTARIZE_PROFILE="$_saved_notarize_profile"
+
+PKG="$DIST/installers/SPASynth-$VERSION-macOS.pkg"
+if [[ -n "${SPASYNTH_INSTALLER_IDENTITY:-}" ]]; then
+    if "$REPO_ROOT/scripts/notarize.sh" "$PKG"; then
+        echo "notarized: $PKG"
+    else
+        status=$?
+        echo ""
+        echo "WARNING: notarization failed (exit $status) - $PKG is signed but"
+        echo "NOT notarized/stapled. Fix credentials (see scripts/notarize.sh"
+        echo "for the two options), then:"
+        echo "  scripts/notarize.sh '$PKG'"
+        echo "  scripts/build_release.sh --stage-only $VERSION"
+        echo "Skipping Shopify folder staging for now."
+        exit 69
+    fi
+else
+    echo "note: unsigned pkg, skipping notarization (set SPASYNTH_INSTALLER_IDENTITY to sign)"
+fi
 
 # --- 3. Library packages --------------------------------------------------------
 if [[ "$LIBRARY" != "-" ]]; then
@@ -59,21 +127,7 @@ if [[ "$LIBRARY" != "-" ]]; then
 fi
 
 # --- 4. Shopify download folders ------------------------------------------------
-for sku in Standard Pro; do
-    folder="$DIST/shopify/SPASynth-$sku-$VERSION"
-    mkdir -p "$folder/Library"
-    cp "$DIST/installers/SPASynth-$VERSION-macOS.pkg" "$folder/"
-    cp packaging/docs/README.txt packaging/docs/QUICKSTART.txt \
-       packaging/docs/EULA.txt "$folder/"
-
-    if [[ "$LIBRARY" != "-" ]]; then
-        if [[ "$sku" == "Standard" ]]; then
-            cp "$DIST/library/SPASynth Starter Library.zip" "$folder/Library/"
-        else
-            cp "$DIST/library/SPASynth Pro Library"*.zip "$folder/Library/"
-        fi
-    fi
-done
+stage_shopify "$VERSION" "$LIBRARY"
 
 echo ""
 echo "=== done ==="
