@@ -6392,6 +6392,218 @@ namespace
         }
     }
 
+    // Paul's request: a way to change octaves for QWERTY (computer-keyboard)
+    // playing. JUCE's MidiKeyboardComponent has setKeyPressBaseOctave but no
+    // getter for it in this JUCE version, so verified indirectly: via the
+    // readout label and the persisted uiKeyboardOctave APVTS property.
+    static void keyboardOctaveShiftTest()
+    {
+        std::cout << "keyboardOctaveShiftTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        struct Parts
+        {
+            juce::MidiKeyboardComponent* keyboard = nullptr;
+            juce::Button* octaveDown = nullptr;
+            juce::Button* octaveUp = nullptr;
+            juce::Label* octaveLabel = nullptr;
+        };
+        auto findParts = [] (juce::Component& root) -> Parts
+        {
+            Parts parts;
+            std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+            {
+                if (parts.keyboard == nullptr)
+                    parts.keyboard = dynamic_cast<juce::MidiKeyboardComponent*> (&c);
+                if (auto* b = dynamic_cast<juce::Button*> (&c))
+                {
+                    if (b->getTooltip() == "Octave down (Z)") parts.octaveDown = b;
+                    if (b->getTooltip() == "Octave up (X)") parts.octaveUp = b;
+                }
+                if (parts.octaveLabel == nullptr)
+                    if (auto* l = dynamic_cast<juce::Label*> (&c))
+                        if (l->getText().startsWith ("C"))
+                            if (l->getBounds().getWidth() <= 44 && l->getBounds().getHeight() <= 20)
+                                parts.octaveLabel = l;
+                for (auto* child : c.getChildren())
+                    walk (*child);
+            };
+            walk (root);
+            return parts;
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+        proc.getAPVTS().state.setProperty ("uiKeyboardVisible", true, nullptr);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth,
+                         spa::ui::metrics::baseHeight + spa::ui::metrics::keyboardStripHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+        pumpFor (200);
+
+        auto parts = findParts (*editor);
+        expect (parts.keyboard != nullptr && parts.octaveDown != nullptr
+                    && parts.octaveUp != nullptr && parts.octaveLabel != nullptr,
+                "keyboard, octave buttons and readout found");
+        if (parts.keyboard == nullptr || parts.octaveDown == nullptr
+            || parts.octaveUp == nullptr || parts.octaveLabel == nullptr)
+        {
+            editor->removeFromDesktop();
+            return;
+        }
+
+        // Expected readout for a given keyboardOctave (JUCE's
+        // setKeyPressBaseOctave parameter, base note = octave * 12), using
+        // the exact same convention ContentComponent::octaveRangeLabel()
+        // does -- NOT octave pasted after a "C", which is a different number
+        // (JUCE's own key-name octave numbering is offset from it by
+        // getOctaveForMiddleC(), default 3: note 60 = "C3").
+        const auto octaveForMiddleC = parts.keyboard->getOctaveForMiddleC();
+        const auto expectedLabel = [octaveForMiddleC] (int octave)
+        {
+            return juce::MidiMessage::getMidiNoteName (octave * 12, true, true, octaveForMiddleC)
+                 + juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93"))
+                 + juce::MidiMessage::getMidiNoteName (octave * 12 + 24, true, true, octaveForMiddleC);
+        };
+
+        // Default keyboardOctave is 4 (base note 48), matching the strip's
+        // original fixed opening view (setLowestVisibleKey (48)) exactly --
+        // NOT the same number as the label's "C2" (see above).
+        expect (parts.octaveLabel->getText() == expectedLabel (4),
+                "default octave readout is " + expectedLabel (4));
+        expect ((int) proc.getAPVTS().state.getProperty ("uiKeyboardOctave", -1) == 4,
+                "default uiKeyboardOctave property is 4");
+
+        // Default startup view must show the mapped range (base note 48),
+        // not scrolled to C0/note 0 as a leftover default would be. JUCE's
+        // own internal clamp (never leave blank space past the highest key,
+        // KeyboardComponentBase::resized()) can pull the requested
+        // setLowestVisibleKey value further left once the strip has real
+        // bounds, so the real assertion is "the mapped base note is actually
+        // on screen", not an exact scroll-offset match.
+        const auto isKeyOnScreen = [&] (int note)
+        {
+            const auto r = parts.keyboard->getRectangleForKey (note);
+            return ! r.isEmpty() && r.getX() >= 0.0f && r.getRight() <= (float) parts.keyboard->getWidth();
+        };
+        expect (parts.keyboard->getLowestVisibleKey() > 0,
+                "default startup view is not scrolled to key 0/C0");
+        expect (isKeyOnScreen (48),
+                "default startup view has the mapped base note (48) on screen");
+
+        parts.keyboard->grabKeyboardFocus();
+        pumpFor (50);
+        const bool gotRealFocus = parts.keyboard->hasKeyboardFocus (false);
+
+        if (! gotRealFocus)
+        {
+            std::cout << "  ..   couldn't obtain real OS keyboard focus in this environment "
+                         "-- exercising octave shift via the buttons only, skipping the Z/X "
+                         "key-through-peer parts\n";
+        }
+        else if (auto* peer = editor->getPeer())
+        {
+            // 'X' = octave up, through the real peer, same path a live
+            // keystroke takes (mirrors presetBrowserKeyboardFocusTest's Esc).
+            peer->handleKeyPress ((int) 'X', (juce::juce_wchar) 'x');
+            pumpFor (30);
+            expect (parts.octaveLabel->getText() == expectedLabel (5),
+                    "'X' shifted the octave up to " + expectedLabel (5));
+            expect ((int) proc.getAPVTS().state.getProperty ("uiKeyboardOctave", -1) == 5,
+                    "uiKeyboardOctave property follows the 'X' shift");
+            expect (parts.keyboard->hasKeyboardFocus (false),
+                    "keyboard still has focus after the 'X' shift");
+            expect (isKeyOnScreen (60),
+                    "view scrolled to keep the new mapped base note (60) on screen");
+
+            // 'Z' = octave down, back to the default.
+            peer->handleKeyPress ((int) 'Z', (juce::juce_wchar) 'z');
+            pumpFor (30);
+            expect (parts.octaveLabel->getText() == expectedLabel (4),
+                    "'Z' shifted the octave back down to " + expectedLabel (4));
+
+            // Note: a mapped note key ('A', etc.) is NOT verified end-to-end
+            // by simulating its note-on here. MidiKeyboardComponent fires
+            // notes from keyStateChanged() (juce_MidiKeyboardComponent.cpp),
+            // which is driven by KeyPress::isCurrentlyDown() polling the real
+            // OS key-down state -- a synthetic ComponentPeer::handleKeyPress
+            // (as used above for the octave shift itself, which goes through
+            // our own keyPressed() instead) does not set that, so it cannot
+            // be exercised headlessly. The octave-mapping change itself is
+            // fully covered above (label + persisted property, both driven
+            // by our own shiftKeyboardOctave(), not JUCE's internals).
+        }
+
+        // Button clicks are the click equivalent of Z/X; verify the "+"
+        // button, the clamp at the top (8), and that clicking never steals
+        // focus from the on-screen keyboard (the QWERTY focus rule).
+        for (int i = 0; i < 6; ++i)
+        {
+            parts.octaveUp->triggerClick();
+            pumpFor (20);
+        }
+        expect (parts.octaveLabel->getText() == expectedLabel (8),
+                "octave clamps at " + expectedLabel (8) + " (limit 8)");
+        expect ((int) proc.getAPVTS().state.getProperty ("uiKeyboardOctave", -1) == 8,
+                "uiKeyboardOctave property clamps at 8 too");
+        if (gotRealFocus)
+            expect (parts.keyboard->hasKeyboardFocus (false),
+                    "keyboard keeps focus after repeated octave-button clicks");
+
+        for (int i = 0; i < 10; ++i)
+        {
+            parts.octaveDown->triggerClick();
+            pumpFor (20);
+        }
+        expect (parts.octaveLabel->getText() == expectedLabel (0),
+                "octave clamps at " + expectedLabel (0) + " (limit 0)");
+        expect ((int) proc.getAPVTS().state.getProperty ("uiKeyboardOctave", -1) == 0,
+                "uiKeyboardOctave property clamps at 0 too");
+
+        // Set a known non-default octave, then confirm session save/restore
+        // round-trips it into a fresh processor/editor.
+        parts.octaveUp->triggerClick();
+        parts.octaveUp->triggerClick();
+        pumpFor (20);   // keyboardOctave -> 2
+        expect (parts.octaveLabel->getText() == expectedLabel (2),
+                "octave is " + expectedLabel (2) + " before capturing state");
+
+        editor->removeFromDesktop();
+        editor.reset();
+
+        auto stateXml = proc.buildStateTree (false).createXml();
+        expect (stateXml != nullptr, "state captured for round-trip");
+        if (stateXml == nullptr)
+            return;
+
+        spa::SPASynthProcessor proc2;
+        proc2.prepareToPlay (48000.0, 512);
+        proc2.restoreStateTree (juce::ValueTree::fromXml (*stateXml));
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor2 (proc2.createEditor());
+        editor2->setSize (spa::ui::metrics::baseWidth,
+                          spa::ui::metrics::baseHeight + spa::ui::metrics::keyboardStripHeight);
+        editor2->addToDesktop (0);
+        editor2->setVisible (true);
+        pumpFor (200);
+
+        auto parts2 = findParts (*editor2);
+        expect (parts2.octaveLabel != nullptr && parts2.octaveLabel->getText() == expectedLabel (2),
+                "octave restored to " + expectedLabel (2) + " in a fresh editor from saved state");
+        expect ((int) proc2.getAPVTS().state.getProperty ("uiKeyboardOctave", -1) == 2,
+                "uiKeyboardOctave property restored to 2");
+
+        editor2->removeFromDesktop();
+    }
+
     // Regression for the VOICE call-out's MODE/PRIORITY dropdowns being
     // "finnicky" in Logic (v1.0.11, Mike): needed a click-and-hold to keep
     // the menu open at all, and items weren't selectable even then. Root
@@ -7684,6 +7896,153 @@ namespace
     // ORGANIC CHAOS display: paints without crashing and actually draws
     // something (not a uniform image) after a chaos-active audio run feeds
     // the telemetry trace ring.
+    // Paul's zoom request: scroll/pinch to zoom the oscillator waveform
+    // display, drag to pan, double-click to reset. viewStart/viewLength are
+    // UI-only (never serialized) so this drives the real gesture handlers
+    // and checks the normalized view state + the mapping they share with
+    // paint (normToX/xToNorm), not internal pixels.
+    static void waveDisplayZoomTest()
+    {
+        std::cout << "waveDisplayZoomTest\n";
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        const auto file = writeRampSine (2.0, 48000.0);
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+        proc.loadSampleFromFile (0, file);
+        expect (waitForSample (proc, 0, 15000), "sample loads for zoom test");
+
+        setParam (proc, id::oscSlot (0, id::osc::mode), (float) (int) params::OscMode::sample);
+        setParam (proc, id::oscSlot (0, id::osc::loop), 1.0f);
+        setParam (proc, id::oscSlot (0, id::osc::loopStart), 0.2f);
+        setParam (proc, id::oscSlot (0, id::osc::loopEnd), 0.4f);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+        editor->resized();
+
+        spa::ui::WaveDisplay* wave = nullptr;
+        std::function<void (juce::Component&)> find = [&] (juce::Component& c)
+        {
+            if (wave == nullptr)
+                wave = dynamic_cast<spa::ui::WaveDisplay*> (&c);
+            for (auto* child : c.getChildren())
+                if (wave == nullptr)
+                    find (*child);
+        };
+        find (*editor);
+
+        expect (wave != nullptr, "WaveDisplay found in the editor tree");
+        if (wave == nullptr)
+            return;
+
+        expect (! wave->getMouseClickGrabsKeyboardFocus(),
+                "WaveDisplay doesn't grab keyboard focus (must not break presetBrowserFocusGrabTest)");
+
+        expect (wave->getViewStart() == 0.0f && wave->getViewLength() == 1.0f,
+                "starts unzoomed on the whole file");
+
+        const auto area = wave->waveArea();
+        expect (area.getWidth() > 0.0f, "wave area has width");
+
+        // Zoom in around a cursor point one third of the way across, keep
+        // zooming until well under the whole file, then check the cursor's
+        // normalized file position stayed fixed under the mouse (within 1 px).
+        const auto cursorX = area.getX() + area.getWidth() * 0.33f;
+        const auto normUnderCursorBefore = wave->xToNorm (cursorX, area);
+
+        juce::MouseWheelDetails wheel;
+        wheel.deltaY = 0.5f;   // scroll "up" -> zoom in
+        for (int i = 0; i < 6 && wave->getViewLength() > 0.15f; ++i)
+        {
+            const auto pos = juce::Point<float> (cursorX, area.getCentreY());
+            juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                wave, wave, juce::Time::getCurrentTime(), pos, juce::Time::getCurrentTime(), 1, false);
+            wave->mouseWheelMove (e, wheel);
+        }
+
+        expect (wave->getViewLength() < 1.0f, "zooming in shrinks viewLength");
+        expect (wave->getViewLength() >= spa::ui::WaveDisplay::minViewLength - 1.0e-6f,
+                "viewLength never drops below the 1/64 floor");
+
+        const auto normUnderCursorAfter = wave->xToNorm (cursorX, area);
+        const auto pxError = std::abs (normUnderCursorAfter - normUnderCursorBefore) * area.getWidth();
+        expect (pxError <= 1.0f,
+                "cursor's normalized file position stays fixed while zooming (px error "
+                    + juce::String (pxError) + ")");
+
+        // Loop marker mapping stays exact through the same normToX() paint
+        // uses -- assert the accessor round-trips the loop param values.
+        const auto loopStartX = wave->normToX (0.2f, area);
+        const auto loopEndX = wave->normToX (0.4f, area);
+        expect (wave->xToNorm (loopStartX, area) - 0.2f < 1.0e-4f
+                    && wave->xToNorm (loopEndX, area) - 0.4f < 1.0e-4f,
+                "loop marker x positions round-trip through the zoomed mapping");
+
+        // Pan by drag: view should move, direction opposite the drag (drag
+        // right -> content follows the mouse -> viewStart decreases).
+        const auto viewStartBeforeDrag = wave->getViewStart();
+        {
+            const auto down = juce::Point<float> (area.getCentreX(), area.getCentreY());
+            juce::MouseEvent downEvent (juce::Desktop::getInstance().getMainMouseSource(), down,
+                                        juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                        wave, wave, juce::Time::getCurrentTime(), down, juce::Time::getCurrentTime(), 1, false);
+            wave->mouseDown (downEvent);
+
+            const auto dragged = down.withX (down.x + area.getWidth() * 0.2f);
+            juce::MouseEvent dragEvent (juce::Desktop::getInstance().getMainMouseSource(), dragged,
+                                        juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                        wave, wave, juce::Time::getCurrentTime(), down, juce::Time::getCurrentTime(), 1, false);
+            wave->mouseDrag (dragEvent);
+        }
+        expect (std::abs (wave->getViewStart() - viewStartBeforeDrag) > 1.0e-6f,
+                "drag-pan moves the view while zoomed");
+
+        // Double-click resets to the whole file.
+        {
+            const auto pos = juce::Point<float> (area.getCentreX(), area.getCentreY());
+            juce::MouseEvent e (juce::Desktop::getInstance().getMainMouseSource(), pos,
+                                juce::ModifierKeys(), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                wave, wave, juce::Time::getCurrentTime(), pos, juce::Time::getCurrentTime(), 2, false);
+            wave->mouseDoubleClick (e);
+        }
+        expect (wave->getViewStart() == 0.0f && wave->getViewLength() == 1.0f,
+                "double-click resets the view to the whole file");
+
+        // Paint at 4x zoom into an offscreen image: no crash, non-uniform
+        // (real zoomed waveform data got drawn, not a blank/degenerate rect).
+        wave->mouseWheelMove (
+            juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(),
+                              juce::Point<float> (cursorX, area.getCentreY()), juce::ModifierKeys(),
+                              1.0f, 0.0f, 0.0f, 0.0f, 0.0f, wave, wave, juce::Time::getCurrentTime(),
+                              juce::Point<float> (cursorX, area.getCentreY()), juce::Time::getCurrentTime(), 1, false),
+            wheel);
+        wave->mouseWheelMove (
+            juce::MouseEvent (juce::Desktop::getInstance().getMainMouseSource(),
+                              juce::Point<float> (cursorX, area.getCentreY()), juce::ModifierKeys(),
+                              1.0f, 0.0f, 0.0f, 0.0f, 0.0f, wave, wave, juce::Time::getCurrentTime(),
+                              juce::Point<float> (cursorX, area.getCentreY()), juce::Time::getCurrentTime(), 1, false),
+            wheel);
+        expect (wave->getViewLength() < 1.0f, "re-zoomed before the offscreen paint check");
+
+        juce::Image image (juce::Image::ARGB, juce::jmax (1, wave->getWidth()),
+                           juce::jmax (1, wave->getHeight()), true);
+        juce::Graphics g (image);
+        wave->paintEntireComponent (g, false);
+
+        std::set<juce::uint32> seen;
+        for (int x = 0; x < image.getWidth(); x += juce::jmax (1, image.getWidth() / 20))
+            for (int y = 0; y < image.getHeight(); y += juce::jmax (1, image.getHeight() / 6))
+                seen.insert (image.getPixelAt (x, y).getARGB());
+        expect (seen.size() > 1, "zoomed paint produces non-uniform pixels ("
+                                     + juce::String ((int) seen.size()) + " distinct colours)");
+
+        file.deleteFile();
+    }
+
     static void chaosDisplayPaintTest()
     {
         std::cout << "chaosDisplayPaintTest\n";
@@ -8019,6 +8378,7 @@ int main (int argc, char* argv[])
     dependentEnableTest();
     presetBrowserFocusGrabTest();
     presetBrowserKeyboardFocusTest();
+    keyboardOctaveShiftTest();
     voicePanelCallOutFocusTest();
     voicePanelEditorCloseTest();
     modAssignModeTest();
@@ -8030,6 +8390,7 @@ int main (int argc, char* argv[])
     fxPanelLabelClippingTest();
     chaosDisplayPaintTest();
     fxTabEngagedBoldTest();
+    waveDisplayZoomTest();
 
     std::cout << (failures == 0 ? "ALL PASS" : juce::String (failures) + " FAILURES") << "\n";
     return failures == 0 ? 0 : 1;

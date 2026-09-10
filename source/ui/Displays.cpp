@@ -93,6 +93,12 @@ WaveDisplay::WaveDisplay (SPASynthProcessor& p, int slotIndex)
       processor (p), slot (slotIndex)
 {
     processor.addChangeListener (this);
+    // Interactive for zoom/pan gestures (sample/granular waveform), but
+    // never steals QWERTY focus -- presetBrowserFocusGrabTest sweeps the
+    // whole editor and fails on any component left grabbing click focus.
+    setInterceptsMouseClicks (true, false);
+    setMouseClickGrabsKeyboardFocus (false);
+    setTooltip ("scroll: zoom, drag: pan, double-click: reset");
 }
 
 WaveDisplay::~WaveDisplay()
@@ -102,6 +108,95 @@ WaveDisplay::~WaveDisplay()
 
 void WaveDisplay::changeListenerCallback (juce::ChangeBroadcaster*)
 {
+    markDirty();
+}
+
+juce::Rectangle<float> WaveDisplay::waveArea() const
+{
+    // Must match DisplayComponent::paint()'s reduced bounds exactly -- that's
+    // the rectangle paintDisplay() actually draws into.
+    return getLocalBounds().toFloat().reduced (3.0f);
+}
+
+float WaveDisplay::xToNorm (float x, juce::Rectangle<float> area) const
+{
+    if (area.getWidth() <= 0.0f)
+        return viewStart;
+    const auto frac = (x - area.getX()) / area.getWidth();
+    return juce::jlimit (0.0f, 1.0f, viewStart + frac * viewLength);
+}
+
+float WaveDisplay::normToX (float norm, juce::Rectangle<float> area) const
+{
+    if (viewLength <= 0.0f)
+        return area.getX();
+    return area.getX() + ((norm - viewStart) / viewLength) * area.getWidth();
+}
+
+void WaveDisplay::zoomAt (float normCursor, float factor)
+{
+    const auto newLen = juce::jlimit (minViewLength, 1.0f, viewLength / factor);
+    const auto frac = viewLength > 0.0f ? (normCursor - viewStart) / viewLength : 0.5f;
+    viewStart = juce::jlimit (0.0f, 1.0f - newLen, normCursor - frac * newLen);
+    viewLength = newLen;
+    markDirty();
+}
+
+void WaveDisplay::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel)
+{
+    const auto area = waveArea();
+    if (area.getWidth() <= 0.0f)
+        return;
+
+    if (std::abs (wheel.deltaX) > std::abs (wheel.deltaY))
+    {
+        // Horizontal wheel / shift-wheel (the OS maps shift+vertical to a
+        // horizontal delta already): pan, scaled by the current zoom so a
+        // full-swipe always covers the same fraction of the visible window.
+        viewStart = juce::jlimit (0.0f, 1.0f - viewLength,
+                                  viewStart - wheel.deltaX * viewLength);
+        markDirty();
+    }
+    else if (wheel.deltaY != 0.0f)
+    {
+        const auto normCursor = xToNorm ((float) e.position.x, area);
+        const auto factor = std::pow (2.0f, wheel.deltaY * 4.0f);   // up = zoom in
+        zoomAt (normCursor, factor);
+    }
+}
+
+void WaveDisplay::mouseMagnify (const juce::MouseEvent& e, float scaleFactor)
+{
+    const auto area = waveArea();
+    if (area.getWidth() <= 0.0f)
+        return;
+    zoomAt (xToNorm ((float) e.position.x, area), scaleFactor);
+}
+
+void WaveDisplay::mouseDown (const juce::MouseEvent& e)
+{
+    dragStartViewStart = viewStart;
+    dragAnchorX = e.position.x;
+}
+
+void WaveDisplay::mouseDrag (const juce::MouseEvent& e)
+{
+    if (viewLength >= 1.0f)
+        return;   // not zoomed -- keep today's behaviour (no-op)
+
+    const auto area = waveArea();
+    if (area.getWidth() <= 0.0f)
+        return;
+
+    const auto dxNorm = (e.position.x - dragAnchorX) / area.getWidth() * viewLength;
+    viewStart = juce::jlimit (0.0f, 1.0f - viewLength, dragStartViewStart - dxNorm);
+    markDirty();
+}
+
+void WaveDisplay::mouseDoubleClick (const juce::MouseEvent&)
+{
+    viewStart = 0.0f;
+    viewLength = 1.0f;
     markDirty();
 }
 
@@ -231,6 +326,7 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
     const bool loading = processor.isSampleLoading (slot);
     if (sample == nullptr || sample->lengthSamples() < 2)
     {
+        lastSample = nullptr;
         if (loading)
         {
             paintLoadingOverlay (g, area);
@@ -244,22 +340,51 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
         return;
     }
 
+    // A new load resets the zoom/pan (mode switches -- e.g. sample <->
+    // granular on the same file -- keep the existing view, since it stays
+    // meaningful; see the class comment on getViewStart()/getViewLength()).
+    if (sample.get() != lastSample)
+    {
+        lastSample = sample.get();
+        viewStart = 0.0f;
+        viewLength = 1.0f;
+    }
+
     const auto* audio = sample->audio.getReadPointer (0);
-    const auto numSamples = sample->lengthSamples();
+    const juce::int64 numSamples = sample->lengthSamples();
     const auto columns = juce::jmax (32, (int) area.getWidth() / 2);
+
+    // Peak-per-column over the VISIBLE window only -- zooming in shrinks the
+    // per-column sample span, which is what makes zoomed painting read at
+    // higher resolution with no extra cache: the stride-capped read below
+    // (<= 64 samples/column, bounded regardless of file length) already
+    // satisfies the RT-safety-adjacent "no unbounded work per paint" rule
+    // whether the file is 4 samples or 5 minutes long.
+    const auto viewStartSample = (juce::int64) ((double) viewStart * (double) numSamples);
+    const auto viewSampleCount = juce::jlimit (
+        (juce::int64) 1, numSamples - viewStartSample,
+        (juce::int64) ((double) viewLength * (double) numSamples));
 
     juce::Path fill;
     fill.startNewSubPath (area.getX(), area.getCentreY());
     const auto columnPeak = [&] (int c)
     {
-        const auto start = (int) ((juce::int64) c * numSamples / columns);
-        const auto end = (int) ((juce::int64) (c + 1) * numSamples / columns);
+        const auto start = viewStartSample + (juce::int64) c * viewSampleCount / columns;
+        const auto end = juce::jmin (numSamples,
+                                     viewStartSample + (juce::int64) (c + 1) * viewSampleCount / columns);
         float peak = 0.0f;
-        const auto stride = juce::jmax (1, (end - start) / 64);
-        for (int i = start; i < end; i += stride)
+        const auto span = juce::jmax ((juce::int64) 1, end - start);
+        const auto stride = juce::jmax ((juce::int64) 1, span / 64);
+        for (juce::int64 i = start; i < end; i += stride)
             peak = juce::jmax (peak, std::abs (audio[i]));
         return peak;
     };
+
+    // Everything below draws only within `area`: off-view geometry (a loop
+    // marker that scrolled out of the zoomed window, etc.) must be clipped,
+    // not drawn wrong -- see class comment.
+    g.saveState();
+    g.reduceClipRegion (area.toNearestInt());
 
     for (int c = 0; c < columns; ++c)
         fill.lineTo (area.getX() + area.getWidth() * (float) c / (float) (columns - 1),
@@ -272,9 +397,12 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
     g.setColour (t.accent.withAlpha (0.55f));
     g.fillPath (fill);
 
+    // Same normalized<->x mapping the gesture handlers use (normToX), so
+    // every overlay below stays pixel-exact with the zoom/pan the mouse
+    // just applied.
     const auto markerX = [&] (float norm)
     {
-        return area.getX() + area.getWidth() * juce::jlimit (0.0f, 1.0f, norm);
+        return normToX (norm, area);
     };
 
     // Sample mode: shade the loop region (while LOOP is on) and mark its
@@ -354,6 +482,30 @@ void WaveDisplay::paintDisplay (juce::Graphics& g, juce::Rectangle<float> area)
             g.setColour (t.textPrimary);
             g.drawLine (markerX (marker), area.getY(), markerX (marker), area.getBottom(), 1.2f);
         }
+    }
+
+    g.restoreState();   // end of the area-clipped drawing above
+
+    // Zoomed: a thin overview bar along the bottom edge showing the visible
+    // window, plus a small "xN" readout -- Pro-audio convention (Pro-Q-style
+    // zoom chip). Only shown while zoomed so the un-zoomed look is unchanged.
+    if (viewLength < 1.0f)
+    {
+        constexpr float barHeight = 3.0f;
+        const auto barY = area.getBottom() - barHeight;
+        g.setColour (t.outline);
+        g.fillRect (juce::Rectangle<float> (area.getX(), barY, area.getWidth(), barHeight));
+        g.setColour (t.accentMod.withAlpha (0.8f));
+        g.fillRect (juce::Rectangle<float> (normToX (viewStart, area), barY,
+                                            juce::jmax (2.0f, area.getWidth() * viewLength), barHeight));
+
+        const auto zoomFactor = juce::roundToInt (1.0f / viewLength);
+        auto readoutArea = area;
+        g.setColour (t.textSecondary);
+        g.setFont (metrics::labelFont().withHeight (9.5f));
+        g.drawText ("x" + juce::String (zoomFactor),
+                   readoutArea.removeFromTop (11.0f).removeFromRight (28.0f),
+                   juce::Justification::centredRight);
     }
 
     // A replacement is still loading: dim the stale waveform so it reads as

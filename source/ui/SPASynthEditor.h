@@ -32,7 +32,8 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
     void mouseDown (const juce::MouseEvent&) override;   // right-click = MIDI Learn
-    bool keyPressed (const juce::KeyPress&) override;    // Esc closes the preset browser
+    bool keyPressed (const juce::KeyPress&) override;    // Esc closes the preset browser, Z/X
+                                                          // shift the QWERTY octave -- both work
                                                           // even when focus stayed on the
                                                           // on-screen keyboard (see .cpp)
     void refreshAll();
@@ -63,6 +64,7 @@ private:
     juce::Component* callOutParent();
     void showSettingsMenu();
     void setKeyboardVisible (bool shouldShow);
+    void shiftKeyboardOctave (int delta);
     void chooseLibraryFolder();
     void rescanLibrary();
     void saveUserPreset();
@@ -105,11 +107,46 @@ private:
     std::unique_ptr<juce::Drawable> logoDark, logoLight;
     SettingsButton settingsButton;   // over the top-left logo
 
+    // Octave shift buttons for computer-keyboard (QWERTY) playing, at the
+    // strip's left edge (Z/X are the keyboard-shortcut equivalent -- see
+    // ContentComponent::keyPressed). MidiKeyboardComponent has no getter for
+    // its own key-mapping octave (setKeyPressBaseOctave has no counterpart),
+    // so keyboardOctave (below) is our own record of it.
+    struct OctaveButton : juce::Button
+    {
+        explicit OctaveButton (bool isUp) : juce::Button (isUp ? "octaveUp" : "octaveDown"), up (isUp) {}
+        void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+        bool up;
+    };
+
     // On-screen keyboard strip (toggled from the settings menu or the
     // bottom-right keyboard button).
     juce::MidiKeyboardComponent keyboard;
     KeyboardButton keyboardButton;
     bool keyboardVisible = false;
+    OctaveButton octaveDownButton { false }, octaveUpButton { true };
+    juce::Label octaveLabel;   // range readout between the two buttons, e.g. "C2–C4"
+    // Non-interactive overlay (a child of `keyboard` itself, so its
+    // coordinates line up for free) that tints the two mapped octaves' white
+    // keys so it's visible at a glance which keys QWERTY plays.
+    struct OctaveHighlight : juce::Component
+    {
+        juce::MidiKeyboardComponent* keyboard = nullptr;
+        int baseNote = 0;   // lowest mapped note (keyboardOctave * 12)
+        void paint (juce::Graphics&) override;
+    };
+    OctaveHighlight octaveHighlight;
+    juce::String octaveRangeLabel() const;   // "C2–C4"-style readout, matching
+                                              // the keyboard's own note-naming convention
+    // This is JUCE's setKeyPressBaseOctave() parameter (N maps 'A' to MIDI
+    // note N*12), NOT the octave number printed in a note name -- those
+    // differ by MidiKeyboardComponent's getOctaveForMiddleC() offset (default
+    // 3: note 60 = "C3"), which is why octaveRangeLabel() above goes through
+    // juce::MidiMessage::getMidiNoteName rather than pasting this number
+    // after a "C". Default 4 (base note 48) matches the strip's original
+    // fixed opening view (setLowestVisibleKey (48)) exactly, so the default
+    // QWERTY-mapped range is always the range visible on startup.
+    int keyboardOctave = 4;
 
     PanicButton panicButton;   // header top-right: stop all sound
     std::unique_ptr<juce::Component> tempoBar;   // standalone only (brand band)

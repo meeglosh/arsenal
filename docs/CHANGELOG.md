@@ -1,7 +1,14 @@
 # SPASynth changelog
 
-## Unreleased
+## 1.0.15
 
+A large round of features and fixes from our testers' playtest sessions.
+
+- You can now zoom and pan the oscillator waveform display, which makes it
+  much easier to work with long samples. Scroll or pinch to zoom in and out
+  around your cursor, drag to pan once zoomed, and double-click to snap back
+  to the whole file. Loop points and other markers stay lined up with the
+  waveform no matter how far in you zoom.
 - EQ bands can now be switched between Bell, Low Shelf, High Shelf, Low Cut,
   High Cut, Notch, Band Pass and Tilt Shelf by right-clicking a node in the
   EQ display. Low Cut and High Cut bands also get a slope choice from 6 to
@@ -23,10 +30,6 @@
   inward and widen its per-grain spray for the same reason. Every factory
   preset across every pack in our library has been verified audible on a
   held note.
-
-## 1.0.15
-
-A small visibility improvement requested by our testers.
 
 - Added an ASSIGN mode to the mod matrix. Turn it on and everything that can
   be part of a modulation route starts glowing blue, both the things you can
@@ -72,6 +75,9 @@ A small visibility improvement requested by our testers.
   Sweep and Bells, all morphable with the POSITION knob. Loading your own
   wavetable file still works exactly as before and takes priority over the
   TABLE menu.
+- The on-screen keyboard's computer-key playing can now be shifted by octave
+  with the Z and X keys, or the new minus and plus buttons on the keyboard
+  strip. The setting is saved with your session.
 
 **Notes for this build**
 

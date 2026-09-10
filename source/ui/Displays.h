@@ -48,18 +48,49 @@ private:
 // Oscillator scope: wavetable frame at the (live, modulated) position, or the
 // loaded sample's waveform with a moving playhead.
 class WaveDisplay : public DisplayComponent,
+                    public juce::SettableTooltipClient,
                     private juce::ChangeListener
 {
 public:
     WaveDisplay (SPASynthProcessor&, int slot);
     ~WaveDisplay() override;
 
+    // Zoom/pan view state for the sample/granular waveform (normalized 0..1
+    // fractions of the file, same domain as sampleStart/loopStart/loopEnd).
+    // UI-only -- never serialized, never touches DSP; resets on a new
+    // content load. Exposed for tests (waveDisplayZoomTest).
+    float getViewStart() const  { return viewStart; }
+    float getViewLength() const { return viewLength; }
+    static constexpr float minViewLength = 1.0f / 64.0f;
+
+    // Maps a normalized (0..1) file position to/from an x coordinate within
+    // `area` (the same reduced bounds paintDisplay draws into -- see
+    // waveArea()), honoring the current zoom/pan. Shared by paint and the
+    // gesture handlers, and by tests, so overlays can never drift from what
+    // was actually drawn.
+    float normToX (float norm, juce::Rectangle<float> area) const;
+    float xToNorm (float x, juce::Rectangle<float> area) const;
+    juce::Rectangle<float> waveArea() const;
+
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseMagnify (const juce::MouseEvent&, float scaleFactor) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
 private:
     void paintDisplay (juce::Graphics&, juce::Rectangle<float>) override;
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
+    void zoomAt (float normCursor, float factor);
 
     SPASynthProcessor& processor;
     const int slot;
+
+    float viewStart = 0.0f;    // 0..1, left edge of the visible window
+    float viewLength = 1.0f;   // minViewLength..1, width of the visible window
+    float dragStartViewStart = 0.0f;
+    float dragAnchorX = 0.0f;
+    const void* lastSample = nullptr;   // identity check -> reset view on a new load
 };
 
 // ADSR curve with translucent fill and a live output-level bar.

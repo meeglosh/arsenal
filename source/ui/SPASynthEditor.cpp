@@ -217,6 +217,51 @@ void ContentComponent::KeyboardButton::paintButton (juce::Graphics& g,
         g.fillRect (r.getX() + (float) i * kw - bw * 0.5f, r.getY(), bw, bh);
 }
 
+void ContentComponent::OctaveButton::paintButton (juce::Graphics& g,
+                                                  bool highlighted, bool down)
+{
+    const auto& t = currentTheme();
+    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const auto col = (highlighted || down) ? t.textPrimary : t.textSecondary;
+
+    g.setColour (t.seam);
+    g.fillRoundedRectangle (r, 3.0f);
+    if (highlighted || down)
+    {
+        g.setColour (juce::Colours::white.withAlpha (down ? 0.14f : 0.07f));
+        g.fillRoundedRectangle (r, 3.0f);
+    }
+
+    g.setColour (col);
+    const auto cx = r.getCentreX(), cy = r.getCentreY();
+    constexpr float armLen = 5.0f;
+    g.drawLine (cx - armLen, cy, cx + armLen, cy, 1.5f);   // "-"
+    if (up)
+        g.drawLine (cx, cy - armLen, cx, cy + armLen, 1.5f);   // "+"
+}
+
+void ContentComponent::OctaveHighlight::paint (juce::Graphics& g)
+{
+    if (keyboard == nullptr)
+        return;
+
+    // Two mapped octaves' worth of white keys, tinted very lightly so it's
+    // visible at a glance which keys the computer keyboard plays right now
+    // without competing with the real note-on highlight. getRectangleForKey
+    // already accounts for the keyboard's own scroll offset, so this stays
+    // correct across setLowestVisibleKey calls with no extra bookkeeping.
+    g.setColour (currentTheme().accent.withAlpha (0.10f));
+    const auto lowest = keyboard->getRangeStart(), highest = keyboard->getRangeEnd();
+    for (int note = baseNote; note < baseNote + 24; ++note)
+    {
+        if (note < lowest || note > highest || juce::MidiMessage::isMidiNoteBlack (note))
+            continue;
+        const auto r = keyboard->getRectangleForKey (note);
+        if (! r.isEmpty())
+            g.fillRect (r);
+    }
+}
+
 void ContentComponent::PanicButton::paintButton (juce::Graphics& g,
                                                  bool highlighted, bool down)
 {
@@ -729,17 +774,63 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
 
     keyboard.setKeyWidth (28.0f);
     keyboard.setAvailableRange (21, 108);        // A0..C8
-    keyboard.setLowestVisibleKey (48);           // opens around C3
     keyboard.setWantsKeyboardFocus (true);       // computer-keyboard (QWERTY) playing
     addChildComponent (keyboard);                // visibility follows keyboardVisible
     keyboardVisible = (bool) processor.getAPVTS().state.getProperty ("uiKeyboardVisible", false);
     keyboard.setVisible (keyboardVisible);
+
+    // keyboardOctave is JUCE's setKeyPressBaseOctave() parameter (base note =
+    // keyboardOctave * 12), NOT the octave number printed in a note name --
+    // see the member comment in the header. Default 4 -> base note 48, the
+    // same key the strip always used to open on (setLowestVisibleKey (48)),
+    // so the default QWERTY-mapped range is exactly the range visible on
+    // startup.
+    keyboardOctave = (int) processor.getAPVTS().state.getProperty ("uiKeyboardOctave", keyboardOctave);
+    keyboardOctave = juce::jlimit (0, 8, keyboardOctave);
+    keyboard.setKeyPressBaseOctave (keyboardOctave);
+    keyboard.setLowestVisibleKey (keyboardOctave * 12);   // scroll so the mapped range is in view;
+                                                          // MidiKeyboardComponent clamps this itself
+                                                          // so it can never scroll past its highest key
+    // Write the (possibly just-defaulted) value back so it's always present
+    // on the state tree once an editor has existed, not only after the user
+    // shifts it once -- buildStateTree/restoreStateTree round-trip it either
+    // way, but this keeps it inspectable/consistent from the first open.
+    processor.getAPVTS().state.setProperty ("uiKeyboardOctave", keyboardOctave, nullptr);
 
     keyboardButton.setTooltip ("Show or hide the on-screen keyboard");
     keyboardButton.onClick = [this] { setKeyboardVisible (! keyboardVisible); };
     keyboardButton.setToggleState (keyboardVisible, juce::dontSendNotification);
     keyboardButton.setMouseClickGrabsKeyboardFocus (false);   // see Controls.h's Knob
     addAndMakeVisible (keyboardButton);
+
+    // Octave shift for QWERTY playing (Paul's request) -- Z/X handle the
+    // keyboard shortcuts (see keyPressed); these are the click equivalent.
+    // Both keep click-grabs-focus off, same as every other action button, so
+    // clicking them can never steal focus from the on-screen keyboard.
+    octaveDownButton.setTooltip ("Octave down (Z)");
+    octaveDownButton.onClick = [this] { shiftKeyboardOctave (-1); };
+    octaveDownButton.setMouseClickGrabsKeyboardFocus (false);
+    addChildComponent (octaveDownButton);      // visibility follows keyboardVisible, like keyboard
+    octaveDownButton.setVisible (keyboardVisible);
+    octaveUpButton.setTooltip ("Octave up (X)");
+    octaveUpButton.onClick = [this] { shiftKeyboardOctave (1); };
+    octaveUpButton.setMouseClickGrabsKeyboardFocus (false);
+    addChildComponent (octaveUpButton);
+    octaveUpButton.setVisible (keyboardVisible);
+    octaveLabel.setFont (metrics::smallFontBold());
+    octaveLabel.setJustificationType (juce::Justification::centred);
+    octaveLabel.setInterceptsMouseClicks (false, false);
+    octaveLabel.setText (octaveRangeLabel(), juce::dontSendNotification);
+    addChildComponent (octaveLabel);
+    octaveLabel.setVisible (keyboardVisible);
+
+    // Tints the two mapped octaves' white keys; a child of `keyboard` itself
+    // so its coordinates already line up, non-interactive so it never steals
+    // clicks/mouse-drag note input from the real keyboard underneath.
+    octaveHighlight.keyboard = &keyboard;
+    octaveHighlight.baseNote = keyboardOctave * 12;
+    octaveHighlight.setInterceptsMouseClicks (false, false);
+    keyboard.addAndMakeVisible (octaveHighlight);
 
     panicButton.setTooltip ("Panic: stop all sound and clear stuck notes");
     panicButton.onClick = [this] { processor.panic(); };
@@ -1177,6 +1268,7 @@ void ContentComponent::refreshAll()
 
     wildnessLabel.setColour (juce::Label::textColourId, t.textSecondary);
     glideLabel.setColour (juce::Label::textColourId, t.textSecondary);
+    octaveLabel.setColour (juce::Label::textColourId, t.textSecondary);
     randomizeButton.setColour (juce::TextButton::buttonColourId, t.accent);
     randomizeButton.setColour (juce::TextButton::textColourOffId, t.display);
 
@@ -1450,8 +1542,23 @@ void ContentComponent::resized()
     // On-screen keyboard sits just above the footer. The base height grows by
     // exactly this strip when shown, so the module grid below is unchanged.
     if (keyboardVisible)
-        keyboard.setBounds (bounds.removeFromBottom (metrics::keyboardStripHeight)
-                                .reduced (metrics::unit, 6));
+    {
+        auto stripArea = bounds.removeFromBottom (metrics::keyboardStripHeight)
+                                .reduced (metrics::unit, 6);
+
+        // Octave shift column at the strip's left edge: readout on top,
+        // −/+ stacked below it, then the keyboard gets the rest.
+        auto octaveCol = stripArea.removeFromLeft (44);
+        stripArea.removeFromLeft (6);   // gap before the keyboard itself
+        octaveLabel.setBounds (octaveCol.removeFromTop (16));
+        octaveCol.removeFromTop (2);
+        const auto octaveButtonH = octaveCol.getHeight() / 2;
+        octaveDownButton.setBounds (octaveCol.removeFromTop (octaveButtonH).reduced (2, 1));
+        octaveUpButton.setBounds (octaveCol.reduced (2, 1));
+
+        keyboard.setBounds (stripArea);
+        octaveHighlight.setBounds (keyboard.getLocalBounds());
+    }
 
     // --- Module grid ----------------------------------------------------------
     auto main = bounds.reduced (metrics::unit, 4);
@@ -1613,6 +1720,9 @@ void ContentComponent::setKeyboardVisible (bool shouldShow)
 
     keyboardVisible = shouldShow;
     keyboard.setVisible (keyboardVisible);
+    octaveDownButton.setVisible (keyboardVisible);
+    octaveUpButton.setVisible (keyboardVisible);
+    octaveLabel.setVisible (keyboardVisible);
     keyboardButton.setToggleState (keyboardVisible, juce::dontSendNotification);
     processor.getAPVTS().state.setProperty ("uiKeyboardVisible", keyboardVisible, nullptr);
 
@@ -1623,6 +1733,47 @@ void ContentComponent::setKeyboardVisible (bool shouldShow)
         onKeyboardToggled();
     if (keyboardVisible)
         keyboard.grabKeyboardFocus();   // enable QWERTY playing right away
+}
+
+// "C2–C4"-style readout of the two mapped octaves, using the exact same
+// note-naming convention the keyboard itself draws its own key labels with
+// (juce::MidiMessage::getMidiNoteName + keyboard.getOctaveForMiddleC()) --
+// NOT keyboardOctave pasted straight after a "C", which is a different
+// number (see the member comment in the header).
+juce::String ContentComponent::octaveRangeLabel() const
+{
+    const auto octaveForMiddleC = keyboard.getOctaveForMiddleC();
+    const auto lowName  = juce::MidiMessage::getMidiNoteName (keyboardOctave * 12, true, true, octaveForMiddleC);
+    const auto highName = juce::MidiMessage::getMidiNoteName (keyboardOctave * 12 + 24, true, true, octaveForMiddleC);
+    return lowName + juce::String (juce::CharPointer_UTF8 ("\xe2\x80\x93")) + highName;   // en dash
+}
+
+void ContentComponent::shiftKeyboardOctave (int delta)
+{
+    const auto next = juce::jlimit (0, 8, keyboardOctave + delta);
+    if (next == keyboardOctave)
+        return;
+
+    // MidiKeyboardComponent::setKeyPressBaseOctave doesn't clear any keys
+    // currently held via QWERTY (unlike a mouse-drag note, which tracks its
+    // own release) -- reset first so a note isn't left stuck sounding at the
+    // old pitch after the mapping moves out from under it.
+    processor.getKeyboardState().allNotesOff (0);
+
+    keyboardOctave = next;
+    keyboard.setKeyPressBaseOctave (keyboardOctave);
+    keyboard.setLowestVisibleKey (keyboardOctave * 12);   // scroll the mapped range into view;
+                                                          // clamps itself against the highest key
+    octaveLabel.setText (octaveRangeLabel(), juce::dontSendNotification);
+    octaveHighlight.baseNote = keyboardOctave * 12;
+    octaveHighlight.repaint();
+    processor.getAPVTS().state.setProperty ("uiKeyboardOctave", keyboardOctave, nullptr);
+
+    // The buttons never grab focus themselves, but Z/X reach here only
+    // because the keyboard (or nothing) had focus -- make sure QWERTY keeps
+    // working uninterrupted either way.
+    if (keyboardVisible)
+        keyboard.grabKeyboardFocus();
 }
 
 void ContentComponent::togglePresetBrowser()
@@ -1766,6 +1917,24 @@ bool ContentComponent::keyPressed (const juce::KeyPress& key)
     if (key == juce::KeyPress::escapeKey && presetBrowserOpen)
     {
         togglePresetBrowser();
+        return true;
+    }
+
+    // Z/X octave shift for QWERTY keyboard playing (Ableton/Logic
+    // convention), only while the on-screen keyboard strip is showing --
+    // otherwise Z/X would silently swallow input with no keyboard to play.
+    // MidiKeyboardComponent::keyPressed only claims the note keys it maps,
+    // so these bubble up to us the same way Esc does (see the comment
+    // above).
+    const auto lowerChar = juce::CharacterFunctions::toLowerCase (key.getTextCharacter());
+    if (keyboardVisible && lowerChar == 'z')
+    {
+        shiftKeyboardOctave (-1);
+        return true;
+    }
+    if (keyboardVisible && lowerChar == 'x')
+    {
+        shiftKeyboardOctave (1);
         return true;
     }
 
