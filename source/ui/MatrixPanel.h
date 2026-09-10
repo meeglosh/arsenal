@@ -56,7 +56,34 @@ public:
         viewport.setViewedComponent (&content, false);
         viewport.setScrollBarsShown (true, false);
         addAndMakeVisible (viewport);
+
+        // ASSIGN toggle: click-to-route mode (see AssignOverlay). Styled like
+        // any other header text button; focus-grab disabled per the QWERTY
+        // rule (Controls.h's Knob comment has the full explanation).
+        assignBtn.setClickingTogglesState (true);
+        assignBtn.setWantsKeyboardFocus (false);
+        assignBtn.setMouseClickGrabsKeyboardFocus (false);
+        assignBtn.setComponentID ("matrixAssign");
+        assignBtn.onClick = [this]
+        {
+            if (onAssignToggled)
+                onAssignToggled (assignBtn.getToggleState());
+        };
+        addAndMakeVisible (assignBtn);
     }
+
+    juce::Button& assignButton() { return assignBtn; }
+    bool isAssignOn() const { return assignBtn.getToggleState(); }
+    // Sets the toggle and fires onAssignToggled if the state actually
+    // changed (used by ContentComponent::keyPressed's Esc handling).
+    void setAssignOn (bool on)
+    {
+        if (assignBtn.getToggleState() == on)
+            return;
+        assignBtn.setToggleState (on, juce::sendNotification);
+    }
+
+    std::function<void(bool)> onAssignToggled;
 
     void paint (juce::Graphics& g) override
     {
@@ -68,6 +95,10 @@ public:
     void resized() override
     {
         constexpr int rowHeight = 25;
+        {
+            auto headerArea = getLocalBounds().removeFromTop (metrics::sectionHeaderHeight);
+            assignBtn.setBounds (headerArea.removeFromRight (70).reduced (6, 5));
+        }
         auto area = getLocalBounds().withTrimmedTop (metrics::sectionHeaderHeight).reduced (6, 4);
 
         // The panel is never tall enough to show all 16 rows at once (this
@@ -110,6 +141,7 @@ private:
     juce::Component content;
     juce::Viewport viewport;
     std::vector<std::unique_ptr<Row>> rows;
+    juce::TextButton assignBtn { "ASSIGN" };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MatrixPanel)
 };

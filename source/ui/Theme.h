@@ -37,6 +37,8 @@ struct Theme
     juce::Colour outline;         // hairlines
     juce::Colour knobFace;
     juce::Colour knobTrack;
+    juce::Colour assignGlow;      // ASSIGN mode: pulsing blue glow on assignable controls/menus
+    juce::Colour assignSelected;  // ASSIGN mode: solid colour for the currently selected object
 
     static Theme dark()
     {
@@ -58,6 +60,8 @@ struct Theme
         t.outline       = juce::Colour (0xff2a3337);
         t.knobFace      = juce::Colour (0xff232b31);
         t.knobTrack     = juce::Colour (0xff2f393e);
+        t.assignGlow     = juce::Colour (0xff4aa3ff);
+        t.assignSelected = juce::Colour (0xffffd54a);
         return t;
     }
 

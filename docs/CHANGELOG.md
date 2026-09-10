@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- EQ bands can now be switched between Bell, Low Shelf, High Shelf, Low Cut,
+  High Cut, Notch, Band Pass and Tilt Shelf by right-clicking a node in the
+  EQ display. Low Cut and High Cut bands also get a slope choice from 6 to
+  48 dB per octave, for a real low-cut or high-pass instead of a single gentle
+  filter. Double-clicking near the left or right edge of the EQ display now
+  drops in a low cut or high cut in one gesture.
 - Pulse factory presets now combine the pack's own sound with a real synth
   oscillator (wavetable, analog, FM or pluck), with the sample's own
   dynamics, pitch or envelope driving that synth layer in a different way
@@ -22,6 +28,12 @@
 
 A small visibility improvement requested by our testers.
 
+- Added an ASSIGN mode to the mod matrix. Turn it on and everything that can
+  be part of a modulation route starts glowing blue, both the things you can
+  modulate and the matrix rows themselves. Click a glowing control, then
+  click a glowing row menu, and that route is made for you. Works for
+  sources as well as destinations, and stays on so you can wire up several
+  routes in a row. Turn it off with the same button or the Esc key.
 - Fixed sample loops that stopped after one pass when the loop end was left
   at the very end of the file.
 - Enabled effects now show their tab name in bold and in the brighter text

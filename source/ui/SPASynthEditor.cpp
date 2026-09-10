@@ -925,6 +925,10 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     for (int s = 0; s < params::numOscSlots; ++s)
     {
         oscStrips[(size_t) s] = std::make_unique<OscStrip> (processor, s);
+        // ASSIGN mode source target: the strip's own display/header is the
+        // visual home of its SFX Amp/Pitch followers (a 2-item popup picks
+        // which on click -- see AssignOverlay::showOscSourceMenu).
+        oscStrips[(size_t) s]->getProperties().set ("oscSlot", s);
         addAndMakeVisible (*oscStrips[(size_t) s]);
     }
 
@@ -942,16 +946,37 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
     envTabs.addTab ("ENV 3", tabBg, new EnvPanel (processor, "env3", 2), true);
     addAndMakeVisible (envTabs);
 
+    // ASSIGN mode source targets: the AMP/ENV2/ENV3 tab buttons are the
+    // visual homes of ModSource::env1/2/3 (see AssignOverlay).
+    {
+        static constexpr params::ModSource envSources[] = {
+            params::ModSource::env1, params::ModSource::env2, params::ModSource::env3
+        };
+        for (int i = 0; i < 3; ++i)
+            if (auto* tabButton = envTabs.getTabbedButtonBar().getTabButton (i))
+                tabButton->getProperties().set ("modSource", (int) envSources[(size_t) i]);
+    }
+
     for (int i = 0; i < params::numLFOs; ++i)
         lfoTabs.addTab ("LFO " + juce::String (i + 1), tabBg,
                         new LFOPanel (processor, i), true);
     addAndMakeVisible (lfoTabs);
+
+    // ASSIGN mode source targets: the LFO 1/2/3 tab buttons. lfo1/2/3 are
+    // consecutive in the ModSource enum, so lfo1 + i is source i's value.
+    for (int i = 0; i < params::numLFOs; ++i)
+        if (auto* tabButton = lfoTabs.getTabbedButtonBar().getTabButton (i))
+            tabButton->getProperties().set ("modSource",
+                (int) params::ModSource::lfo1 + i);
 
     filterTabs.addTab ("FILTER 1", juce::Colours::transparentBlack,
                        new FilterPanel (processor, 1), true);
     filterTabs.addTab ("FILTER 2", juce::Colours::transparentBlack,
                        new FilterPanel (processor, 2), true);
     addAndMakeVisible (filterTabs);
+    // ASSIGN mode source target: the Organic Chaos panel is the visual home
+    // of ModSource::chaos.
+    chaosPanel.getProperties().set ("modSource", (int) params::ModSource::chaos);
     addAndMakeVisible (chaosPanel);
     addAndMakeVisible (arpPanel);
 
@@ -1010,6 +1035,18 @@ ContentComponent::ContentComponent (SPASynthProcessor& p, std::function<void()> 
         [this] { chooseLibraryFolder(); },
         [this] { if (keyboardVisible) keyboard.grabKeyboardFocus(); });
     addChildComponent (*presetBrowser);
+
+    // Added last of all so it sits topmost -- see AssignOverlay's class
+    // comment. Owns every click while assign mode is on; invisible and
+    // non-intercepting otherwise, so it must never change normal UI
+    // behaviour (presetBrowserFocusGrabTest and friends stay unaffected).
+    assignOverlay = std::make_unique<AssignOverlay> (processor.getAPVTS());
+    addChildComponent (*assignOverlay);
+    matrixPanel.onAssignToggled = [this] (bool on)
+    {
+        assignOverlay->setAssignMode (on, *this, matrixPanel.assignButton().getBounds()
+            .translated (matrixPanel.getX(), matrixPanel.getY()));
+    };
 
     processor.addChangeListener (this);
     processor.getPresetManager().addChangeListener (this);
@@ -1497,6 +1534,9 @@ void ContentComponent::resized()
         presetBrowser->setOpenBounds (drawerArea);
         presetBrowser->setBounds (drawerArea);
     }
+
+    if (assignOverlay != nullptr)
+        assignOverlay->setBounds (getLocalBounds());
 }
 
 // Parent for pop-over call-outs: the editor shell (SPASynthEditor), which
@@ -1717,6 +1757,12 @@ bool ContentComponent::keyPressed (const juce::KeyPress& key)
     // see the comment in togglePresetBrowser(). Mirrors PresetBrowser::
     // keyPressed's own Esc handling for the case where focus is inside the
     // browser instead.
+    if (key == juce::KeyPress::escapeKey && assignOverlay != nullptr && assignOverlay->isAssignActive())
+    {
+        matrixPanel.setAssignOn (false);
+        return true;
+    }
+
     if (key == juce::KeyPress::escapeKey && presetBrowserOpen)
     {
         togglePresetBrowser();

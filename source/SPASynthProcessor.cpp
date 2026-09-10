@@ -173,6 +173,7 @@ SPASynthProcessor::SPASynthProcessor()
             auto& bp = rf.eqBands[(size_t) b];
             bp.enable = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::enable));
             bp.type   = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::type));
+            bp.slope  = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::slope));
             bp.freq   = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::freq));
             bp.gain   = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::gain));
             bp.q      = apvts.getRawParameterValue (params::id::eqBand (b, fx::eqband::q));
@@ -1198,6 +1199,7 @@ void SPASynthProcessor::updateFXParams()
         auto& band = p.eqBands[(size_t) b];
         band.enabled = bp.enable->load() >= 0.5f;
         band.type    = (int) bp.type->load();
+        band.slope   = (int) bp.slope->load();
         band.freq    = bp.freq->load();
         band.gainDb  = bp.gain->load();
         band.q       = bp.q->load();

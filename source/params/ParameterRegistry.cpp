@@ -699,8 +699,15 @@ static std::vector<ParamDef> buildCoreDefs()
             p.push_back ({ id::eqBand (b, fx::eqband::type), bn + "Type", Section::fxEQ,
                            ParamKind::choiceParam, {}, (float) defs[b].type, "",
                            false, { .enabled = false },
+                           // Append-only (ParametricEQ::Type indices).
                            juce::StringArray { "Bell", "Low Shelf", "High Shelf",
-                                               "Low Cut", "High Cut", "Notch" } });
+                                               "Low Cut", "High Cut", "Notch",
+                                               "Band Pass", "Tilt Shelf" } });
+            p.push_back ({ id::eqBand (b, fx::eqband::slope), bn + "Slope", Section::fxEQ,
+                           ParamKind::choiceParam, {}, 1.0f /* 12 dB, matches pre-slope behaviour */, "",
+                           false, { .enabled = false },
+                           // Append-only. Only meaningful for Low Cut / High Cut bands.
+                           juce::StringArray { "6 dB", "12 dB", "18 dB", "24 dB", "36 dB", "48 dB" } });
             p.push_back ({ id::eqBand (b, fx::eqband::freq), bn + "Freq", Section::fxEQ,
                            ParamKind::floatParam, frequencyRange (20.0f, 20000.0f),
                            defs[b].freq, "Hz", false, { .enabled = true } });

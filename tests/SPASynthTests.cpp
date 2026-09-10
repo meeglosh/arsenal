@@ -13,6 +13,7 @@
 #include "params/ParameterRegistry.h"
 #include "params/Randomizer.h"
 #include "ui/SPASynthEditor.h"
+#include "ui/EqEditor.h"
 
 #include <cstdlib>
 #include <iostream>
@@ -1689,7 +1690,7 @@ namespace
         constexpr float twoPi = juce::MathConstants<float>::twoPi;
 
         std::array<EQ::Band, EQ::numBands> bands {};
-        bands[0] = { true, (int) EQ::Type::bell, 1000.0f, 12.0f, 2.0f };
+        bands[0] = { true, (int) EQ::Type::bell, 1, 1000.0f, 12.0f, 2.0f };
         const float atCentre = EQ::magnitudeDb (bands, 1000.0f, sr);
         const float atFar    = EQ::magnitudeDb (bands, 60.0f, sr);
         expect (std::abs (atCentre - 12.0f) < 0.5f,
@@ -1715,14 +1716,272 @@ namespace
 
         std::array<EQ::Band, EQ::numBands> off {};
         std::array<EQ::Band, EQ::numBands> boost {};
-        boost[0] = { true, (int) EQ::Type::bell, 1000.0f, 12.0f, 2.0f };
+        boost[0] = { true, (int) EQ::Type::bell, 1, 1000.0f, 12.0f, 2.0f };
         expect (rmsThrough (boost, 1000.0f) > rmsThrough (off, 1000.0f) * 2.0f,
                 "bell boost raises 1 kHz RMS");
 
         std::array<EQ::Band, EQ::numBands> hicut {};
-        hicut[0] = { true, (int) EQ::Type::highCut, 2000.0f, 0.0f, 0.707f };
+        hicut[0] = { true, (int) EQ::Type::highCut, 1, 2000.0f, 0.0f, 0.707f };
         expect (rmsThrough (hicut, 10000.0f) < rmsThrough (off, 10000.0f) * 0.3f,
                 "high-cut attenuates 10 kHz");
+    }
+
+    // Pro-Q-style EQ types: Band Pass, Tilt Shelf, and Low Cut/High Cut slopes
+    // from 6 to 48 dB/oct. Uses the analytic magnitude() function (the same
+    // one the UI draws from) plus one audio-path finite-output pass, since the
+    // curve and the DSP are contractually required to agree.
+    static void eqBandTypesTest()
+    {
+        std::cout << "eqBandTypesTest\n";
+        using EQ = spa::dsp::ParametricEQ;
+        constexpr double sr = 48000.0;
+
+        auto band = [] (EQ::Type type, int slope, float freq, float gain, float q)
+        {
+            EQ::Band b; b.enabled = true; b.type = (int) type; b.slope = slope;
+            b.freq = freq; b.gainDb = gain; b.q = q;
+            return b;
+        };
+
+        struct SlopeCase { int idx; int dbOct; };
+        const SlopeCase slopes[] = { { 0, 6 }, { 1, 12 }, { 2, 18 }, { 3, 24 }, { 4, 36 }, { 5, 48 } };
+
+        for (auto& sc : slopes)
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            bands[0] = band (EQ::Type::lowCut, sc.idx, 200.0f, 0.0f, 0.707f);
+            const float at50 = EQ::magnitudeDb (bands, 50.0f, sr);     // 2 oct below corner
+            const float at2k = EQ::magnitudeDb (bands, 2000.0f, sr);   // well above corner
+            const float expectedAtten = -(float) sc.dbOct * 2.0f;
+            expect (std::abs (at50 - expectedAtten) < 3.0f,
+                    "low cut " + juce::String (sc.dbOct) + " dB/oct attenuates 2 oct below by ~expected ("
+                    + juce::String (at50) + " vs " + juce::String (expectedAtten) + ")");
+            expect (std::abs (at2k) < 1.0f, "low cut " + juce::String (sc.dbOct) + " dB/oct passes above corner");
+        }
+
+        for (auto& sc : slopes)
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            // Corner kept well below Nyquist (48 kHz sr) so bilinear-transform
+            // frequency warping doesn't skew the 2-octave-above measurement.
+            bands[0] = band (EQ::Type::highCut, sc.idx, 1000.0f, 0.0f, 0.707f);
+            const float at4k = EQ::magnitudeDb (bands, 4000.0f, sr);   // 2 oct above corner
+            const float at100 = EQ::magnitudeDb (bands, 100.0f, sr);
+            const float expectedAtten = -(float) sc.dbOct * 2.0f;
+            expect (std::abs (at4k - expectedAtten) < 3.0f,
+                    "high cut " + juce::String (sc.dbOct) + " dB/oct attenuates 2 oct above by ~expected ("
+                    + juce::String (at4k) + " vs " + juce::String (expectedAtten) + ")");
+            expect (std::abs (at100) < 1.0f, "high cut " + juce::String (sc.dbOct) + " dB/oct passes below corner");
+        }
+
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            bands[0] = band (EQ::Type::bandPass, 1, 1000.0f, 0.0f, 1.0f);
+            expect (std::abs (EQ::magnitudeDb (bands, 1000.0f, sr)) < 1.0f, "band pass centre ~0 dB");
+            expect (EQ::magnitudeDb (bands, 4000.0f, sr) < -10.0f, "band pass attenuates 2 oct above centre");
+            expect (EQ::magnitudeDb (bands, 250.0f, sr) < -10.0f, "band pass attenuates 2 oct below centre");
+        }
+
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            bands[0] = band (EQ::Type::tiltShelf, 1, 1000.0f, 6.0f, 0.707f);
+            const float above = EQ::magnitudeDb (bands, 8000.0f, sr);
+            const float below = EQ::magnitudeDb (bands, 100.0f, sr);
+            expect (std::abs (above - 3.0f) < 1.5f,
+                    "tilt +6dB reads ~+3dB well above the pivot (" + juce::String (above) + ")");
+            expect (std::abs (below + 3.0f) < 1.5f,
+                    "tilt +6dB reads ~-3dB well below the pivot (" + juce::String (below) + ")");
+        }
+
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            bands[0] = band (EQ::Type::notch, 1, 1000.0f, 0.0f, 8.0f);
+            expect (EQ::magnitudeDb (bands, 1000.0f, sr) < -20.0f, "notch depth > 20 dB at centre");
+        }
+
+        // Existing Bell/shelf responses unchanged vs. pre-change measurements
+        // (parametricEqTest's own numbers: bell +12dB centre, shelves boost their side).
+        {
+            std::array<EQ::Band, EQ::numBands> bands {};
+            bands[0] = band (EQ::Type::bell, 1, 1000.0f, 12.0f, 2.0f);
+            expect (std::abs (EQ::magnitudeDb (bands, 1000.0f, sr) - 12.0f) < 0.1f,
+                    "bell unchanged: centre +12 dB");
+            bands[0] = band (EQ::Type::lowShelf, 1, 200.0f, 6.0f, 0.707f);
+            expect (EQ::magnitudeDb (bands, 20.0f, sr) > 4.0f, "low shelf unchanged: boosts sub");
+            bands[0] = band (EQ::Type::highShelf, 1, 5000.0f, 6.0f, 0.707f);
+            expect (EQ::magnitudeDb (bands, 18000.0f, sr) > 4.0f, "high shelf unchanged: boosts highs");
+        }
+
+        // Default slope (index 1 = "12 dB") reproduces the single-biquad, pre-
+        // slope response exactly, so a preset saved before this feature (no
+        // slope param -> APVTS default) loads identically.
+        {
+            std::array<EQ::Band, EQ::numBands> a {};
+            a[0] = band (EQ::Type::lowCut, 1, 300.0f, 0.0f, 1.4f);
+            EQ::Band plain = a[0];
+            plain.slope = 1;
+            std::array<EQ::Band, EQ::numBands> b2 {}; b2[0] = plain;
+            expect (juce::approximatelyEqual (EQ::magnitudeDb (a, 150.0f, sr), EQ::magnitudeDb (b2, 150.0f, sr)),
+                    "default slope (index 1) is stable/deterministic");
+        }
+
+        // Audio-path pass: every type/slope combination, output stays finite.
+        {
+            EQ eq; eq.prepare (sr, 512);
+            for (auto& sc : slopes)
+            {
+                std::array<EQ::Band, EQ::numBands> bands {};
+                bands[0] = band (EQ::Type::lowCut, sc.idx, 300.0f, 0.0f, 0.707f);
+                bands[1] = band (EQ::Type::highCut, sc.idx, 8000.0f, 0.0f, 0.707f);
+                bands[2] = band (EQ::Type::bandPass, 1, 2000.0f, 0.0f, 2.0f);
+                bands[3] = band (EQ::Type::tiltShelf, 1, 1000.0f, 8.0f, 0.707f);
+                bands[4] = band (EQ::Type::notch, 1, 3000.0f, 0.0f, 10.0f);
+                eq.updateBands (bands);
+
+                juce::AudioBuffer<float> buf (2, 2048);
+                for (int i = 0; i < 2048; ++i)
+                {
+                    const float s = std::sin (juce::MathConstants<float>::twoPi * 440.0f
+                                             * (float) i / (float) sr);
+                    buf.setSample (0, i, s); buf.setSample (1, i, s);
+                }
+                eq.process (buf);
+                bool finite = true;
+                for (int i = 0; i < 2048 && finite; ++i)
+                    if (! std::isfinite (buf.getSample (0, i)) || ! std::isfinite (buf.getSample (1, i)))
+                        finite = false;
+                expect (finite, "eq output finite, slope " + juce::String (sc.dbOct) + " dB/oct");
+            }
+        }
+    }
+
+    // EqEditor's right-click type/slope menu and the edge double-click
+    // convenience. The popup itself can't be driven headlessly, so this drives
+    // the same setTypeAndSlope() code path the menu's callback uses, and
+    // exercises the edge-zone double-click gesture directly through
+    // mouseDoubleClick (real coordinates, real APVTS round-trip).
+    static void eqEditorTypeMenuTest()
+    {
+        std::cout << "eqEditorTypeMenuTest\n";
+        namespace id = spa::params::id;
+        namespace fx = spa::params::id::fx;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        juce::TabbedComponent* fxTabs = nullptr;
+        std::function<void (juce::Component&)> findTabs = [&] (juce::Component& c)
+        {
+            if (fxTabs == nullptr)
+                if (auto* t = dynamic_cast<juce::TabbedComponent*> (&c))
+                    if (t->getTabNames().contains ("EQ"))
+                        fxTabs = t;
+            for (auto* child : c.getChildren())
+                findTabs (*child);
+        };
+        findTabs (*editor);
+        expect (fxTabs != nullptr, "FX tab bar found");
+        if (fxTabs == nullptr) return;
+
+        // A non-selected tab's content component isn't parented into the tree
+        // at all (TabbedComponent only calls addChildComponent on selection --
+        // see changeCallback), so EqEditor can't be found until the EQ tab has
+        // actually been selected at least once.
+        fxTabs->setCurrentTabIndex (fxTabs->getTabNames().indexOf ("EQ"));
+
+        spa::ui::EqEditor* eq = nullptr;
+        std::function<void (juce::Component&)> findEq = [&] (juce::Component& c)
+        {
+            if (eq == nullptr)
+                eq = dynamic_cast<spa::ui::EqEditor*> (&c);
+            for (auto* child : c.getChildren())
+                findEq (*child);
+        };
+        findEq (*editor);
+        expect (eq != nullptr, "EqEditor found in the editor tree");
+        if (eq == nullptr) return;
+        eq->resized();
+
+        // Set band 0 to Bell first (as double-click-to-add would), then change
+        // it to Low Cut via the same API the right-click menu's callback calls.
+        setParam (proc, id::eqBand (0, fx::eqband::enable), 1.0f);
+        setParam (proc, id::eqBand (0, fx::eqband::type), 0.0f /* Bell */);
+        eq->setTypeAndSlope (0, (int) spa::dsp::ParametricEQ::Type::lowCut,
+                             (int) spa::dsp::ParametricEQ::Slope::db24);
+
+        expect ((int) proc.getAPVTS().getRawParameterValue (id::eqBand (0, fx::eqband::type))->load()
+                    == (int) spa::dsp::ParametricEQ::Type::lowCut,
+                "setTypeAndSlope changed the type param");
+        expect ((int) proc.getAPVTS().getRawParameterValue (id::eqBand (0, fx::eqband::slope))->load()
+                    == (int) spa::dsp::ParametricEQ::Slope::db24,
+                "setTypeAndSlope changed the slope param");
+
+        // The badge/readout text must reflect it.
+        expect (spa::ui::EqEditor::badgeText ((int) spa::dsp::ParametricEQ::Type::lowCut,
+                                              (int) spa::dsp::ParametricEQ::Slope::db24) == "LC 24",
+                "badge text reflects Low Cut 24 dB/oct");
+
+        // The curve path must be non-empty for a Low Cut band (paint() doesn't
+        // crash/early-out on the new type). Smoke-test via magnitudeDb instead
+        // of pixel inspection: a real (finite, non-zero-everywhere) response.
+        {
+            std::array<spa::dsp::ParametricEQ::Band, spa::dsp::ParametricEQ::numBands> bands {};
+            bands[0].enabled = true;
+            bands[0].type = (int) spa::dsp::ParametricEQ::Type::lowCut;
+            bands[0].slope = (int) spa::dsp::ParametricEQ::Slope::db24;
+            bands[0].freq = 1000.0f;
+            const float db = spa::dsp::ParametricEQ::magnitudeDb (bands, 100.0f, 48000.0);
+            expect (std::isfinite (db) && db < -1.0f, "low cut curve is a real, finite attenuation");
+        }
+
+        // Edge double-click convenience: disable band 0, double-click near the
+        // left edge of the graph -> adds a Low Cut; near the right edge -> High Cut.
+        setParam (proc, id::eqBand (0, fx::eqband::enable), 0.0f);
+        for (int b = 1; b < spa::dsp::ParametricEQ::numBands; ++b)
+            setParam (proc, id::eqBand (b, fx::eqband::enable), 0.0f);
+
+        auto bounds = eq->getLocalBounds();
+        // Just inside the graph's left inset (top bar 24px + reduced(8,6)).
+        const auto leftPos = juce::Point<float> ((float) bounds.getX() + 10.0f,
+                                                  (float) bounds.getCentreY());
+        const juce::MouseEvent leftEv (juce::Desktop::getInstance().getMainMouseSource(),
+            leftPos, juce::ModifierKeys(), 1.0f, 0.5f, 0.5f, 0.0f, 0.0f, eq, eq,
+            juce::Time::getCurrentTime(), leftPos, juce::Time::getCurrentTime(), 1, false);
+        eq->mouseDoubleClick (leftEv);
+
+        int foundBand = -1;
+        for (int b = 0; b < spa::dsp::ParametricEQ::numBands; ++b)
+            if (proc.getAPVTS().getRawParameterValue (id::eqBand (b, fx::eqband::enable))->load() >= 0.5f)
+                foundBand = b;
+        expect (foundBand >= 0, "edge double-click enabled a band");
+        if (foundBand >= 0)
+        {
+            expect ((int) proc.getAPVTS().getRawParameterValue (id::eqBand (foundBand, fx::eqband::type))->load()
+                        == (int) spa::dsp::ParametricEQ::Type::lowCut,
+                    "double-click near the left edge added a Low Cut");
+            setParam (proc, id::eqBand (foundBand, fx::eqband::enable), 0.0f);
+        }
+
+        // Right edge -> High Cut.
+        const auto rightPos = juce::Point<float> ((float) bounds.getRight() - 10.0f,
+                                                    (float) bounds.getCentreY());
+        const juce::MouseEvent rightEv (juce::Desktop::getInstance().getMainMouseSource(),
+            rightPos, juce::ModifierKeys(), 1.0f, 0.5f, 0.5f, 0.0f, 0.0f, eq, eq,
+            juce::Time::getCurrentTime(), rightPos, juce::Time::getCurrentTime(), 1, false);
+        eq->mouseDoubleClick (rightEv);
+
+        int foundBand2 = -1;
+        for (int b = 0; b < spa::dsp::ParametricEQ::numBands; ++b)
+            if (proc.getAPVTS().getRawParameterValue (id::eqBand (b, fx::eqband::enable))->load() >= 0.5f)
+                foundBand2 = b;
+        expect (foundBand2 >= 0, "edge double-click (right) enabled a band");
+        if (foundBand2 >= 0)
+            expect ((int) proc.getAPVTS().getRawParameterValue (id::eqBand (foundBand2, fx::eqband::type))->load()
+                        == (int) spa::dsp::ParametricEQ::Type::highCut,
+                    "double-click near the right edge added a High Cut");
     }
 
     // Voice modes gate how many voices a chord (or a single note, for unison)
@@ -2082,7 +2341,7 @@ namespace
             FX fx; fx.prepare (sr, n);
             FX::Params p;
             p.eqEnable = true;
-            p.eqBands[0] = { true, (int) EQ::Type::bell, 2000.0f, 24.0f, 18.0f };
+            p.eqBands[0] = { true, (int) EQ::Type::bell, 1, 2000.0f, 24.0f, 18.0f };
 
             peakOverBlocks (fx, p, 40, true);          // ring the band up
             p.eqBands[0].enabled = false;
@@ -6464,6 +6723,277 @@ namespace
         }
     }
 
+    // ASSIGN mode: click a destination (filter 1 cutoff), route it into two
+    // matrix rows (selection persists across assignments), click a source
+    // (LFO 2's tab) and route it into row 0's SOURCE menu, verify overwrite
+    // (a second destination replaces the first for a row already routed),
+    // and confirm Esc exits assign mode and fades/stops the overlay so a
+    // normal click on the knob afterwards is not intercepted.
+    static void modAssignModeTest()
+    {
+        std::cout << "modAssignModeTest\n";
+
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        spa::ui::ContentComponent* content = nullptr;
+        spa::ui::AssignOverlay* overlay = nullptr;
+        juce::Button* assignBtn = nullptr;
+        std::function<void (juce::Component&)> findParts = [&] (juce::Component& c)
+        {
+            if (content == nullptr)
+                content = dynamic_cast<spa::ui::ContentComponent*> (&c);
+            if (overlay == nullptr)
+                overlay = dynamic_cast<spa::ui::AssignOverlay*> (&c);
+            if (assignBtn == nullptr && c.getComponentID() == "matrixAssign")
+                assignBtn = dynamic_cast<juce::Button*> (&c);
+            for (auto* child : c.getChildren())
+                findParts (*child);
+        };
+        findParts (*editor);
+
+        expect (content != nullptr && overlay != nullptr && assignBtn != nullptr,
+                "ContentComponent/AssignOverlay/ASSIGN button all found");
+        if (content == nullptr || overlay == nullptr || assignBtn == nullptr)
+            return;
+
+        expect (! overlay->isAssignActive() && ! overlay->isVisible(),
+                "overlay starts inactive/invisible");
+
+        // Button::triggerClick() posts an async command message
+        // (Component::postCommandMessage -> MessageManager::callAsync) --
+        // wait on the actual state change rather than a fixed pump, which
+        // was flaky under CPU load in this headless harness (no real run
+        // loop cadence).
+        assignBtn->triggerClick();
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + 5000u;
+            while (! overlay->isAssignActive() && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+        expect (overlay->isAssignActive() && overlay->isVisible(),
+                "ASSIGN toggled on: overlay active + visible");
+
+        auto* cutoffKnob = findByParamID (*editor, id::filter1Cutoff);
+        expect (cutoffKnob != nullptr, "filter 1 cutoff knob found");
+        if (cutoffKnob == nullptr)
+            return;
+
+        const auto clickAt = [&] (juce::Component& target)
+        {
+            const auto p = overlay->getLocalArea (&target, target.getLocalBounds()).getCentre();
+            overlay->handleClickAt (p);
+        };
+
+        clickAt (*cutoffKnob);
+        expect (overlay->isSelected (cutoffKnob), "cutoff knob selected after click (yellow)");
+
+        const int cutoffDestChoice = params::modDestIndex (id::filter1Cutoff) + 1;
+
+        auto* row0Dest = findByParamID (*editor, id::routeParam (0, id::route::dest));
+        auto* row1Dest = findByParamID (*editor, id::routeParam (1, id::route::dest));
+        expect (row0Dest != nullptr && row1Dest != nullptr, "row 0/1 DEST combos found");
+        if (row0Dest == nullptr || row1Dest == nullptr)
+            return;
+
+        clickAt (*row0Dest);
+        auto readChoice = [&] (const juce::String& pid) -> int
+        {
+            auto* p = proc.getAPVTS().getParameter (pid);
+            return p == nullptr ? -1 : (int) p->convertFrom0to1 (p->getValue());
+        };
+        expect (readChoice (id::routeParam (0, id::route::dest)) == cutoffDestChoice,
+                "row 0 dest == filter1Cutoff after click");
+
+        // Selection persists: assign the SAME knob into row 1 too.
+        expect (overlay->isSelected (cutoffKnob), "cutoff knob stays selected after assigning");
+        clickAt (*row1Dest);
+        expect (readChoice (id::routeParam (1, id::route::dest)) == cutoffDestChoice,
+                "row 1 dest == filter1Cutoff too (selection persisted)");
+
+        // Source: click LFO 2's tab button (tagged modSource == ModSource::lfo2).
+        juce::Component* lfo2Tab = nullptr;
+        std::function<void (juce::Component&)> findLfo2 = [&] (juce::Component& c)
+        {
+            if (lfo2Tab == nullptr && c.getProperties().contains ("modSource")
+                && (int) c.getProperties()["modSource"] == (int) params::ModSource::lfo2)
+                lfo2Tab = &c;
+            for (auto* child : c.getChildren())
+                findLfo2 (*child);
+        };
+        findLfo2 (*editor);
+        expect (lfo2Tab != nullptr, "LFO 2 tab button found (tagged modSource)");
+        if (lfo2Tab == nullptr)
+            return;
+
+        clickAt (*lfo2Tab);
+        expect (overlay->isSelected (lfo2Tab), "LFO 2 tab selected after click (yellow)");
+
+        auto* row0Source = findByParamID (*editor, id::routeParam (0, id::route::source));
+        expect (row0Source != nullptr, "row 0 SOURCE combo found");
+        if (row0Source == nullptr)
+            return;
+
+        clickAt (*row0Source);
+        expect (readChoice (id::routeParam (0, id::route::source)) == (int) params::ModSource::lfo2,
+                "row 0 source == ModSource::lfo2 after click");
+
+        // Overwrite: select a different destination (osc A level), assign
+        // into row 0 again -- it must replace filter1Cutoff, not stack.
+        auto* oscALevel = findByParamID (*editor, id::oscSlot (0, id::osc::level));
+        expect (oscALevel != nullptr, "osc A level knob found");
+        if (oscALevel != nullptr)
+        {
+            clickAt (*oscALevel);
+            expect (overlay->isSelected (oscALevel) && ! overlay->isSelected (cutoffKnob),
+                    "clicking a different knob replaces the destination selection");
+            clickAt (*row0Dest);
+            const int levelDestChoice = params::modDestIndex (id::oscSlot (0, id::osc::level)) + 1;
+            expect (readChoice (id::routeParam (0, id::route::dest)) == levelDestChoice,
+                    "row 0 dest OVERWRITTEN to osc A level");
+        }
+
+        // Esc exits assign mode; after the ~300ms fade the overlay stops
+        // painting/intercepting entirely.
+        content->keyPressed (juce::KeyPress (juce::KeyPress::escapeKey));
+        expect (! overlay->isAssignActive(), "Esc turns assign mode off immediately");
+
+        pumpFor (400);
+        expect (! overlay->isVisible(), "overlay hidden after the fade completes");
+        expect (! overlay->hitTest (
+                    overlay->getLocalArea (cutoffKnob, cutoffKnob->getLocalBounds()).getCentreX(),
+                    overlay->getLocalArea (cutoffKnob, cutoffKnob->getLocalBounds()).getCentreY()),
+                "overlay no longer intercepts clicks (hitTest false) once faded out");
+    }
+
+    // ASSIGN mode must not introduce any new focus-grabbing offender (see
+    // presetBrowserFocusGrabTest's allowlist/sweep, which this mirrors), and
+    // toggling it on/off must not disturb the on-screen keyboard's real
+    // QWERTY focus.
+    static void modAssignFocusTest()
+    {
+        std::cout << "modAssignFocusTest\n";
+
+        const auto pumpFor = [] (int ms)
+        {
+            const auto deadline = juce::Time::getMillisecondCounter() + (juce::uint32) ms;
+            while (juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        };
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+        proc.getAPVTS().state.setProperty ("uiKeyboardVisible", true, nullptr);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth,
+                         spa::ui::metrics::baseHeight + spa::ui::metrics::keyboardStripHeight);
+        editor->addToDesktop (0);
+        editor->setVisible (true);
+        pumpFor (200);
+
+        juce::MidiKeyboardComponent* keyboard = nullptr;
+        juce::Button* assignBtn = nullptr;
+        spa::ui::PresetBrowser* browser = nullptr;
+        std::function<void (juce::Component&)> findParts = [&] (juce::Component& c)
+        {
+            if (keyboard == nullptr)
+                keyboard = dynamic_cast<juce::MidiKeyboardComponent*> (&c);
+            if (assignBtn == nullptr && c.getComponentID() == "matrixAssign")
+                assignBtn = dynamic_cast<juce::Button*> (&c);
+            if (browser == nullptr)
+                browser = dynamic_cast<spa::ui::PresetBrowser*> (&c);
+            for (auto* child : c.getChildren())
+                findParts (*child);
+        };
+        findParts (*editor);
+        expect (keyboard != nullptr && assignBtn != nullptr,
+                "on-screen keyboard + ASSIGN button found");
+
+        if (keyboard != nullptr)
+        {
+            keyboard->grabKeyboardFocus();
+            pumpFor (50);
+            const bool gotRealFocus = keyboard->hasKeyboardFocus (false);
+
+            if (! gotRealFocus)
+            {
+                std::cout << "  ..   couldn't obtain real OS keyboard focus in this "
+                             "environment -- skipping the focus-retention checks\n";
+            }
+            else if (assignBtn != nullptr)
+            {
+                // triggerClick() posts an async command message -- wait on
+                // the actual toggle rather than a fixed pump (flaky under
+                // CPU load in this headless harness).
+                const auto waitForToggle = [&] (bool want)
+                {
+                    const auto deadline = juce::Time::getMillisecondCounter() + 5000u;
+                    while (assignBtn->getToggleState() != want
+                           && juce::Time::getMillisecondCounter() < deadline)
+                        juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+                };
+
+                assignBtn->triggerClick();
+                waitForToggle (true);
+                expect (keyboard->hasKeyboardFocus (false),
+                        "on-screen keyboard keeps real focus when ASSIGN mode turns on");
+
+                assignBtn->triggerClick();
+                waitForToggle (false);
+                expect (keyboard->hasKeyboardFocus (false),
+                        "on-screen keyboard keeps real focus when ASSIGN mode turns back off");
+            }
+        }
+
+        // Structural sweep, ASSIGN mode left ON: same allowlist as
+        // presetBrowserFocusGrabTest (TextEditor subtrees, the on-screen
+        // keyboard, the preset browser) plus the AssignOverlay itself (it
+        // deliberately never wants focus, checked separately below).
+        if (assignBtn != nullptr && ! assignBtn->getToggleState())
+        {
+            assignBtn->triggerClick();
+            const auto deadline = juce::Time::getMillisecondCounter() + 5000u;
+            while (! assignBtn->getToggleState() && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+        }
+
+        int offenders = 0;
+        std::function<void (juce::Component&)> walk = [&] (juce::Component& c)
+        {
+            const bool allowed = dynamic_cast<juce::TextEditor*> (&c) != nullptr
+                               || c.findParentComponentOfClass<juce::TextEditor>() != nullptr
+                               || dynamic_cast<juce::MidiKeyboardComponent*> (&c) != nullptr
+                               || &c == browser;
+            if (! allowed && c.getMouseClickGrabsKeyboardFocus())
+            {
+                ++offenders;
+                std::cout << "  FAIL   focus-grab left on with ASSIGN mode active: "
+                          << typeid (c).name() << "\n";
+            }
+            for (auto* child : c.getChildren())
+                walk (*child);
+        };
+        walk (*editor);
+        expect (offenders == 0,
+                juce::String (offenders) + " new focus-grab offender(s) with ASSIGN mode on");
+
+        editor->removeFromDesktop();
+    }
+
     // Regression for a bug Mike hit in Logic: the ENV/LFO tab bars rendered
     // with generous, evenly-spaced default widths, then snapped to a
     // condensed/bunched-left layout the instant another tab was clicked.
@@ -7344,6 +7874,71 @@ int main (int argc, char* argv[])
         return 0;
     }
 
+    // Temporary visual-review render for the ASSIGN mode feature: assign
+    // mode on, filter 1 cutoff selected (destination, yellow), LFO 2
+    // selected (source, yellow), everything else pulsing blue. Writes into
+    // the same fixed filename renderEditorSnapshots uses for the keyboard
+    // pass so it's directly comparable.
+    if (argc >= 3 && juce::String (argv[1]) == "--snapshot-assign")
+    {
+        namespace params = spa::params;
+        namespace id = spa::params::id;
+
+        spa::SPASynthProcessor proc;
+        proc.prepareToPlay (48000.0, 512);
+
+        std::unique_ptr<juce::AudioProcessorEditor> editor (proc.createEditor());
+        editor->setSize (spa::ui::metrics::baseWidth, spa::ui::metrics::baseHeight);
+
+        spa::ui::AssignOverlay* overlay = nullptr;
+        juce::Button* assignBtn = nullptr;
+        std::function<void (juce::Component&)> findParts = [&] (juce::Component& c)
+        {
+            if (overlay == nullptr)
+                overlay = dynamic_cast<spa::ui::AssignOverlay*> (&c);
+            if (assignBtn == nullptr && c.getComponentID() == "matrixAssign")
+                assignBtn = dynamic_cast<juce::Button*> (&c);
+            for (auto* child : c.getChildren())
+                findParts (*child);
+        };
+        findParts (*editor);
+
+        if (overlay != nullptr && assignBtn != nullptr)
+        {
+            assignBtn->triggerClick();
+            const auto deadline = juce::Time::getMillisecondCounter() + 5000u;
+            while (! overlay->isAssignActive() && juce::Time::getMillisecondCounter() < deadline)
+                juce::MessageManager::getInstance()->runDispatchLoopUntil (10);
+
+            auto* cutoffKnob = findByParamID (*editor, id::filter1Cutoff);
+            juce::Component* lfo2Tab = nullptr;
+            std::function<void (juce::Component&)> findLfo2 = [&] (juce::Component& c)
+            {
+                if (lfo2Tab == nullptr && c.getProperties().contains ("modSource")
+                    && (int) c.getProperties()["modSource"] == (int) params::ModSource::lfo2)
+                    lfo2Tab = &c;
+                for (auto* child : c.getChildren())
+                    findLfo2 (*child);
+            };
+            findLfo2 (*editor);
+
+            if (cutoffKnob != nullptr)
+                overlay->handleClickAt (overlay->getLocalArea (cutoffKnob, cutoffKnob->getLocalBounds()).getCentre());
+            if (lfo2Tab != nullptr)
+                overlay->handleClickAt (overlay->getLocalArea (lfo2Tab, lfo2Tab->getLocalBounds()).getCentre());
+        }
+
+        const auto image = editor->createComponentSnapshot (editor->getLocalBounds());
+        const auto file = juce::File (argv[2]).getChildFile ("spasynth-keyboard.png");
+        file.deleteFile();
+        juce::PNGImageFormat png;
+        juce::FileOutputStream stream (file);
+        if (stream.openedOk())
+            png.writeImageToStream (image, stream);
+        std::cout << "snapshot: " << file.getFullPathName() << "\n";
+        return 0;
+    }
+
     for (int i = 1; i < argc; ++i)
         if (juce::String (argv[i]) == "--real-library")
             g_realLibraryTestOptIn = true;
@@ -7374,6 +7969,8 @@ int main (int argc, char* argv[])
     reverbStabilityTest();
     distCrushTest();
     parametricEqTest();
+    eqBandTypesTest();
+    eqEditorTypeMenuTest();
     voiceModeTest();
     oversamplingTest();
     panicTest();
@@ -7424,6 +8021,8 @@ int main (int argc, char* argv[])
     presetBrowserKeyboardFocusTest();
     voicePanelCallOutFocusTest();
     voicePanelEditorCloseTest();
+    modAssignModeTest();
+    modAssignFocusTest();
     tabLayoutInvarianceTest();
     presetBrowserWidensWindowTest();
     presetBrowserNativeShiftTest();

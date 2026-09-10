@@ -335,7 +335,8 @@ namespace id
         namespace eqband
         {
             inline constexpr const char* enable = "enable";
-            inline constexpr const char* type   = "type";   // Bell/LoShelf/HiShelf/LoCut/HiCut/Notch
+            inline constexpr const char* type   = "type";   // Bell/LoShelf/HiShelf/LoCut/HiCut/Notch/BandPass/Tilt
+            inline constexpr const char* slope  = "slope";  // Low Cut / High Cut only: 6-48 dB/oct
             inline constexpr const char* freq   = "freq";
             inline constexpr const char* gain   = "gain";
             inline constexpr const char* q      = "q";

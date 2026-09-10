@@ -10,6 +10,7 @@
 #include "SectionPanel.h"
 #include "MatrixPanel.h"
 #include "PresetBrowser.h"
+#include "AssignOverlay.h"
 
 namespace spa
 {
@@ -149,6 +150,10 @@ private:
     std::unique_ptr<TabEngagementTracker> fxTabEngagement;
     MatrixPanel matrixPanel;
     OutputMeter outputMeter;
+    // ASSIGN mode click-to-route overlay; added last (topmost), covers the
+    // whole content area but is invisible/non-intercepting outside assign
+    // mode (see AssignOverlay).
+    std::unique_ptr<AssignOverlay> assignOverlay;
 
     // Preset drawer: normally widens the window and sits in a left column of
     // its own, beside (never over) the module grid -- see

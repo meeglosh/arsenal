@@ -463,6 +463,7 @@ private:
             {
                 std::atomic<float>* enable = nullptr;
                 std::atomic<float>* type = nullptr;
+                std::atomic<float>* slope = nullptr;
                 std::atomic<float>* freq = nullptr;
                 std::atomic<float>* gain = nullptr;
                 std::atomic<float>* q = nullptr;

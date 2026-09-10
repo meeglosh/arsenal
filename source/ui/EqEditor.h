@@ -40,8 +40,10 @@ public:
         setMouseClickGrabsKeyboardFocus (false);
         modName = (juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX)
                       ? "Cmd" : "Ctrl";
-        setTooltip ("Double-click to add or remove a band. Drag a node to move it; "
-                    + modName + "-drag vertically or use the mouse wheel to set its Q.");
+        setTooltip ("Double-click empty space to add a Bell (near the left/right edges: a "
+                    "Low/High Cut). Double-click a node to remove it. Drag a node to move it; "
+                    + modName + "-drag vertically or use the mouse wheel to set its Q. "
+                    "Right-click a node to change its type or (for cuts) its slope.");
         startTimerHz (30);
     }
 
@@ -109,6 +111,18 @@ public:
             g.drawText (juce::String (b + 1),
                         juce::Rectangle<float> (c.x - rad, c.y - rad, rad * 2.0f, rad * 2.0f),
                         juce::Justification::centred);
+
+            // Type badge next to hot nodes ("LC 24", "HS", "BP", "TILT"...) so a
+            // cut's slope is visible without opening the menu.
+            if (hot)
+            {
+                const int type = (int) rawBand (b, params::id::fx::eqband::type);
+                const juce::String badge = badgeText (type, (int) rawBand (b, params::id::fx::eqband::slope));
+                g.setColour (t.textPrimary.withAlpha (0.85f));
+                g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
+                g.drawText (badge, juce::Rectangle<float> (c.x + rad + 4.0f, c.y - 7.0f, 60.0f, 14.0f),
+                            juce::Justification::centredLeft);
+            }
         }
 
         // Readout for the selected node (or the one under the pointer): frequency,
@@ -120,11 +134,11 @@ public:
             const float gainDb = rawBand (info, params::id::fx::eqband::gain);
             const float q = rawBand (info, params::id::fx::eqband::q);
             const int type = (int) rawBand (info, params::id::fx::eqband::type);
-            const bool gainType = type == 0 || type == 1 || type == 2;
-            juce::String txt = "B" + juce::String (info + 1) + "   "
+            const int slope = (int) rawBand (info, params::id::fx::eqband::slope);
+            juce::String txt = "B" + juce::String (info + 1) + "  " + badgeText (type, slope) + "   "
                              + (f >= 1000.0f ? juce::String (f / 1000.0f, 2) + " kHz"
                                              : juce::String (juce::roundToInt (f)) + " Hz");
-            if (gainType) txt += "   " + juce::String (gainDb, 1) + " dB";
+            if (isGainType (type)) txt += "   " + juce::String (gainDb, 1) + " dB";
             txt += "   Q " + juce::String (q, 2);
             g.setColour (t.textSecondary);
             g.setFont (juce::Font (juce::FontOptions (11.0f)));
@@ -135,17 +149,28 @@ public:
         // Subtle usage hint, top-right (full detail is in the tooltip).
         g.setColour (t.textSecondary.withAlpha (0.45f));
         g.setFont (juce::Font (juce::FontOptions (10.0f)));
-        g.drawText ("double-click: add / remove    " + modName + "-drag or wheel: Q",
+        g.drawText ("double-click: add / remove (edges: cut)    right-click: type    "
+                    + modName + "-drag or wheel: Q",
                     graph.reduced (8.0f, 5.0f).removeFromTop (13.0f),
                     juce::Justification::topRight);
     }
 
     void mouseDown (const juce::MouseEvent& e) override
     {
+        const int b = bandAt (e.position);
+        if (e.mods.isPopupMenu())   // right-click / Ctrl-click: type + slope menu
+        {
+            if (b >= 0)
+            {
+                selectedBand = b;
+                repaint();
+                showTypeMenu (b);
+            }
+            return;
+        }
         // Click selects and grabs the node under the pointer (no accidental
         // creation); clicking empty space deselects. Nodes are added/removed by
         // double-click.
-        const int b = bandAt (e.position);
         selectedBand = b;
         dragBand = b;
         qDragActive = false;
@@ -184,7 +209,9 @@ public:
 
     void mouseDoubleClick (const juce::MouseEvent& e) override
     {
-        // Double-click a node to remove it, or empty graph space to add one.
+        // Double-click a node to remove it, or empty graph space to add one:
+        // near the left edge -> Low Cut, near the right edge -> High Cut,
+        // otherwise a Bell (matches the on-panel hint).
         const int b = bandAt (e.position);
         if (b >= 0)
         {
@@ -193,7 +220,12 @@ public:
         }
         else
         {
-            const int n = createBandAt (e.position);
+            const float frac = graph.getWidth() > 0.0f
+                              ? (e.position.x - graph.getX()) / graph.getWidth() : 0.5f;
+            const int edgeType = frac < 0.12f ? (int) dsp::ParametricEQ::Type::lowCut
+                               : frac > 0.88f ? (int) dsp::ParametricEQ::Type::highCut
+                                              : (int) dsp::ParametricEQ::Type::bell;
+            const int n = createBandAt (e.position, edgeType);
             if (n >= 0) selectedBand = n;
         }
         repaint();
@@ -261,6 +293,7 @@ private:
             auto& bd = bands[(size_t) b];
             bd.enabled = bandEnabled (b);
             bd.type    = (int) rawBand (b, params::id::fx::eqband::type);
+            bd.slope   = (int) rawBand (b, params::id::fx::eqband::slope);
             bd.freq    = rawBand (b, params::id::fx::eqband::freq);
             bd.gainDb  = rawBand (b, params::id::fx::eqband::gain);
             bd.q       = rawBand (b, params::id::fx::eqband::q);
@@ -287,11 +320,99 @@ private:
         return (0.5f - (y - graph.getY()) / juce::jmax (1.0f, graph.getHeight())) * 2.0f * dbRange;
     }
 
+    // Bell / Low Shelf / High Shelf / Tilt Shelf carry a gain; cuts, Notch and
+    // Band Pass don't (their node sits on the 0 dB line).
+    static bool isGainType (int type)
+    {
+        using T = dsp::ParametricEQ::Type;
+        return (T) type == T::bell || (T) type == T::lowShelf
+            || (T) type == T::highShelf || (T) type == T::tiltShelf;
+    }
+
+public:
+    // Public for eqEditorTypeMenuTest (drives the exact string the badge and
+    // readout draw) and because the right-click menu's callback uses it too.
+    static juce::String badgeText (int type, int slope)
+    {
+        using T = dsp::ParametricEQ::Type;
+        switch ((T) type)
+        {
+            case T::bell:      return "BELL";
+            case T::lowShelf:  return "LS";
+            case T::highShelf: return "HS";
+            case T::notch:     return "NOTCH";
+            case T::bandPass:  return "BP";
+            case T::tiltShelf: return "TILT";
+            case T::lowCut:
+                return "LC " + juce::String (dsp::ParametricEQ::slopeDbPerOct (slope));
+            case T::highCut:
+                return "HC " + juce::String (dsp::ParametricEQ::slopeDbPerOct (slope));
+        }
+        return {};
+    }
+
+    void showTypeMenu (int b)
+    {
+        using T = dsp::ParametricEQ::Type;
+        const int curType = (int) rawBand (b, params::id::fx::eqband::type);
+        const int curSlope = (int) rawBand (b, params::id::fx::eqband::slope);
+
+        juce::PopupMenu menu;
+        const struct { const char* name; T type; } types[] = {
+            { "Bell", T::bell }, { "Low Shelf", T::lowShelf }, { "High Shelf", T::highShelf },
+            { "Low Cut", T::lowCut }, { "High Cut", T::highCut }, { "Notch", T::notch },
+            { "Band Pass", T::bandPass }, { "Tilt Shelf", T::tiltShelf },
+        };
+        for (auto& t : types)
+        {
+            const int typeIdx = (int) t.type;
+            if (t.type == T::lowCut || t.type == T::highCut)
+            {
+                juce::PopupMenu slopeMenu;
+                const char* slopeNames[6] = { "6 dB/oct", "12 dB/oct", "18 dB/oct",
+                                               "24 dB/oct", "36 dB/oct", "48 dB/oct" };
+                for (int s = 0; s < 6; ++s)
+                    slopeMenu.addItem (10000 + typeIdx * 100 + s, slopeNames[s], true,
+                                       curType == typeIdx && curSlope == s);
+                menu.addSubMenu (t.name, slopeMenu, true, nullptr, curType == typeIdx);
+            }
+            else
+            {
+                menu.addItem (typeIdx + 1, t.name, true, curType == typeIdx);
+            }
+        }
+
+        menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this),
+            [this, b] (int result)
+            {
+                if (result <= 0) return;
+                if (result >= 10000)
+                {
+                    const int r = result - 10000;
+                    setTypeAndSlope (b, r / 100, r % 100);
+                }
+                else
+                {
+                    setTypeAndSlope (b, result - 1, -1);
+                }
+            });
+    }
+
+    // The one code path both the menu and tests use to change a band's type
+    // (and, for cuts, its slope) so the two never drift apart.
+    void setTypeAndSlope (int b, int type, int slope)
+    {
+        setBand (b, params::id::fx::eqband::type, (float) type);
+        if (slope >= 0)
+            setBand (b, params::id::fx::eqband::slope, (float) slope);
+        repaint();
+    }
+
+private:
     juce::Point<float> nodeCentre (int b) const
     {
         const int type = (int) rawBand (b, params::id::fx::eqband::type);
-        const bool gainType = type == 0 || type == 1 || type == 2;   // bell/shelves
-        const float gain = gainType ? rawBand (b, params::id::fx::eqband::gain) : 0.0f;
+        const float gain = isGainType (type) ? rawBand (b, params::id::fx::eqband::gain) : 0.0f;
         return { freqToX (rawBand (b, params::id::fx::eqband::freq)),
                  dbToY (juce::jlimit (-dbRange, dbRange, gain)) };
     }
@@ -311,23 +432,26 @@ private:
         setBandRaw (dragBand, params::id::fx::eqband::freq,
                     juce::jlimit (minF, maxF, xToFreq (p.x)));
         const int type = (int) rawBand (dragBand, params::id::fx::eqband::type);
-        if (type == 0 || type == 1 || type == 2)   // bell/shelves have gain
+        if (isGainType (type))
             setBandRaw (dragBand, params::id::fx::eqband::gain,
                         juce::jlimit (-dbRange, dbRange, yToDb (p.y)));
     }
 
-    // Enable the first free band at the click point (Bell), or -1 if all 8 are
-    // in use or the click is outside the graph.
-    int createBandAt (juce::Point<float> p)
+    // Enable the first free band at the click point with the given type
+    // (default Bell), or -1 if all 8 are in use or the click is outside the
+    // graph. Cuts/Notch/Band Pass ignore the click's vertical position (no
+    // gain); their node sits on the 0 dB line.
+    int createBandAt (juce::Point<float> p, int type = 0 /* Bell */)
     {
         if (! graph.contains (p)) return -1;
         for (int i = 0; i < numBands; ++i)
             if (! bandEnabled (i))
             {
-                setBand (i, params::id::fx::eqband::type, 0.0f /* Bell */);
+                setBand (i, params::id::fx::eqband::type, (float) type);
                 setBandRaw (i, params::id::fx::eqband::freq, juce::jlimit (minF, maxF, xToFreq (p.x)));
-                setBandRaw (i, params::id::fx::eqband::gain,
-                            juce::jlimit (-dbRange, dbRange, yToDb (p.y)));
+                if (isGainType (type))
+                    setBandRaw (i, params::id::fx::eqband::gain,
+                                juce::jlimit (-dbRange, dbRange, yToDb (p.y)));
                 setBand (i, params::id::fx::eqband::enable, 1.0f);
                 return i;
             }
